@@ -11,7 +11,6 @@ States: open -> deferred | expedited | cancelled | rerouted | exception
 from __future__ import annotations
 
 from enum import Enum
-from typing import List, Set
 
 
 class State(str, Enum):
@@ -25,7 +24,7 @@ class State(str, Enum):
     CLOSED = "closed"
 
 
-TRANSITIONS: dict[State, Set[State]] = {
+TRANSITIONS: dict[State, set[State]] = {
     State.OPEN: {State.DEFERRED, State.EXPEDITED, State.CANCELLED, State.REROUTED, State.EXCEPTION},
     State.DEFERRED: {State.EXECUTED},
     State.EXPEDITED: {State.EXECUTED},
@@ -45,7 +44,7 @@ class POStateMachine:
     def __init__(self, po_id: str) -> None:
         self.po_id = po_id
         self.state = State.OPEN
-        self.history: List[tuple[State, State, str]] = []
+        self.history: list[tuple[State, State, str]] = []
 
     def transition(self, target: State, reason: str = "") -> State:
         if target not in TRANSITIONS[self.state]:

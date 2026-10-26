@@ -6,11 +6,12 @@ the same `retrieve()` contract. Everything else in the harness is RAG-agnostic.
 
 from __future__ import annotations
 
-from typing import Iterable, List, Protocol
+from collections.abc import Iterable
+from typing import Protocol
 
 
 class Retriever(Protocol):
-    def retrieve(self, query: str, k: int = 5) -> List[str]:
+    def retrieve(self, query: str, k: int = 5) -> list[str]:
         ...
 
 
@@ -18,7 +19,7 @@ class MemoryRetriever:
     def __init__(self, documents: Iterable[str]) -> None:
         self.docs = list(documents)
 
-    def retrieve(self, query: str, k: int = 5) -> List[str]:
+    def retrieve(self, query: str, k: int = 5) -> list[str]:
         # Tiny keyword-match fallback so it runs offline; use embeddings in production.
         q = query.lower()
         scored = []
@@ -29,7 +30,7 @@ class MemoryRetriever:
         return [d for _, d in scored[:k]]
 
 
-def build_prompt(query: str, retrieved: List[str]) -> str:
+def build_prompt(query: str, retrieved: list[str]) -> str:
     context = "\n\n".join(f"[{i+1}] {d}" for i, d in enumerate(retrieved))
     return (
         "Use ONLY the context below to answer. If the context doesn't contain the answer, say so.\n\n"

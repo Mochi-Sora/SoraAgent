@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from .tools import Tool
 
 
 @dataclass
@@ -18,7 +21,7 @@ class Message:
 
 
 class ModelProvider(Protocol):
-    def complete(self, messages: List[Message], tools: Dict[str, Any]) -> str:
+    def complete(self, messages: list[Message], tools: list[Tool]) -> str:
         """Return the assistant's text response."""
         ...
 
@@ -30,7 +33,7 @@ class MockProvider:
     approval + state transitions.
     """
 
-    def complete(self, messages: List[Message], tools: Dict[str, Any]) -> str:
+    def complete(self, messages: list[Message], tools: list[Tool]) -> str:
         last_user = next((m.content for m in reversed(messages) if m.role == "user"), "")
         low = last_user.lower()
         if "expedite" in low or "stuck" in low or "can't ship" in low:
@@ -63,16 +66,22 @@ class OpenAIChatProvider:
         self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
         self.base_url = base_url
 
-    def complete(self, messages: List[Message], tools: Dict[str, Any]) -> str:
-        import openai  # lazy import; optional dependency
+    def complete(self, messages: list[Message], tools: list[Tool]) -> str:
+        try:
+            import openai  # pyright: ignore[reportMissingImports]  # lazy optional dependency
+        except ImportError as exc:
+            raise ImportError(
+                "OpenAIChatProvider requires the optional 'openai' package. "
+                "Install it with: pip install 'sora-agent[openai]'"
+            ) from exc
 
         client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
         }
         if tools:
-            payload["tools"] = [{"type": "function", "function": t["schema"]} for t in tools.values()]
+            payload["tools"] = [{"type": "function", "function": tool.schema} for tool in tools]
         resp = client.chat.completions.create(**payload)
         return resp.choices[0].message.content or ""
 

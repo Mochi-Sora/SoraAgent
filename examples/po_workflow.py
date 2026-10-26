@@ -19,10 +19,10 @@ import sys
 # Make `python examples/po_workflow.py` work even without `pip install -e .`
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent_harness import Agent, MockProvider, POStateMachine
-from agent_harness.approval import ApprovalGate
-from agent_harness.providers import default_provider
-from agent_harness.tools import registry
+from sora_agent import Agent, MockProvider, POStateMachine
+from sora_agent.approval import ApprovalGate
+from sora_agent.providers import default_provider
+from sora_agent.tools import registry
 
 
 class AutoApproveGate(ApprovalGate):

@@ -10,13 +10,12 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .approval import ApprovalGate
 from .eval import QualityGate
 from .providers import Message, ModelProvider
 from .tools import ToolRegistry
-
 
 SYSTEM_PROMPT = (
     "You are a careful enterprise-workflow agent. You may call tools to complete a task, and "
@@ -38,16 +37,16 @@ class AgentResult:
     tool_result: str = ""
     state: str = ""
     approved: bool = False
-    audit: List[Any] = field(default_factory=list)
+    audit: list[Any] = field(default_factory=list)
 
 
 class Agent:
     def __init__(
         self,
         provider: ModelProvider,
-        registry: Optional[ToolRegistry] = None,
-        approval: Optional[ApprovalGate] = None,
-        quality: Optional[QualityGate] = None,
+        registry: ToolRegistry | None = None,
+        approval: ApprovalGate | None = None,
+        quality: QualityGate | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry or ToolRegistry()
@@ -111,7 +110,7 @@ class Agent:
         return result
 
     @staticmethod
-    def _parse_action(proposal: str) -> tuple[str, Dict[str, Any]]:
+    def _parse_action(proposal: str) -> tuple[str, dict[str, Any]]:
         m = _ACTION_RE.search(proposal)
         if not m:
             return "", {}
@@ -120,9 +119,9 @@ class Agent:
         return name, Agent._parse_kwargs(raw)
 
     @staticmethod
-    def _parse_kwargs(raw: str) -> Dict[str, Any]:
+    def _parse_kwargs(raw: str) -> dict[str, Any]:
         """Parse `k="v", n=3` into a dict (quote-aware top-level comma split)."""
-        kwargs: Dict[str, Any] = {}
+        kwargs: dict[str, Any] = {}
         if not raw.strip():
             return kwargs
         for part in Agent._split_top(raw, ","):
@@ -137,9 +136,9 @@ class Agent:
         return kwargs
 
     @staticmethod
-    def _split_top(s: str, sep: str) -> List[str]:
-        out: List[str] = []
-        buf: List[str] = []
+    def _split_top(s: str, sep: str) -> list[str]:
+        out: list[str] = []
+        buf: list[str] = []
         depth = 0
         quote = ""
         for ch in s:

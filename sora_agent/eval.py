@@ -7,14 +7,14 @@ step that separates a demo from production. Plug in your own grader.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable
 
 
 @dataclass
 class EvalReport:
     passed: bool
     score: float
-    checks: List[str]
+    checks: list[str]
 
     def __str__(self) -> str:
         status = "PASS" if self.passed else "FAIL"
@@ -22,7 +22,7 @@ class EvalReport:
 
 
 class QualityGate:
-    def __init__(self, grader: Optional[Callable[[str, str], EvalReport]] = None) -> None:
+    def __init__(self, grader: Callable[[str, str], EvalReport] | None = None) -> None:
         self.grader = grader or default_grader
 
     def grade(self, proposal: str, context: str = "") -> EvalReport:
@@ -30,7 +30,7 @@ class QualityGate:
 
 
 def default_grader(proposal: str, context: str = "") -> EvalReport:
-    checks: List[str] = []
+    checks: list[str] = []
     score = 1.0
 
     # A light, rule-based grader. Replace with an LLM judge or test-based harness.

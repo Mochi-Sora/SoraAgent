@@ -10,20 +10,20 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Any, Dict
+from typing import Any
 
 # Make `python examples/copilot_function.py` work even without `pip install -e .`
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent_harness import Agent
-from agent_harness.approval import ApprovalGate
-from agent_harness.eval import QualityGate
-from agent_harness.providers import default_provider
-from agent_harness.state_machine import POStateMachine
-from agent_harness.tools import registry
+from sora_agent import Agent
+from sora_agent.approval import ApprovalGate
+from sora_agent.eval import QualityGate
+from sora_agent.providers import default_provider
+from sora_agent.state_machine import POStateMachine
+from sora_agent.tools import registry
 
 
-def run_copilot_step(user_message: str, po_id: str = "PO-1234", auto_approve: bool = False) -> Dict[str, Any]:
+def run_copilot_step(user_message: str, po_id: str = "PO-1234", auto_approve: bool = False) -> dict[str, Any]:
     """Entrypoint for an HTTP trigger / Copilot Studio action / Power Automate step."""
 
     provider = default_provider(os.getenv("AGENT_PROVIDER", "mock"))

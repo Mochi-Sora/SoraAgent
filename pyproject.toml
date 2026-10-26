@@ -3,13 +3,13 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ai-agent-scaffold"
+name = "sora-agent"
 version = "0.1.0"
-description = "A minimal, model-agnostic agent harness with human-approval and quality gates."
+description = "A model-agnostic agent harness with human-approval and quality gates."
 readme = "README.md"
 requires-python = ">=3.9"
-authors = [{ name = "Zhaowei Sun" }]
-license = { text = "MIT" }
+authors = [{ name = "Tam Kuan Hou (譚君浩 / Marco Tam)" }]
+license = { text = "AGPL-3.0-only" }
 dependencies = []
 
 [project.optional-dependencies]
@@ -17,4 +17,4 @@ openai = ["openai>=1.0"]
 dev = ["pytest>=7"]
 
 [tool.setuptools]
-packages = ["agent_harness"]
+packages = ["sora_agent"]

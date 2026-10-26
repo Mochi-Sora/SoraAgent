@@ -7,8 +7,7 @@ This gate blocks, records who approved, and emits an audit entry.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
-from typing import List, Optional
+from dataclasses import dataclass
 
 
 @dataclass
@@ -28,7 +27,7 @@ class AuditEntry:
 
 class ApprovalGate:
     def __init__(self) -> None:
-        self.audit: List[AuditEntry] = []
+        self.audit: list[AuditEntry] = []
 
     def request(self, action: str, detail: str) -> bool:
         """In a real system this would push a notification to a human / Slack / Teams.

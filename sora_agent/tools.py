@@ -7,7 +7,7 @@ Decorate a function with `@tool` and it becomes callable by the agent. Set
 from __future__ import annotations
 
 import inspect
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable
 
 
 class Tool:
@@ -24,7 +24,7 @@ class Tool:
         self.needs_approval = needs_approval
 
     @property
-    def schema(self) -> Dict[str, Any]:
+    def schema(self) -> dict[str, Any]:
         params = inspect.signature(self.fn).parameters
         props = {
             n: {"type": p.annotation.__name__ if p.annotation is not inspect.Parameter.empty else "string"}
@@ -46,7 +46,7 @@ class Tool:
 
 class ToolRegistry:
     def __init__(self) -> None:
-        self._tools: Dict[str, Tool] = {}
+        self._tools: dict[str, Tool] = {}
 
     def add(self, tool: Tool) -> Tool:
         self._tools[tool.name] = tool
@@ -55,7 +55,7 @@ class ToolRegistry:
     def get(self, name: str) -> Tool:
         return self._tools[name]
 
-    def all(self) -> List[Tool]:
+    def all(self) -> list[Tool]:
         return list(self._tools.values())
 
 

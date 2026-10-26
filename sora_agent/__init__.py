@@ -1,4 +1,4 @@
-"""ai-agent-scaffold: model-agnostic agent harness with approval and quality gates."""
+"""SoraAgent: model-agnostic agent harness with approval and quality gates."""
 
 from .agent import Agent, AgentResult
 from .providers import MockProvider
