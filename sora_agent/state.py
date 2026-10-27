@@ -44,7 +44,7 @@ DEFAULT_MAX_REPAIRS = 3
 MIN_MAX_REPAIRS = 1
 MAX_MAX_REPAIRS = 5
 
-STATE_HEADINGS = ("Goal", "Current State", "Next", "User")
+STATE_HEADINGS = ("Goal", "Current State", "Next to do if prompted or approved to", "User")
 FEELING_PREFIX = "Feeling:"
 THINKING_PREFIX = "Thinking:"
 
