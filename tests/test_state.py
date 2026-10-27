@@ -10,6 +10,7 @@ from sora_agent.state import (
     DEFAULT_MAX_REPAIRS,
     MAX_STATE_LIMIT,
     MIN_STATE_LIMIT,
+    STATE_HEADINGS,
     StateConfig,
     StateManager,
     StateMonitor,
@@ -35,7 +36,7 @@ def valid_state(
 ## Current State
 {current}
 
-## Next
+## {STATE_HEADINGS[2]}
 {next_steps}
 
 ## User
@@ -126,17 +127,22 @@ def test_store_refuses_to_write_empty_state(config: StateConfig) -> None:
 
 
 def test_missing_heading_rejected() -> None:
-    text = valid_state().replace("## Next\nConfirm the ship date.\n", "")
+    text = valid_state().replace(
+        f"## {STATE_HEADINGS[2]}\nConfirm the ship date.\n", ""
+    )
     result = StateMonitor().validate(text)
     assert not result.ok
     assert any(
-        issue.code == "E_HEADING" and "Next" in issue.message
+        issue.code == "E_HEADING" and STATE_HEADINGS[2] in issue.message
         for issue in result.issues
     )
 
 
 def test_extra_heading_rejected() -> None:
-    text = valid_state().replace("## Next", "## Notes\nsome notes\n\n## Next")
+    text = valid_state().replace(
+        f"## {STATE_HEADINGS[2]}",
+        f"## Notes\nsome notes\n\n## {STATE_HEADINGS[2]}",
+    )
     result = StateMonitor().validate(text)
     assert not result.ok
     assert any(issue.code == "E_STRUCTURE" for issue in result.issues)

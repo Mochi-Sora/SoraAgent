@@ -11,7 +11,7 @@ A state file is a small Markdown document::
     ...
     ## Current State
     ...
-    ## Next
+    ## Next to do if prompted or approved to
     ...
     ## User
     Feeling: ...
@@ -211,7 +211,7 @@ def initial_state(goal: str | None, limit: int = DEFAULT_STATE_LIMIT) -> str:
 ## Current State
 Session initialized. No work has been done yet.
 
-## Next
+## {STATE_HEADINGS[2]}
 Clarify the goal and choose the first action.
 
 ## User
@@ -924,14 +924,14 @@ class StateManager:
             "...\n"
             "## Current State\n"
             "...\n"
-            "## Next\n"
+            f"## {STATE_HEADINGS[2]}\n"
             "...\n"
             "## User\n"
             "Feeling: ...\n"
             "Thinking: ...\n"
             "</state_edit>\n\n"
             "Rules: use exactly these headings in this order: ## Goal, ## Current State, "
-            "## Next, ## User. Every section must be non-empty. ## User must contain "
+            f"## {STATE_HEADINGS[2]}, ## User. Every section must be non-empty. ## User must contain "
             "exactly one 'Feeling: ...' line followed by one 'Thinking: ...' line. "
             f"Keep the complete document within {self.config.limit} characters. "
             "Never clear or reset the state. If no change is needed, omit the block.\n\n"
@@ -968,7 +968,7 @@ class StateManager:
             "Return only one corrected <state_edit> block containing the complete state. "
             "Do not repeat or modify the response text; the framework keeps the original "
             "response. The replacement must use "
-            "exactly these headings in this order: ## Goal, ## Current State, ## Next, "
+            f"exactly these headings in this order: ## Goal, ## Current State, ## {STATE_HEADINGS[2]}, "
             "## User. Each section must be non-empty. ## User must contain exactly one "
             "'Feeling: ...' line followed by exactly one 'Thinking: ...' line. "
             f"The complete document must be at most {self.config.limit} characters. "
