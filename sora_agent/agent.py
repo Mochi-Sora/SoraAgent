@@ -56,12 +56,14 @@ class Agent:
         approval: ApprovalGate | None = None,
         quality: QualityGate | None = None,
         memory: Any = None,
+        identity: Any = None,
     ) -> None:
         self.provider = provider
         self.registry = registry or ToolRegistry()
         self.approval = approval or ApprovalGate()
         self.quality = quality or QualityGate()
-        self.memory = self._resolve_memory(memory)
+        self.identity = self._resolve_identity(identity)
+        self.memory = self._resolve_memory(memory, self.identity)
         if self.memory is not None:
             try:
                 self.provider = self.memory.wrap_provider(self.provider)
@@ -71,6 +73,13 @@ class Agent:
                 self.registry.add(self.memory.tool())
             except Exception as exc:  # noqa: BLE001 - memory is optional
                 log.warning("memory tool registration failed: %s", exc)
+        if self.identity is not None and not getattr(
+            self.provider, "__sora_identity__", False
+        ):
+            try:
+                self.provider = self.identity.wrap_provider(self.provider)
+            except Exception as exc:  # noqa: BLE001 - identity is optional
+                log.warning("identity provider wrapper failed: %s", exc)
 
     def run(self, task: str, state: Any = None) -> AgentResult:
         self._notify("before_run", task, state)
@@ -153,17 +162,38 @@ class Agent:
         return result
 
     @staticmethod
-    def _resolve_memory(memory: Any) -> Any:
+    def _resolve_identity(identity: Any) -> Any:
+        if identity is False:
+            return None
+        if identity is None or identity is True or identity == "default":
+            try:
+                from .identity import default_identity
+
+                return default_identity()
+            except Exception as exc:  # noqa: BLE001 - identity is optional
+                log.warning("identity initialization failed: %s", exc)
+                return None
+        return identity
+
+    @staticmethod
+    def _resolve_memory(memory: Any, identity: Any = None) -> Any:
         if memory is False:
             return None
         if memory is None or memory is True or memory == "default":
             try:
                 from .memory import default_memory
 
-                return default_memory()
+                return default_memory(identity=identity)
             except Exception as exc:  # noqa: BLE001 - memory is optional
                 log.warning("memory initialization failed: %s", exc)
                 return None
+        if identity is not None:
+            setter = getattr(memory, "set_identity", None)
+            if callable(setter):
+                try:
+                    setter(identity)
+                except Exception as exc:  # noqa: BLE001 - memory is optional
+                    log.warning("memory identity attachment failed: %s", exc)
         return memory
 
     def _notify(self, name: str, *args: Any) -> None:

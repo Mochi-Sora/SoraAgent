@@ -27,12 +27,28 @@ class MemoryRecallService:
         top_k: int = 8,
         max_chars: int = 6000,
         user_id: str = "sora",
+        redactor: Optional[Callable[[str], str]] = None,
     ) -> None:
         self.daily = daily
         self.backend = backend
         self.top_k = max(1, min(int(top_k), 50))
         self.max_chars = max(200, int(max_chars))
         self.user_id = user_id
+        self.redactor = redactor
+
+    def _redact(self, content: str) -> str:
+        if self.redactor is None:
+            return content
+        try:
+            return self.redactor(content)
+        except Exception:  # noqa: BLE001 - recall is fail-open
+            return ""
+
+    def _usable(self, content: str) -> str:
+        value = self._redact(content)
+        if not value.strip() or value.strip() == "[profile details withheld]":
+            return ""
+        return value
 
     def recall(self, query: str, scope: str = "auto", k: Optional[int] = None) -> str:
         items, note = self.collect(query, scope=scope, k=k)
@@ -55,19 +71,23 @@ class MemoryRecallService:
         note = ""
         if scope in {"auto", "daily"}:
             try:
-                daily_hits = [
-                    RecallItem(
-                        source="daily",
-                        identifier="daily:{}#{}".format(
-                            hit.day.isoformat(), hit.message_id
-                        ),
-                        content=hit.content,
-                        score=hit.score,
-                        role=hit.role,
-                        day=hit.day.isoformat(),
+                daily_hits = []
+                for hit in self.daily.search(query, k=limit, days=7):
+                    content = self._usable(hit.content)
+                    if not content:
+                        continue
+                    daily_hits.append(
+                        RecallItem(
+                            source="daily",
+                            identifier="daily:{}#{}".format(
+                                hit.day.isoformat(), hit.message_id
+                            ),
+                            content=content,
+                            score=hit.score,
+                            role=hit.role,
+                            day=hit.day.isoformat(),
+                        )
                     )
-                    for hit in self.daily.search(query, k=limit, days=7)
-                ]
             except Exception:  # noqa: BLE001 - daily recall is best effort
                 note = "Daily memory search was unavailable."
         if scope in {"auto", "longterm"}:
@@ -116,6 +136,9 @@ class MemoryRecallService:
             if not isinstance(memory, dict):
                 continue
             content = str(memory.get("content") or "").strip()
+            if not content:
+                continue
+            content = self._usable(content)
             if not content:
                 continue
             out.append(

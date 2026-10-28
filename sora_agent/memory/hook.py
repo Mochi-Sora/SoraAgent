@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import threading
 import time
 from typing import Any, Callable, Dict, Optional
 
@@ -28,6 +29,7 @@ class MemoryHook:
         backup: Optional[BackupManager] = None,
         wake: Optional[Callable[[Dict[str, Any]], str]] = None,
         logger: Optional[logging.Logger] = None,
+        identity: Any = None,
     ) -> None:
         self.config = config or MemoryConfig.from_env()
         self.log = logger or logging.getLogger("sora_agent.memory")
@@ -35,6 +37,8 @@ class MemoryHook:
         self.daily = daily or DailyStore(self.config.daily_dir)
         self.sidecar = sidecar or SidecarManager(self.config)
         self.backup = backup or BackupManager(self.config)
+        self.identity = identity
+        self._pending = threading.local()
         self._client = client
         self._failure_until = 0.0
         self._tool: Optional[_MemoryTool] = None
@@ -50,8 +54,13 @@ class MemoryHook:
             top_k=self.config.recall_top_k,
             max_chars=self.config.recall_max_chars,
             user_id=self.config.user_id,
+            redactor=self._redact_memory,
         )
         atexit.register(self.close)
+
+    def set_identity(self, identity: Any) -> None:
+        self.identity = identity
+        self.recall_service.redactor = self._redact_memory
 
     def wrap_provider(self, provider: Any) -> Any:
         if not self.config.force_first_recall:
@@ -72,31 +81,49 @@ class MemoryHook:
         return self.recall_service.recall(query, scope=scope, k=k)
 
     def before_run(self, task: str, state: Any = None) -> None:
-        if not self.config.enabled:
-            return
-        try:
-            self.daily.append(
-                "user",
-                str(task),
-                session_id=_session_id(state),
-            )
-        except Exception as exc:  # noqa: BLE001 - memory must not break the agent
-            self.log.warning("daily user write failed: %s", exc)
+        # The user message is intentionally not written yet.  It is buffered
+        # until after the provider has had a chance to apply a <user_edit>
+        # block, so the memory firewall can redact against the updated profile.
+        self._pending.task = str(task)
 
     def after_run(self, result: Any, state: Any = None) -> None:
         if not self.config.enabled:
             return
+        task = getattr(self._pending, "task", "")
+        self._pending.task = ""
+        user_text = self._redact_memory(task)
+        if user_text.strip():
+            try:
+                self.daily.append(
+                    "user",
+                    user_text,
+                    session_id=_session_id(state),
+                )
+            except Exception as exc:  # noqa: BLE001 - memory must not break the agent
+                self.log.warning("daily user write failed: %s", exc)
         content = str(getattr(result, "proposal", "") or "")
         if not content.strip():
+            return
+        assistant_text = self._redact_memory(content, source="assistant")
+        if not assistant_text.strip():
             return
         try:
             self.daily.append(
                 "assistant",
-                content,
+                assistant_text,
                 session_id=_session_id(state),
             )
         except Exception as exc:  # noqa: BLE001 - memory must not break the agent
             self.log.warning("daily assistant write failed: %s", exc)
+
+    def _redact_memory(self, text: str, source: str = "user") -> str:
+        if self.identity is None:
+            return str(text)
+        try:
+            return self.identity.redact_for_memory(text, source=source)
+        except Exception as exc:  # noqa: BLE001 - fail closed for storage
+            self.log.warning("profile redaction failed; dropping memory write: %s", exc)
+            return ""
 
     def dream(self, dry_run: bool = False, include_today: bool = False) -> Dict[str, Any]:
         backend = self._backend()
@@ -108,6 +135,7 @@ class MemoryHook:
             backend,
             backup=self.backup,
             wake=self._wake,
+            redactor=self._redact_memory,
         )
         return runner.run(dry_run=dry_run, include_today=include_today)
 
@@ -180,11 +208,11 @@ class _MemoryTool:
         return self._recall(query, scope=scope, k=k)
 
 
-def default_memory() -> Optional[MemoryHook]:
+def default_memory(identity: Any = None) -> Optional[MemoryHook]:
     config = MemoryConfig.from_env()
     if not config.enabled:
         return None
-    return MemoryHook(config)
+    return MemoryHook(config, identity=identity)
 
 
 def _session_id(state: Any) -> str:

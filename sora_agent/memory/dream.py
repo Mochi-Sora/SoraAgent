@@ -38,6 +38,7 @@ class DreamRunner:
         backup: Optional[BackupManager] = None,
         wake: Optional[Callable[[Dict[str, Any]], str]] = None,
         clock: Optional[Callable[[], datetime]] = None,
+        redactor: Optional[Callable[[str], str]] = None,
     ) -> None:
         self.config = config
         self.daily = daily
@@ -45,6 +46,7 @@ class DreamRunner:
         self.backup = backup or BackupManager(config, clock=clock)
         self.wake = wake
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.redactor = redactor
         self.started = time.monotonic()
         self.report: Dict[str, Any] = {}
 
@@ -155,23 +157,44 @@ class DreamRunner:
             failed = False
             for message in messages:
                 memory_id = "daily:{}:{}".format(day.isoformat(), message["id"])
+                content = str(message.get("content") or "")
+                redacted = False
+                if self.redactor is not None:
+                    try:
+                        new_content = self.redactor(content)
+                    except Exception as exc:  # noqa: BLE001 - never save unredacted
+                        failed = True
+                        report["errors"].append(
+                            "redact {}: {}".format(memory_id, exc)
+                        )
+                        break
+                    if not new_content.strip() or new_content.strip() == (
+                        "[profile details withheld]"
+                    ):
+                        continue
+                    if new_content != content:
+                        redacted = True
+                    content = new_content
+                metadata = {
+                    "sora_kind": "verbatim",
+                    "sora_role": str(message.get("role") or ""),
+                    "source": "daily",
+                    "source_day": day.isoformat(),
+                    "source_message_id": int(message["id"]),
+                    "dream_round": 0,
+                    "dream_due": next_due,
+                }
+                if redacted:
+                    metadata["profile_redacted"] = True
                 payload = {
                     "memory_id": memory_id,
                     "user_id": self.config.user_id,
                     "session_id": str(message.get("session_id") or "default"),
                     "scope": "user",
                     "role": str(message.get("role") or ""),
-                    "content": str(message.get("content") or ""),
+                    "content": content,
                     "importance": 0.6 if message.get("role") == "user" else 0.5,
-                    "metadata": {
-                        "sora_kind": "verbatim",
-                        "sora_role": str(message.get("role") or ""),
-                        "source": "daily",
-                        "source_day": day.isoformat(),
-                        "source_message_id": int(message["id"]),
-                        "dream_round": 0,
-                        "dream_due": next_due,
-                    },
+                    "metadata": metadata,
                 }
                 try:
                     if not dry_run:
