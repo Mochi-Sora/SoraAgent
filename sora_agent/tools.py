@@ -7,7 +7,13 @@ Decorate a function with `@tool` and it becomes callable by the agent. Set
 from __future__ import annotations
 
 import inspect
-from typing import Any, Callable
+import types
+from typing import Any, Callable, Union, get_args, get_origin, get_type_hints
+
+
+_UNION_ORIGINS = (Union,) + (
+    (types.UnionType,) if hasattr(types, "UnionType") else ()
+)
 
 
 class Tool:
@@ -26,9 +32,13 @@ class Tool:
     @property
     def schema(self) -> dict[str, Any]:
         params = inspect.signature(self.fn).parameters
+        try:
+            hints = get_type_hints(self.fn)
+        except Exception:  # noqa: BLE001 - unresolved annotations fall back to strings
+            hints = {}
         props = {
-            n: {"type": p.annotation.__name__ if p.annotation is not inspect.Parameter.empty else "string"}
-            for n, p in params.items()
+            name: {"type": _json_type(hints.get(name, param.annotation))}
+            for name, param in params.items()
         }
         return {
             "name": self.name,
@@ -36,12 +46,37 @@ class Tool:
             "parameters": {
                 "type": "object",
                 "properties": props,
-                "required": list(params.keys()),
+                "required": [
+                    name
+                    for name, param in params.items()
+                    if param.default is inspect.Parameter.empty
+                ],
             },
         }
 
     def call(self, **kwargs: Any) -> Any:
         return self.fn(**kwargs)
+
+
+def _json_type(annotation: Any) -> str:
+    if annotation in (inspect.Parameter.empty, Any):
+        return "string"
+    origin = get_origin(annotation)
+    if origin in _UNION_ORIGINS:
+        args = [arg for arg in get_args(annotation) if arg is not type(None)]
+        return _json_type(args[0]) if args else "string"
+    if origin in (list, tuple, set):
+        return "array"
+    if origin is dict:
+        return "object"
+    return {
+        str: "string",
+        int: "integer",
+        float: "number",
+        bool: "boolean",
+        dict: "object",
+        list: "array",
+    }.get(annotation, "string")
 
 
 class ToolRegistry:

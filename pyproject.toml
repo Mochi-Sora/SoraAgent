@@ -14,7 +14,11 @@ dependencies = []
 
 [project.optional-dependencies]
 openai = ["openai>=1.0"]
-dev = ["pytest>=7"]
+memory = ["zstandard>=0.22; python_version < '3.14'"]
+dev = ["pytest>=7", "zstandard>=0.22; python_version < '3.14'"]
 
-[tool.setuptools]
-packages = ["sora_agent"]
+[project.scripts]
+sora-memory = "sora_agent.memory.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["sora_agent*"]
