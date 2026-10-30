@@ -15,14 +15,14 @@ from typing import Any
 # Make `python examples/copilot_function.py` work even without `pip install -e .`
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from _demo_memory import DemoMemory
+
 from sora_agent import Agent
 from sora_agent.approval import ApprovalGate
 from sora_agent.eval import QualityGate
 from sora_agent.providers import default_provider
 from sora_agent.state_machine import POStateMachine
 from sora_agent.tools import registry
-
-from _demo_memory import DemoMemory
 
 
 def run_copilot_step(user_message: str, po_id: str = "PO-1234", auto_approve: bool = False) -> dict[str, Any]:

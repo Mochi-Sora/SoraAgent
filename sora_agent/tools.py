@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import types
 from dataclasses import dataclass
 from typing import Any, Callable, Union, get_args, get_origin, get_type_hints
 
 from .providers import ToolCall
 
+log = logging.getLogger(__name__)
 
 _UNION_ORIGINS = (Union,) + (
     (types.UnionType,) if hasattr(types, "UnionType") else ()
@@ -105,7 +107,7 @@ class ToolRegistry:
     def all(self) -> list[Tool]:
         return list(self._tools.values())
 
-    def copy(self) -> "ToolRegistry":
+    def copy(self) -> ToolRegistry:
         """Return a shallow clone so one run's discovery cannot leak."""
         clone = ToolRegistry()
         clone._tools = dict(self._tools)
@@ -214,8 +216,8 @@ class ToolExecutor:
         if self.approval is not None:
             try:
                 self.approval.log(call.name, "executed", result.content)
-            except Exception:  # noqa: BLE001 - audit is best-effort
-                pass
+            except Exception as exc:  # noqa: BLE001 - audit is best-effort
+                log.debug("approval audit log failed: %s", exc)
         return result
 
 

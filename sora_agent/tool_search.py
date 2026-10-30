@@ -14,8 +14,9 @@ dependency or a vector store.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from difflib import SequenceMatcher
-from typing import Any, Iterable
+from typing import Any
 
 from .tools import Tool, ToolRegistry
 
@@ -98,7 +99,7 @@ class ToolGate:
         return self._catalog
 
 
-class FindToolsTool:
+class FindToolsTool(Tool):
     """Search the hidden tool library and load the best matches."""
 
     name = FIND_TOOLS_NAME
@@ -137,7 +138,7 @@ class FindToolsTool:
             },
         }
 
-    def call(self, need: str = "") -> str:
+    def call(self, need: str = "", **_: Any) -> str:
         query = " ".join(str(need or "").split())
         if not query:
             raise ValueError(

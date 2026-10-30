@@ -252,7 +252,7 @@ def test_find_tools_rejects_empty_need() -> None:
 
 def test_catalog_lives_only_in_find_tools_schema() -> None:
     registry = order_registry()
-    gate, find = discovery_gate(registry)
+    gate, _find = discovery_gate(registry)
     visible = gate.visible()
 
     schemas = {tool.name: tool.schema for tool in visible}

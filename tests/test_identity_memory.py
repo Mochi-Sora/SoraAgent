@@ -123,10 +123,12 @@ def test_identity_edit_applies_before_the_user_message_is_stored(
     provider = ScriptedProvider(
         [
             'ACTION: memory_recall(query="profile")',
-            "Got it.\n"
-            "<user_edit>\n"
-            "- Name: Jaden\n- Age: 24\n- Likes: potatoes\n"
-            "</user_edit>",
+            (
+                "Got it.\n"
+                "<user_edit>\n"
+                "- Name: Jaden\n- Age: 24\n- Likes: potatoes\n"
+                "</user_edit>"
+            ),
         ]
     )
     agent = Agent(provider=provider, memory=hook, identity=store)

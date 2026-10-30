@@ -19,12 +19,12 @@ import sys
 # Make `python examples/po_workflow.py` work even without `pip install -e .`
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from _demo_memory import DemoMemory
+
 from sora_agent import Agent, MockProvider, POStateMachine
 from sora_agent.approval import ApprovalGate
 from sora_agent.providers import default_provider
 from sora_agent.tools import registry
-
-from _demo_memory import DemoMemory
 
 
 class AutoApproveGate(ApprovalGate):

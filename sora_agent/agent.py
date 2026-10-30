@@ -14,7 +14,7 @@ from typing import Any
 from .approval import ApprovalGate
 from .eval import QualityGate
 from .providers import Message, ModelProvider, ToolCall
-from .runner import RunResult, Runner, RunSpec, Step
+from .runner import Runner, RunResult, RunSpec, Step
 from .tool_search import FIND_TOOLS_NAME, FindToolsTool, ToolGate
 from .tools import ToolExecutor, ToolRegistry, ToolResult
 

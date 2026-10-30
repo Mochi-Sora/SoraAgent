@@ -7,7 +7,7 @@ recall-first path without downloading or starting a sidecar.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 
 class DemoMemory:
@@ -20,7 +20,7 @@ class DemoMemory:
         needs_approval = False
 
         @property
-        def schema(self) -> Dict[str, Any]:
+        def schema(self) -> dict[str, Any]:
             return {
                 "name": self.name,
                 "description": self.description,
@@ -47,7 +47,7 @@ class DemoMemory:
     def __init__(self) -> None:
         self._tool = self._Tool()
 
-    def tool(self) -> "_Tool":
+    def tool(self) -> _Tool:
         return self._tool
 
     def before_run(self, task: str, state: Any = None) -> None:

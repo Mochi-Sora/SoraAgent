@@ -15,8 +15,9 @@ import json
 import os
 import re
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from .tools import Tool
