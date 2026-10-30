@@ -16,7 +16,6 @@ from sora_agent.identity import (
     IdentityConfig,
     IdentityMonitor,
     IdentityStore,
-    canonicalize,
     default_identity,
     extract_identity_edits,
 )

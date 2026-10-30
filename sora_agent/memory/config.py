@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -42,15 +42,15 @@ class MemoryConfig:
     enabled: bool = True
     user_id: str = "sora"
 
-    force_first_recall: bool = False
     recall_top_k: int = 8
     recall_max_chars: int = 6000
+    recall_retrieval_mode: str = "auto"
 
     sidecar_version: str = "2.139.1"
-    sidecar_binary: Optional[Path] = None
+    sidecar_binary: Path | None = None
     http_addr: str = "127.0.0.1:0"
     grpc_addr: str = "127.0.0.1:0"
-    token: Optional[str] = None
+    token: str | None = None
     auto_download: bool = True
     download_base_url: str = (
         "https://github.com/liliang-cn/cortexdb/releases/download"
@@ -58,6 +58,7 @@ class MemoryConfig:
     request_timeout: float = 10.0
     sidecar_start_timeout: float = 20.0
 
+    dream_auto: bool = True
     dream_rounds: int = 2
     dream_hour_utc: int = 0
     dream_max_memories: int = 500
@@ -69,7 +70,7 @@ class MemoryConfig:
     dream_decay: float = 0.98
     dream_min_importance: float = 0.05
     dream_budget_seconds: float = 120.0
-    dream_rules: Tuple[Dict[str, Any], ...] = ()
+    dream_rules: tuple[dict[str, Any], ...] = ()
 
     backup_keep_daily: int = 14
     backup_keep_weekly: int = 8
@@ -92,6 +93,12 @@ class MemoryConfig:
         )
         if self.dream_rounds < 1:
             object.__setattr__(self, "dream_rounds", 1)
+        if not 0 <= self.dream_hour_utc <= 23:
+            object.__setattr__(self, "dream_hour_utc", 0)
+        mode = str(self.recall_retrieval_mode or "auto").strip().lower()
+        if mode not in {"auto", "lexical", "graph", "ppr"}:
+            mode = "auto"
+        object.__setattr__(self, "recall_retrieval_mode", mode)
         if self.recall_top_k < 1:
             object.__setattr__(self, "recall_top_k", 1)
         if self.recall_top_k > 50:
@@ -169,10 +176,10 @@ class MemoryConfig:
                     pass
 
     @classmethod
-    def from_env(cls) -> "MemoryConfig":
+    def from_env(cls) -> MemoryConfig:
         root = os.getenv("SORA_MEMORY_ROOT")
         binary = os.getenv("SORA_MEMORY_SIDECAR_BIN")
-        rules: Tuple[Dict[str, Any], ...] = ()
+        rules: tuple[dict[str, Any], ...] = ()
         raw_rules = os.getenv("SORA_MEMORY_RULES")
         if raw_rules:
             try:
@@ -185,9 +192,9 @@ class MemoryConfig:
             root=Path(root).expanduser() if root else Path.home() / ".sora_agent",
             enabled=_env_bool("SORA_MEMORY", True),
             user_id=os.getenv("SORA_MEMORY_USER_ID", "sora"),
-            force_first_recall=_env_bool("SORA_MEMORY_FORCE_RECALL", False),
             recall_top_k=_env_int("SORA_MEMORY_RECALL_TOP_K", 8),
             recall_max_chars=_env_int("SORA_MEMORY_RECALL_MAX_CHARS", 6000),
+            recall_retrieval_mode=os.getenv("SORA_MEMORY_RECALL_MODE", "auto"),
             sidecar_version=os.getenv("SORA_MEMORY_SIDECAR_VERSION", "2.139.1"),
             sidecar_binary=Path(binary).expanduser() if binary else None,
             http_addr=os.getenv("SORA_MEMORY_HTTP_ADDR", "127.0.0.1:0"),
@@ -200,6 +207,7 @@ class MemoryConfig:
             ),
             request_timeout=_env_float("SORA_MEMORY_REQUEST_TIMEOUT", 10.0),
             sidecar_start_timeout=_env_float("SORA_MEMORY_START_TIMEOUT", 20.0),
+            dream_auto=_env_bool("SORA_MEMORY_DREAM_AUTO", True),
             dream_rounds=_env_int("SORA_MEMORY_DREAM_ROUNDS", 2),
             dream_hour_utc=_env_int("SORA_MEMORY_DREAM_HOUR_UTC", 0),
             dream_max_memories=_env_int("SORA_MEMORY_DREAM_MAX_MEMORIES", 500),

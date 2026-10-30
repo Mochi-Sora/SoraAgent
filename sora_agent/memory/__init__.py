@@ -13,10 +13,10 @@ from .client import CortexDBClient, CortexDBError, CortexDBUnavailable
 from .config import MemoryConfig
 from .daily import DailyHit, DailyStore
 from .dream import DreamBusy, DreamError, DreamRunner
-from .gate import RecallEnforcingProvider
 from .louvain import louvain_communities
 from .maintenance import optimize_active
 from .recall import MemoryRecallService, RecallItem
+from .scheduler import DreamScheduler
 from .sidecar import SidecarError, SidecarManager
 
 __all__ = [
@@ -30,9 +30,9 @@ __all__ = [
     "DreamBusy",
     "DreamError",
     "DreamRunner",
+    "DreamScheduler",
     "MemoryConfig",
     "MemoryRecallService",
-    "RecallEnforcingProvider",
     "RecallItem",
     "SidecarError",
     "SidecarManager",

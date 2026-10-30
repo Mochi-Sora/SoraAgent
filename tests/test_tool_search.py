@@ -9,7 +9,6 @@ import pytest
 from sora_agent.agent import Agent
 from sora_agent.approval import ApprovalGate
 from sora_agent.eval import EvalReport, QualityGate
-from sora_agent.memory.gate import RecallEnforcingProvider
 from sora_agent.providers import Message, MockProvider, ModelTurn, ToolCall
 from sora_agent.runner import Runner, RunSpec
 from sora_agent.state_machine import POStateMachine, State
@@ -463,7 +462,7 @@ def test_agent_does_not_wrap_provider_with_forced_recall() -> None:
         identity=False,
     )
 
-    assert not isinstance(agent.provider, RecallEnforcingProvider)
+    assert agent.provider is provider
 
 
 def test_agent_rejects_direct_answer_and_stops_after_two_corrections() -> None:

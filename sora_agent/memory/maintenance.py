@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from .config import MemoryConfig
 
 
-def optimize_active(config: MemoryConfig, vacuum: bool = False) -> Dict[str, Any]:
+def optimize_active(config: MemoryConfig, vacuum: bool = False) -> dict[str, Any]:
     path = Path(config.db_path)
     if not path.exists():
         return {"ok": False, "reason": "database does not exist", "path": str(path)}

@@ -10,7 +10,7 @@ from __future__ import annotations
 import http.client
 import json
 import threading
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Protocol
 from urllib.parse import urlencode, urlsplit
 
 
@@ -28,21 +28,21 @@ class CortexDBUnavailable(CortexDBError):
 
 class MemoryBackend(Protocol):
     def health(self) -> bool: ...
-    def save_memory(self, payload: Dict[str, Any]) -> Dict[str, Any]: ...
-    def get_memory(self, memory_id: str) -> Optional[Dict[str, Any]]: ...
-    def list_memories(self, limit: int = 500) -> List[Dict[str, Any]]: ...
-    def update_memory(self, memory_id: str, **fields: Any) -> Dict[str, Any]: ...
+    def save_memory(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+    def get_memory(self, memory_id: str) -> dict[str, Any] | None: ...
+    def list_memories(self, limit: int = 500) -> list[dict[str, Any]]: ...
+    def update_memory(self, memory_id: str, **fields: Any) -> dict[str, Any]: ...
     def delete_memory(self, memory_id: str) -> None: ...
-    def recall(self, query: str, top_k: int = 8, **options: Any) -> Dict[str, Any]: ...
-    def rules_apply(self, **payload: Any) -> Dict[str, Any]: ...
-    def sweep_expired(self) -> Dict[str, Any]: ...
+    def recall(self, query: str, top_k: int = 8, **options: Any) -> dict[str, Any]: ...
+    def rules_apply(self, **payload: Any) -> dict[str, Any]: ...
+    def sweep_expired(self) -> dict[str, Any]: ...
 
 
 class CortexDBClient:
     def __init__(
         self,
         http_addr: str = "127.0.0.1:47822",
-        token: Optional[str] = None,
+        token: str | None = None,
         timeout: float = 10.0,
     ) -> None:
         parsed = urlsplit(http_addr if "://" in http_addr else "http://" + http_addr)
@@ -56,8 +56,8 @@ class CortexDBClient:
         self,
         method: str,
         path: str,
-        payload: Optional[Dict[str, Any]] = None,
-        params: Optional[Dict[str, Any]] = None,
+        payload: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
     ) -> Any:
         if params:
             query = urlencode({k: v for k, v in params.items() if v is not None})
@@ -107,15 +107,15 @@ class CortexDBClient:
             return False
         return bool(payload.get("ok", True)) if isinstance(payload, dict) else True
 
-    def info(self) -> Dict[str, Any]:
+    def info(self) -> dict[str, Any]:
         payload = self._request("GET", "/v1/info")
         return payload if isinstance(payload, dict) else {}
 
-    def save_memory(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def save_memory(self, payload: dict[str, Any]) -> dict[str, Any]:
         response = self._request("POST", "/v1/memory", payload)
         return response if isinstance(response, dict) else {}
 
-    def get_memory(self, memory_id: str) -> Optional[Dict[str, Any]]:
+    def get_memory(self, memory_id: str) -> dict[str, Any] | None:
         response = self._request(
             "GET", "/v1/memory", params={"memory_id": memory_id}
         )
@@ -124,12 +124,12 @@ class CortexDBClient:
             return memory if isinstance(memory, dict) else None
         return None
 
-    def list_memories(self, limit: int = 500) -> List[Dict[str, Any]]:
-        memories: List[Dict[str, Any]] = []
+    def list_memories(self, limit: int = 500) -> list[dict[str, Any]]:
+        memories: list[dict[str, Any]] = []
         cursor = ""
         page_limit = max(1, min(int(limit), 500))
         for _ in range(1000):
-            payload: Dict[str, Any] = {"limit": page_limit}
+            payload: dict[str, Any] = {"limit": page_limit}
             if cursor:
                 payload["cursor"] = cursor
             response = self._request(
@@ -149,7 +149,7 @@ class CortexDBClient:
                 break
         return memories[:limit]
 
-    def update_memory(self, memory_id: str, **fields: Any) -> Dict[str, Any]:
+    def update_memory(self, memory_id: str, **fields: Any) -> dict[str, Any]:
         payload = dict(fields)
         payload["memory_id"] = memory_id
         response = self._request("POST", "/v1/tools/memory_update", payload)
@@ -160,8 +160,8 @@ class CortexDBClient:
             "DELETE", "/v1/memory", params={"memory_id": memory_id}
         )
 
-    def recall(self, query: str, top_k: int = 8, **options: Any) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
+    def recall(self, query: str, top_k: int = 8, **options: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "query": query,
             "top_k_memories": top_k,
             "retrieval_mode": options.pop("retrieval_mode", "lexical"),
@@ -174,19 +174,19 @@ class CortexDBClient:
 
     def search_memory(
         self, query: str, top_k: int = 8, **options: Any
-    ) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"query": query, "top_k": top_k}
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"query": query, "top_k": top_k}
         payload.update(options)
         response = self._request("POST", "/v1/memory/search", payload)
         return response if isinstance(response, dict) else {}
 
-    def rules_apply(self, **payload: Any) -> Dict[str, Any]:
+    def rules_apply(self, **payload: Any) -> dict[str, Any]:
         response = self._request("POST", "/v1/tools/rules_apply", payload)
         return response if isinstance(response, dict) else {}
 
-    def sweep_expired(self) -> Dict[str, Any]:
+    def sweep_expired(self) -> dict[str, Any]:
         response = self._request("POST", "/v1/tools/sweep_expired", {})
         return response if isinstance(response, dict) else {}
 
-    def call_tool(self, name: str, payload: Dict[str, Any]) -> Any:
+    def call_tool(self, name: str, payload: dict[str, Any]) -> Any:
         return self._request("POST", "/v1/tools/" + name, payload)

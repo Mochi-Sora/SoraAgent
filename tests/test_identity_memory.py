@@ -11,7 +11,8 @@ from sora_agent.memory.config import MemoryConfig
 from sora_agent.memory.daily import DailyStore
 from sora_agent.memory.hook import MemoryHook
 from sora_agent.memory.recall import MemoryRecallService
-from sora_agent.providers import Message
+from sora_agent.providers import Message, ModelTurn, ToolCall
+from sora_agent.runner import Step
 
 
 class ScriptedProvider:
@@ -73,7 +74,7 @@ class FakeBackend:
 
 
 def config_for(root: Path) -> MemoryConfig:
-    return MemoryConfig(root=root, auto_download=False)
+    return MemoryConfig(root=root, auto_download=False, dream_auto=False)
 
 
 def profile_store(tmp_path: Path) -> IdentityStore:
@@ -135,7 +136,9 @@ def test_identity_edit_applies_before_the_user_message_is_stored(
 
     result = agent.run("I'm Jaden, 24, and I like potatoes.")
     assert result.proposal == "Got it."
-    assert "- Name: Jaden" in store.load("user").content
+    user_content = store.load("user").content
+    assert user_content is not None
+    assert "- Name: Jaden" in user_content
 
     rows = hook.daily.read_day(datetime.now(timezone.utc).date())
     assert [row["role"] for row in rows] == ["user", "assistant"]
@@ -161,6 +164,52 @@ def test_memory_persists_only_the_final_answer(tmp_path: Path) -> None:
     assert [row["role"] for row in rows] == ["user", "assistant"]
     assert rows[1]["content"] == "PO-1234 is open."
     assert "ACTION:" not in rows[1]["content"]
+
+
+def test_memory_stores_reasoning_but_not_action_lines(tmp_path: Path) -> None:
+    hook = MemoryHook(
+        config_for(tmp_path),
+        client=FakeBackend(),
+    )
+
+    hook.before_run("Check PO-1234.")
+    hook.after_run(
+        AgentResult(
+            task="Check PO-1234.",
+            proposal="PO-1234 is open.",
+            final_answer="PO-1234 is open.",
+            stop_reason="completed",
+            steps=[
+                Step(
+                    index=0,
+                    turn=ModelTurn(
+                        text=(
+                            "I should check the order.\n"
+                            'ACTION: lookup_order(order_id="PO-1234")'
+                        ),
+                        tool_calls=[
+                            ToolCall(
+                                id="call-1",
+                                name="lookup_order",
+                                arguments={"order_id": "PO-1234"},
+                            )
+                        ],
+                    ),
+                ),
+                Step(index=1, turn=ModelTurn(text="PO-1234 is open.")),
+            ],
+        )
+    )
+
+    rows = hook.daily.read_day(datetime.now(timezone.utc).date())
+    assert [row["role"] for row in rows] == [
+        "user",
+        "assistant",
+        "assistant",
+    ]
+    assert rows[1]["content"] == "I should check the order."
+    assert rows[2]["content"] == "PO-1234 is open."
+    assert all("ACTION:" not in row["content"] for row in rows)
 
 
 def test_memory_does_not_store_intermediate_action_scaffolding(
@@ -211,7 +260,7 @@ def test_dream_redacts_legacy_daily_content_before_transfer(
     assert not daily.path_for(yesterday.date()).exists()
 
 
-def test_dream_skips_fully_redacted_daily_rows(tmp_path: Path) -> None:
+def test_dream_preserves_fully_redacted_daily_rows(tmp_path: Path) -> None:
     store = profile_store(tmp_path)
     yesterday = datetime.now(timezone.utc) - timedelta(days=1)
     daily = DailyStore(
@@ -238,8 +287,11 @@ def test_dream_skips_fully_redacted_daily_rows(tmp_path: Path) -> None:
 
     report = hook.dream()
     assert report["errors"] == []
-    assert backend.memories == {}
-    assert report["transferred_days"][0]["messages"] == 0
+    assert len(backend.memories) == 2
+    for record in backend.memories.values():
+        assert record["content"] == "[profile details withheld]"
+        assert record["metadata"]["profile_redacted"] is True
+    assert report["transferred_days"][0]["messages"] == 2
     assert not daily.path_for(yesterday.date()).exists()
 
 
@@ -279,11 +331,12 @@ def test_recall_redacts_daily_and_longterm_profile_content(
     text = service.recall("deploy")
     assert "deploy is Monday" in text
     assert "The deploy moved to Monday." in text
-    assert "profile-only" not in text
+    assert "profile-only" in text
+    assert "[redacted]" in text
     assert_no_profile_facts(text)
 
 
-def test_recall_filters_out_fully_redacted_hits(tmp_path: Path) -> None:
+def test_recall_keeps_fully_redacted_hits_visible(tmp_path: Path) -> None:
     store = profile_store(tmp_path)
     fixed = datetime(2026, 10, 26, 12, tzinfo=timezone.utc)
     daily = DailyStore(tmp_path / "daily", clock=lambda: fixed)
@@ -307,10 +360,18 @@ def test_recall_filters_out_fully_redacted_hits(tmp_path: Path) -> None:
         redactor=store.redact_for_memory,
     )
 
-    daily_items, _ = service.collect("Name", scope="daily")
-    longterm_items, _ = service.collect("Name", scope="longterm")
-    assert daily_items == []
-    assert longterm_items == []
+    daily_items, daily_note = service.collect("Name", scope="daily")
+    longterm_items, longterm_note = service.collect("Name", scope="longterm")
+    assert len(daily_items) == 1
+    assert len(longterm_items) == 1
+    assert daily_items[0].redacted is True
+    assert longterm_items[0].redacted is True
+    assert daily_items[0].content == "[profile details withheld]"
+    assert longterm_items[0].content == "[profile details withheld]"
+    assert "redacted" in daily_note
+    assert "redacted" in longterm_note
+    assert "[redacted]" in service.recall("Name")
+    assert_no_profile_facts(service.recall("Name"))
 
 
 def test_redactor_failure_drops_the_memory_write(tmp_path: Path) -> None:

@@ -17,7 +17,7 @@ import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, Union
 
 if TYPE_CHECKING:
     from .tools import Tool
@@ -57,16 +57,22 @@ class ModelTurn:
     tool_calls: list[ToolCall] = field(default_factory=list)
 
 
-class ModelProvider(Protocol):
+class TurnProvider(Protocol):
     def complete_turn(
         self, messages: list[Message], tools: list[Tool]
     ) -> ModelTurn:
         """Return the assistant's text and, optionally, native tool calls."""
         ...
 
+
+class TextProvider(Protocol):
     def complete(self, messages: list[Message], tools: list[Tool]) -> str:
         """Return only the assistant's text response."""
         ...
+
+
+# The runtime accepts either native turn providers or legacy text providers.
+ModelProvider = Union[TurnProvider, TextProvider]
 
 
 # ---------------------------------------------------------------------------

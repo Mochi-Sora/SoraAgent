@@ -16,7 +16,7 @@ import time
 import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .client import CortexDBClient
 from .config import MemoryConfig
@@ -30,14 +30,14 @@ class SidecarError(RuntimeError):
 class SidecarManager:
     def __init__(self, config: MemoryConfig) -> None:
         self.config = config
-        self._process: Optional[subprocess.Popen] = None
-        self._client: Optional[CortexDBClient] = None
+        self._process: subprocess.Popen | None = None
+        self._client: CortexDBClient | None = None
         self._http_addr = ""
         self._grpc_addr = ""
         self._token = ""
 
     @property
-    def client(self) -> Optional[CortexDBClient]:
+    def client(self) -> CortexDBClient | None:
         return self._client
 
     def ensure_running(self) -> CortexDBClient:
@@ -60,24 +60,21 @@ class SidecarManager:
         env = self._child_env()
         log_path = self.config.sidecar_log_path
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        log = open(log_path, "ab", buffering=0)
-        kwargs: Dict[str, Any] = {
-            "cwd": str(self.config.memory_dir),
-            "env": env,
-            "stdout": log,
-            "stderr": subprocess.STDOUT,
-            "stdin": subprocess.DEVNULL,
-        }
-        if os.name == "nt":
-            kwargs["creationflags"] = getattr(
-                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
-            )
-        else:
-            kwargs["start_new_session"] = True
-        try:
+        with open(log_path, "ab", buffering=0) as log:
+            kwargs: dict[str, Any] = {
+                "cwd": str(self.config.memory_dir),
+                "env": env,
+                "stdout": log,
+                "stderr": subprocess.STDOUT,
+                "stdin": subprocess.DEVNULL,
+            }
+            if os.name == "nt":
+                kwargs["creationflags"] = getattr(
+                    subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+                )
+            else:
+                kwargs["start_new_session"] = True
             self._process = subprocess.Popen([str(binary)], **kwargs)
-        finally:
-            log.close()
         client = CortexDBClient(
             self._http_addr, self._token, timeout=self.config.request_timeout
         )
@@ -119,7 +116,7 @@ class SidecarManager:
             return False
         return self._client.health()
 
-    def doctor(self) -> Dict[str, Any]:
+    def doctor(self) -> dict[str, Any]:
         binary = self.config.sidecar_path
         return {
             "enabled": self.config.enabled,
@@ -146,7 +143,7 @@ class SidecarManager:
         return self.download()
 
     def download(self) -> Path:
-        last_error: Optional[Exception] = None
+        last_error: Exception | None = None
         for asset in self._asset_names():
             try:
                 data = self._fetch(asset)
@@ -168,7 +165,7 @@ class SidecarManager:
                     temp_path.chmod(0o755)
                 os.replace(str(temp_path), str(target))
                 return target
-            except Exception as exc:  # noqa: BLE001 - try the next asset shape
+            except Exception as exc:  # noqa: BLE001 - try the next mirror
                 last_error = exc
         raise SidecarError(
             "could not download cortexdb-grpc"
@@ -200,7 +197,7 @@ class SidecarManager:
             raise SidecarError("empty checksum for " + asset)
         return text.split()[0]
 
-    def _asset_names(self) -> List[str]:
+    def _asset_names(self) -> list[str]:
         system = _goos()
         arch = _goarch()
         names = [f"cortexdb-grpc_{system}_{arch}.tar.gz"]
@@ -251,7 +248,7 @@ class SidecarManager:
             pass
         return token
 
-    def _child_env(self) -> Dict[str, str]:
+    def _child_env(self) -> dict[str, str]:
         env = {
             key: value
             for key, value in os.environ.items()

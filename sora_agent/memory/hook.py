@@ -4,32 +4,41 @@ from __future__ import annotations
 
 import atexit
 import logging
+import re
 import threading
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable
 
 from .backup import BackupManager
-from .client import CortexDBClient
+from .client import MemoryBackend
 from .config import MemoryConfig
 from .daily import DailyStore
 from .dream import DreamError, DreamRunner
-from .gate import RecallEnforcingProvider
 from .recall import MemoryRecallService
+from .scheduler import DreamScheduler
 from .sidecar import SidecarManager
 from .wake import OpenAIWakeGate
+
+_ACTION_LINE_RE = re.compile(
+    r"(?m)^[ \t]*ACTION:\s*[A-Za-z_]\w*\s*\([^\n]*\)[ \t]*$"
+)
+_ACTION_TAIL_RE = re.compile(
+    r"(?:^|\s)ACTION:\s*[A-Za-z_]\w*\s*\(.*\)\s*$", re.DOTALL
+)
 
 
 class MemoryHook:
     def __init__(
         self,
-        config: Optional[MemoryConfig] = None,
-        client: Optional[CortexDBClient] = None,
-        sidecar: Optional[SidecarManager] = None,
-        daily: Optional[DailyStore] = None,
-        backup: Optional[BackupManager] = None,
-        wake: Optional[Callable[[Dict[str, Any]], str]] = None,
-        logger: Optional[logging.Logger] = None,
+        config: MemoryConfig | None = None,
+        client: MemoryBackend | None = None,
+        sidecar: SidecarManager | None = None,
+        daily: DailyStore | None = None,
+        backup: BackupManager | None = None,
+        wake: Callable[[dict[str, Any]], str] | None = None,
+        logger: logging.Logger | None = None,
         identity: Any = None,
+        auto_dream: bool | None = None,
     ) -> None:
         self.config = config or MemoryConfig.from_env()
         self.log = logger or logging.getLogger("sora_agent.memory")
@@ -40,13 +49,14 @@ class MemoryHook:
         self.identity = identity
         self._pending = threading.local()
         self._client = client
+        self._backend_lock = threading.Lock()
         self._failure_until = 0.0
-        self._tool: Optional[_MemoryTool] = None
+        self._tool: _MemoryTool | None = None
         self._wake = wake
         if self._wake is None:
             try:
                 self._wake = OpenAIWakeGate(self.config)
-            except Exception:  # noqa: BLE001 - wake is optional
+            except Exception:  # noqa: BLE001
                 self._wake = None
         self.recall_service = MemoryRecallService(
             self.daily,
@@ -54,36 +64,31 @@ class MemoryHook:
             top_k=self.config.recall_top_k,
             max_chars=self.config.recall_max_chars,
             user_id=self.config.user_id,
+            retrieval_mode=self.config.recall_retrieval_mode,
             redactor=self._redact_memory,
         )
+        schedule = self.config.dream_auto if auto_dream is None else auto_dream
+        self.scheduler: DreamScheduler | None = None
+        if self.config.enabled and schedule:
+            self.scheduler = DreamScheduler(
+                self.dream,
+                self.config,
+                has_pending=lambda now: bool(self.daily.pending_days(now)),
+                logger=self.log,
+            )
+            self.scheduler.start()
         atexit.register(self.close)
 
     def set_identity(self, identity: Any) -> None:
         self.identity = identity
         self.recall_service.redactor = self._redact_memory
 
-    def wrap_provider(self, provider: Any) -> Any:
-        """Legacy text-protocol forced recall.
-
-        ``Agent`` now enforces recall through the native first-action gate in
-        the runner.  This wrapper remains for standalone providers that still
-        use the text ``ACTION:`` protocol.
-        """
-        if not self.config.force_first_recall:
-            return provider
-        return RecallEnforcingProvider(
-            provider,
-            recall=self.recall,
-            max_retries=2,
-            logger=self.log,
-        )
-
     def tool(self) -> Any:
         if self._tool is None:
             self._tool = _MemoryTool(self.recall)
         return self._tool
 
-    def recall(self, query: str, scope: str = "auto", k: Optional[int] = None) -> str:
+    def recall(self, query: str, scope: str = "auto", k: int | None = None) -> str:
         return self.recall_service.recall(query, scope=scope, k=k)
 
     def before_run(self, task: str, state: Any = None) -> None:
@@ -98,47 +103,42 @@ class MemoryHook:
         task = getattr(self._pending, "task", "")
         self._pending.task = ""
         user_text = self._redact_memory(task)
-        if user_text.strip():
-            try:
-                self.daily.append(
-                    "user",
-                    user_text,
-                    session_id=_session_id(state),
-                )
-            except Exception as exc:  # noqa: BLE001 - memory must not break the agent
-                self.log.warning("daily user write failed: %s", exc)
-        # Persist the final answer only.  Intermediate tool-call scaffolding and
-        # action proposals are not memory.  Legacy/partial result objects fall
-        # back to proposal.
-        final = getattr(result, "final_answer", None)
-        if getattr(result, "stop_reason", ""):
-            content = str(final or "")
-        else:
-            content = str(final or getattr(result, "proposal", "") or "")
+        self._append_daily("user", user_text, state)
+        final = _final_answer(result)
+        for reasoning in _reasoning_texts(result, final):
+            self._append_daily(
+                "assistant",
+                self._redact_memory(reasoning, source="assistant"),
+                state,
+            )
+        self._append_daily(
+            "assistant",
+            self._redact_memory(final, source="assistant"),
+            state,
+        )
+
+    def _append_daily(self, role: str, content: str, state: Any) -> None:
         if not content.strip():
-            return
-        assistant_text = self._redact_memory(content, source="assistant")
-        if not assistant_text.strip():
             return
         try:
             self.daily.append(
-                "assistant",
-                assistant_text,
+                role,
+                content,
                 session_id=_session_id(state),
             )
-        except Exception as exc:  # noqa: BLE001 - memory must not break the agent
-            self.log.warning("daily assistant write failed: %s", exc)
+        except Exception as exc:  # noqa: BLE001
+            self.log.warning("daily %s write failed: %s", role, exc)
 
     def _redact_memory(self, text: str, source: str = "user") -> str:
         if self.identity is None:
             return str(text)
         try:
             return self.identity.redact_for_memory(text, source=source)
-        except Exception as exc:  # noqa: BLE001 - fail closed for storage
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("profile redaction failed; dropping memory write: %s", exc)
             return ""
 
-    def dream(self, dry_run: bool = False, include_today: bool = False) -> Dict[str, Any]:
+    def dream(self, dry_run: bool = False, include_today: bool = False) -> dict[str, Any]:
         backend = self._backend()
         if backend is None:
             raise DreamError("active memory is unavailable")
@@ -152,7 +152,7 @@ class MemoryHook:
         )
         return runner.run(dry_run=dry_run, include_today=include_today)
 
-    def doctor(self) -> Dict[str, Any]:
+    def doctor(self) -> dict[str, Any]:
         days = self.daily.all_days()
         return {
             "config": {
@@ -160,7 +160,12 @@ class MemoryHook:
                 "db_path": str(self.config.db_path),
                 "daily_dir": str(self.config.daily_dir),
                 "backup_dir": str(self.config.backup_dir),
-                "force_first_recall": self.config.force_first_recall,
+                "recall_mode": self.config.recall_retrieval_mode,
+                "auto_dream": self.config.dream_auto,
+                "dream_hour_utc": self.config.dream_hour_utc,
+                "scheduler_running": bool(
+                    self.scheduler is not None and self.scheduler.running
+                ),
                 "dream_rounds": self.config.dream_rounds,
             },
             "sidecar": self.sidecar.doctor(),
@@ -174,20 +179,27 @@ class MemoryHook:
         }
 
     def close(self) -> None:
+        if self.scheduler is not None:
+            self.scheduler.close()
         self.sidecar.stop()
 
-    def _backend(self) -> Optional[CortexDBClient]:
+    def _backend(self) -> MemoryBackend | None:
         if self._client is not None:
             return self._client
         if time.monotonic() < self._failure_until:
             return None
-        try:
-            self._client = self.sidecar.ensure_running()
-            return self._client
-        except Exception as exc:  # noqa: BLE001 - fail open
-            self._failure_until = time.monotonic() + 30.0
-            self.log.warning("CortexDB unavailable: %s", exc)
-            return None
+        with self._backend_lock:
+            if self._client is not None:
+                return self._client
+            if time.monotonic() < self._failure_until:
+                return None
+            try:
+                self._client = self.sidecar.ensure_running()
+                return self._client
+            except Exception as exc:  # noqa: BLE001
+                self._failure_until = time.monotonic() + 30.0
+                self.log.warning("CortexDB unavailable: %s", exc)
+                return None
 
 
 class _MemoryTool:
@@ -202,7 +214,7 @@ class _MemoryTool:
         self._recall = recall
 
     @property
-    def schema(self) -> Dict[str, Any]:
+    def schema(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "description": self.description,
@@ -221,11 +233,52 @@ class _MemoryTool:
         return self._recall(query, scope=scope, k=k)
 
 
-def default_memory(identity: Any = None) -> Optional[MemoryHook]:
+def default_memory(
+    identity: Any = None, auto_dream: bool = True
+) -> MemoryHook | None:
     config = MemoryConfig.from_env()
     if not config.enabled:
         return None
-    return MemoryHook(config, identity=identity)
+    return MemoryHook(config, identity=identity, auto_dream=auto_dream)
+
+
+def _final_answer(result: Any) -> str:
+    final = getattr(result, "final_answer", None)
+    if getattr(result, "stop_reason", ""):
+        return str(final or "")
+    return str(final or getattr(result, "proposal", "") or "")
+
+
+def _reasoning_texts(result: Any, final: str) -> list[str]:
+    """Return each assistant turn's visible text, minus legacy action lines."""
+
+    wanted = _one_line(final)
+    seen = set()
+    out: list[str] = []
+    for step in getattr(result, "steps", None) or []:
+        turn = getattr(step, "turn", None)
+        text = str(getattr(turn, "text", "") or "")
+        if getattr(turn, "tool_calls", None):
+            text = _strip_action_lines(text)
+        text = text.strip()
+        if not text:
+            continue
+        key = _one_line(text)
+        if key == wanted or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
+def _strip_action_lines(text: str) -> str:
+    text = _ACTION_LINE_RE.sub("", text)
+    text = _ACTION_TAIL_RE.sub("", text)
+    return text.strip()
+
+
+def _one_line(text: str) -> str:
+    return " ".join(str(text).split())
 
 
 def _session_id(state: Any) -> str:

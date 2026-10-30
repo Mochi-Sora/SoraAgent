@@ -1,0 +1,6 @@
+{
+  "include": ["sora_agent", "tests"],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.9"
+}

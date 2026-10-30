@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence
+from typing import Callable
 
 _DAY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.db$")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]{2,}")
@@ -81,7 +82,7 @@ class DailyStore:
         self,
         root: Path,
         session_id: str = "default",
-        clock: Optional[Callable[[], datetime]] = None,
+        clock: Callable[[], datetime] | None = None,
         use_fts: bool = True,
     ) -> None:
         self.root = Path(root)
@@ -93,7 +94,7 @@ class DailyStore:
     def now(self) -> datetime:
         return _as_utc(self.clock())
 
-    def day_for(self, moment: Optional[datetime] = None) -> date:
+    def day_for(self, moment: datetime | None = None) -> date:
         return _as_utc(moment or self.now()).date()
 
     def path_for(self, day: date) -> Path:
@@ -103,8 +104,8 @@ class DailyStore:
         self,
         role: str,
         content: str,
-        session_id: Optional[str] = None,
-        ts: Optional[datetime] = None,
+        session_id: str | None = None,
+        ts: datetime | None = None,
     ) -> int:
         if role not in {"user", "assistant"}:
             raise ValueError("daily memory stores only user and assistant messages")
@@ -119,18 +120,21 @@ class DailyStore:
                 "INSERT INTO messages(ts, session_id, role, content) VALUES (?, ?, ?, ?)",
                 (stamp, session_id or self.session_id, role, content),
             )
-            return int(cur.lastrowid)
+            row_id = cur.lastrowid
+            if row_id is None:
+                raise RuntimeError("daily memory insert did not return a row id")
+            return int(row_id)
 
-    def search(self, query: str, k: int = 8, days: int = 2) -> List[DailyHit]:
+    def search(self, query: str, k: int = 8, days: int = 2) -> list[DailyHit]:
         tokens = _tokens(query)[:16]
         if not tokens:
             return []
         limit = max(1, min(int(k), 50))
         today = self.day_for()
-        wanted: List[date] = []
+        wanted: list[date] = []
         for offset in range(max(1, min(int(days), 366))):
             wanted.append(today - timedelta(days=offset))
-        hits: List[DailyHit] = []
+        hits: list[DailyHit] = []
         for day in wanted:
             path = self.path_for(day)
             if not path.exists():
@@ -141,7 +145,7 @@ class DailyStore:
 
     def _search_day(
         self, day: date, tokens: Sequence[str], limit: int
-    ) -> List[DailyHit]:
+    ) -> list[DailyHit]:
         path = self.path_for(day)
         with self._open(path) as conn:
             if self._has_fts(conn):
@@ -179,7 +183,7 @@ class DailyStore:
         day: date,
         tokens: Sequence[str],
         limit: int,
-    ) -> List[DailyHit]:
+    ) -> list[DailyHit]:
         clauses = " AND ".join("lower(content) LIKE ?" for _ in tokens)
         params = ["%" + token.lower() + "%" for token in tokens]
         rows = conn.execute(
@@ -204,9 +208,9 @@ class DailyStore:
             for row in rows
         ]
 
-    def pending_days(self, now: Optional[datetime] = None) -> List[date]:
+    def pending_days(self, now: datetime | None = None) -> list[date]:
         today = self.day_for(now)
-        pending: List[date] = []
+        pending: list[date] = []
         for path in self.root.glob("*.db"):
             match = _DAY_RE.fullmatch(path.name)
             if not match:
@@ -219,8 +223,8 @@ class DailyStore:
                 pending.append(day)
         return sorted(pending)
 
-    def all_days(self) -> List[date]:
-        days: List[date] = []
+    def all_days(self) -> list[date]:
+        days: list[date] = []
         for path in self.root.glob("*.db"):
             match = _DAY_RE.fullmatch(path.name)
             if match:
@@ -230,7 +234,7 @@ class DailyStore:
                     pass
         return sorted(days)
 
-    def read_day(self, day: date) -> List[dict]:
+    def read_day(self, day: date) -> list[dict]:
         path = self.path_for(day)
         if not path.exists():
             return []
@@ -249,7 +253,7 @@ class DailyStore:
             for row in rows
         ]
 
-    def count(self, day: Optional[date] = None) -> int:
+    def count(self, day: date | None = None) -> int:
         path = self.path_for(day or self.day_for())
         if not path.exists():
             return 0
@@ -303,9 +307,9 @@ class DailyStore:
         return row is not None
 
 
-def _tokens(text: str) -> List[str]:
+def _tokens(text: str) -> list[str]:
     seen = set()
-    out: List[str] = []
+    out: list[str] = []
     for token in _TOKEN_RE.findall(text.lower()):
         if token not in seen:
             seen.add(token)

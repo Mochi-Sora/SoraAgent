@@ -8,16 +8,20 @@ import os
 import re
 import time
 from contextlib import contextmanager
-from datetime import date, datetime, time as clock_time, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from datetime import date, datetime, timedelta, timezone
+from datetime import time as clock_time
+from typing import Any, Callable
 
 from .backup import BackupManager
 from .client import MemoryBackend
 from .config import MemoryConfig
 from .daily import DailyStore
+from .entities import entity_payloads, graph_hints, relation_payloads
 from .louvain import louvain_communities
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]{2,}")
+_ARTIFACT_KINDS = {"merged", "conflict", "inferred_link"}
+_ARTIFACT_PREFIXES = ("dream:merge:", "dream:conflict:", "dream:link:")
 _NUMBER_RE = re.compile(r"\b\d+(?:[.,]\d+)?\b")
 
 
@@ -35,10 +39,10 @@ class DreamRunner:
         config: MemoryConfig,
         daily: DailyStore,
         backend: MemoryBackend,
-        backup: Optional[BackupManager] = None,
-        wake: Optional[Callable[[Dict[str, Any]], str]] = None,
-        clock: Optional[Callable[[], datetime]] = None,
-        redactor: Optional[Callable[[str], str]] = None,
+        backup: BackupManager | None = None,
+        wake: Callable[[dict[str, Any]], str] | None = None,
+        clock: Callable[[], datetime] | None = None,
+        redactor: Callable[[str], str] | None = None,
     ) -> None:
         self.config = config
         self.daily = daily
@@ -48,7 +52,7 @@ class DreamRunner:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.redactor = redactor
         self.started = time.monotonic()
-        self.report: Dict[str, Any] = {}
+        self.report: dict[str, Any] = {}
 
     def now(self) -> datetime:
         value = self.clock()
@@ -56,7 +60,7 @@ class DreamRunner:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
 
-    def run(self, dry_run: bool = False, include_today: bool = False) -> Dict[str, Any]:
+    def run(self, dry_run: bool = False, include_today: bool = False) -> dict[str, Any]:
         config = self.config
         config.ensure_directories()
         now = self.now()
@@ -68,7 +72,7 @@ class DreamRunner:
             + "-"
             + str(time.time_ns() % 1_000_000)
         )
-        report: Dict[str, Any] = {
+        report: dict[str, Any] = {
             "run_id": run_id,
             "started_at": now.isoformat(),
             "finished_at": "",
@@ -78,6 +82,7 @@ class DreamRunner:
             "conflicts": [],
             "communities": [],
             "inferences": [],
+            "artifacts_removed": [],
             "errors": [],
             "wake_requested": False,
             "wake_response": "",
@@ -95,12 +100,12 @@ class DreamRunner:
                             "inverse": "restore from this snapshot",
                         }
                     )
-                except Exception as exc:  # noqa: BLE001 - loss guard
+                except Exception as exc:
                     raise DreamError("active snapshot failed: " + str(exc)) from exc
             self._transfer(report, now, dry_run, include_today)
             try:
                 memories = self.backend.list_memories(config.dream_max_memories)
-            except Exception as exc:  # noqa: BLE001 - keep daily files
+            except Exception as exc:  # noqa: BLE001
                 report["errors"].append("list memories: " + str(exc))
                 memories = []
             by_id = {
@@ -115,21 +120,24 @@ class DreamRunner:
             if not dry_run and hasattr(self.backend, "sweep_expired"):
                 try:
                     self.backend.sweep_expired()
-                except Exception as exc:  # noqa: BLE001 - best effort
+                except Exception as exc:  # noqa: BLE001
                     report["errors"].append("sweep_expired: " + str(exc))
             report["finished_at"] = self.now().isoformat()
             report["elapsed_seconds"] = round(time.monotonic() - self.started, 3)
             if self.wake is not None and report["wake_requested"]:
                 try:
                     report["wake_response"] = self.wake(report) or ""
-                except Exception as exc:  # noqa: BLE001 - wake is optional
+                except Exception as exc:  # noqa: BLE001
                     report["errors"].append("wake gate: " + str(exc))
+            report["artifacts_cleanup"] = self._cleanup_artifacts(
+                report, by_id, dry_run
+            )
             self._write_report(report)
             return report
 
     def _transfer(
         self,
-        report: Dict[str, Any],
+        report: dict[str, Any],
         now: datetime,
         dry_run: bool,
         include_today: bool,
@@ -148,12 +156,12 @@ class DreamRunner:
             if not dry_run:
                 try:
                     self.backup.snapshot_daily(self.daily.path_for(day), day)
-                except Exception as exc:  # noqa: BLE001 - keep the daily file
+                except Exception as exc:  # noqa: BLE001
                     report["errors"].append(
-                        "backup {}: {}".format(day.isoformat(), exc)
+                        f"backup {day.isoformat()}: {exc}"
                     )
                     continue
-            saved: List[str] = []
+            saved: list[str] = []
             failed = False
             for message in messages:
                 memory_id = "daily:{}:{}".format(day.isoformat(), message["id"])
@@ -162,19 +170,19 @@ class DreamRunner:
                 if self.redactor is not None:
                     try:
                         new_content = self.redactor(content)
-                    except Exception as exc:  # noqa: BLE001 - never save unredacted
+                    except Exception as exc:  # noqa: BLE001
                         failed = True
                         report["errors"].append(
-                            "redact {}: {}".format(memory_id, exc)
+                            f"redact {memory_id}: {exc}"
                         )
                         break
-                    if not new_content.strip() or new_content.strip() == (
-                        "[profile details withheld]"
-                    ):
-                        continue
+                    if not new_content.strip():
+                        new_content = "[profile details withheld]"
                     if new_content != content:
                         redacted = True
                     content = new_content
+                if _already_redacted(content):
+                    redacted = True
                 metadata = {
                     "sora_kind": "verbatim",
                     "sora_role": str(message.get("role") or ""),
@@ -186,6 +194,9 @@ class DreamRunner:
                 }
                 if redacted:
                     metadata["profile_redacted"] = True
+                entity_names, relations = (
+                    ([], []) if dry_run else graph_hints(self.backend, content)
+                )
                 payload = {
                     "memory_id": memory_id,
                     "user_id": self.config.user_id,
@@ -196,6 +207,10 @@ class DreamRunner:
                     "importance": 0.6 if message.get("role") == "user" else 0.5,
                     "metadata": metadata,
                 }
+                if entity_names:
+                    payload["entities"] = entity_payloads(entity_names)
+                if relations:
+                    payload["relations"] = relation_payloads(relations)
                 try:
                     if not dry_run:
                         self.backend.save_memory(payload)
@@ -209,10 +224,10 @@ class DreamRunner:
                             "inverse": "delete " + memory_id,
                         }
                     )
-                except Exception as exc:  # noqa: BLE001 - keep daily
+                except Exception as exc:  # noqa: BLE001
                     failed = True
                     report["errors"].append(
-                        "save {}: {}".format(memory_id, exc)
+                        f"save {memory_id}: {exc}"
                     )
                     break
             if failed:
@@ -228,10 +243,10 @@ class DreamRunner:
             )
 
     def _cohort(
-        self, by_id: Dict[str, Dict[str, Any]], now: datetime
-    ) -> Tuple[List[str], Dict[str, int]]:
-        cohort: List[str] = []
-        rounds: Dict[str, int] = {}
+        self, by_id: dict[str, dict[str, Any]], now: datetime
+    ) -> tuple[list[str], dict[str, int]]:
+        cohort: list[str] = []
+        rounds: dict[str, int] = {}
         for memory_id in sorted(by_id):
             record = by_id[memory_id]
             metadata = _metadata(record)
@@ -257,10 +272,10 @@ class DreamRunner:
 
     def _pipeline(
         self,
-        report: Dict[str, Any],
-        by_id: Dict[str, Dict[str, Any]],
-        cohort: List[str],
-        rounds: Dict[str, int],
+        report: dict[str, Any],
+        by_id: dict[str, dict[str, Any]],
+        cohort: list[str],
+        rounds: dict[str, int],
         now: datetime,
         dry_run: bool,
     ) -> None:
@@ -284,14 +299,14 @@ class DreamRunner:
 
     def _dedupe(
         self,
-        report: Dict[str, Any],
-        by_id: Dict[str, Dict[str, Any]],
-        records: List[Dict[str, Any]],
-        rounds: Dict[str, int],
+        report: dict[str, Any],
+        by_id: dict[str, dict[str, Any]],
+        records: list[dict[str, Any]],
+        rounds: dict[str, int],
         now: datetime,
         dry_run: bool,
     ) -> None:
-        groups: Dict[str, List[Dict[str, Any]]] = {}
+        groups: dict[str, list[dict[str, Any]]] = {}
         for record in records:
             metadata = _metadata(record)
             if _kind(metadata) in {"merged", "conflict", "inferred_link"}:
@@ -351,15 +366,15 @@ class DreamRunner:
                     "metadata": metadata,
                     "importance": payload["importance"],
                 }
-            except Exception as exc:  # noqa: BLE001 - non-fatal phase
-                report["errors"].append("merge {}: {}".format(merged_id, exc))
+            except Exception as exc:  # noqa: BLE001
+                report["errors"].append(f"merge {merged_id}: {exc}")
 
     def _conflicts(
         self,
-        report: Dict[str, Any],
-        by_id: Dict[str, Dict[str, Any]],
-        records: List[Dict[str, Any]],
-        rounds: Dict[str, int],
+        report: dict[str, Any],
+        by_id: dict[str, dict[str, Any]],
+        records: list[dict[str, Any]],
+        rounds: dict[str, int],
         now: datetime,
         dry_run: bool,
     ) -> None:
@@ -392,9 +407,7 @@ class DreamRunner:
                 target_round = max(
                     rounds.get(left_id, 1), rounds.get(right_id, 1)
                 )
-                content = "Conflicting records:\n- [{}] {}\n- [{}] {}".format(
-                    left_id, _brief(left_text), right_id, _brief(right_text)
-                )
+                content = f"Conflicting records:\n- [{left_id}] {_brief(left_text)}\n- [{right_id}] {_brief(right_text)}"
                 payload = {
                     "memory_id": conflict_id,
                     "user_id": self.config.user_id,
@@ -434,15 +447,15 @@ class DreamRunner:
                         "metadata": payload["metadata"],
                         "importance": 0.8,
                     }
-                except Exception as exc:  # noqa: BLE001 - non-fatal phase
+                except Exception as exc:  # noqa: BLE001
                     report["errors"].append(
-                        "conflict {}: {}".format(conflict_id, exc)
+                        f"conflict {conflict_id}: {exc}"
                     )
 
-    def _graph(self, records: List[Dict[str, Any]]) -> List[Tuple[str, str, float]]:
+    def _graph(self, records: list[dict[str, Any]]) -> list[tuple[str, str, float]]:
         token_sets = {str(item.get("id")): _tokens(item) for item in records}
         ids = sorted(token_sets)
-        edges: List[Tuple[str, str, float]] = []
+        edges: list[tuple[str, str, float]] = []
         for index, left in enumerate(ids):
             for right in ids[index + 1:]:
                 shared = token_sets[left] & token_sets[right]
@@ -456,12 +469,12 @@ class DreamRunner:
 
     def _communities(
         self,
-        report: Dict[str, Any],
-        records: List[Dict[str, Any]],
-        communities: Dict[str, int],
+        report: dict[str, Any],
+        records: list[dict[str, Any]],
+        communities: dict[str, int],
         dry_run: bool,
     ) -> None:
-        groups: Dict[int, List[str]] = {}
+        groups: dict[int, list[str]] = {}
         for memory_id, label in communities.items():
             groups.setdefault(int(label), []).append(memory_id)
         report["communities"] = [
@@ -491,23 +504,23 @@ class DreamRunner:
                 self.backend.update_memory(
                     memory_id, metadata={"dream_community": label}
                 )
-            except Exception as exc:  # noqa: BLE001 - non-fatal phase
+            except Exception as exc:  # noqa: BLE001
                 report["errors"].append(
-                    "community {}: {}".format(memory_id, exc)
+                    f"community {memory_id}: {exc}"
                 )
 
     def _inferences(
         self,
-        report: Dict[str, Any],
-        by_id: Dict[str, Dict[str, Any]],
-        records: List[Dict[str, Any]],
-        graph: List[Tuple[str, str, float]],
-        communities: Dict[str, int],
-        rounds: Dict[str, int],
+        report: dict[str, Any],
+        by_id: dict[str, dict[str, Any]],
+        records: list[dict[str, Any]],
+        graph: list[tuple[str, str, float]],
+        communities: dict[str, int],
+        rounds: dict[str, int],
         now: datetime,
         dry_run: bool,
     ) -> None:
-        adjacency: Dict[str, Set[str]] = {}
+        adjacency: dict[str, set[str]] = {}
         for left, right, _ in graph:
             adjacency.setdefault(left, set()).add(right)
             adjacency.setdefault(right, set()).add(left)
@@ -533,8 +546,8 @@ class DreamRunner:
                     left_text = _brief(str(by_id.get(left, {}).get("content") or ""))
                     right_text = _brief(str(by_id.get(right, {}).get("content") or ""))
                     content = (
-                        "Inferred two-hop relation through {}: [{}] {} <-> [{}] {}"
-                    ).format(middle, left, left_text, right, right_text)
+                        f"Inferred two-hop relation through {middle}: [{left}] {left_text} <-> [{right}] {right_text}"
+                    )
                     payload = {
                         "memory_id": link_id,
                         "user_id": self.config.user_id,
@@ -570,12 +583,12 @@ class DreamRunner:
                             "metadata": payload["metadata"],
                             "importance": 0.4,
                         }
-                    except Exception as exc:  # noqa: BLE001 - non-fatal phase
+                    except Exception as exc:  # noqa: BLE001
                         report["errors"].append(
-                            "inference {}: {}".format(link_id, exc)
+                            f"inference {link_id}: {exc}"
                         )
 
-    def _rules(self, report: Dict[str, Any], dry_run: bool) -> None:
+    def _rules(self, report: dict[str, Any], dry_run: bool) -> None:
         try:
             preview = self.backend.rules_apply(
                 rules=list(self.config.dream_rules),
@@ -598,13 +611,13 @@ class DreamRunner:
                         "inverse": "inference_explain",
                     }
                 )
-        except Exception as exc:  # noqa: BLE001 - optional optimization
+        except Exception as exc:  # noqa: BLE001
             report["errors"].append("rules_apply: " + str(exc))
 
     def _decay(
         self,
-        report: Dict[str, Any],
-        records: List[Dict[str, Any]],
+        report: dict[str, Any],
+        records: list[dict[str, Any]],
         now: datetime,
         dry_run: bool,
     ) -> None:
@@ -639,13 +652,13 @@ class DreamRunner:
                     importance=candidate,
                     metadata={"last_decay": now.isoformat()},
                 )
-            except Exception as exc:  # noqa: BLE001 - non-fatal phase
-                report["errors"].append("decay {}: {}".format(memory_id, exc))
+            except Exception as exc:  # noqa: BLE001
+                report["errors"].append(f"decay {memory_id}: {exc}")
 
     def _expire(
         self,
-        report: Dict[str, Any],
-        records: List[Dict[str, Any]],
+        report: dict[str, Any],
+        records: list[dict[str, Any]],
         now: datetime,
         dry_run: bool,
     ) -> None:
@@ -676,15 +689,15 @@ class DreamRunner:
                 continue
             try:
                 self.backend.delete_memory(memory_id)
-            except Exception as exc:  # noqa: BLE001 - non-fatal phase
-                report["errors"].append("expire {}: {}".format(memory_id, exc))
+            except Exception as exc:  # noqa: BLE001
+                report["errors"].append(f"expire {memory_id}: {exc}")
 
     def _mark(
         self,
-        report: Dict[str, Any],
-        by_id: Dict[str, Dict[str, Any]],
-        cohort: List[str],
-        rounds: Dict[str, int],
+        report: dict[str, Any],
+        by_id: dict[str, dict[str, Any]],
+        cohort: list[str],
+        rounds: dict[str, int],
         now: datetime,
         dry_run: bool,
     ) -> None:
@@ -722,10 +735,50 @@ class DreamRunner:
                         "dream_run_id": report["run_id"],
                     },
                 )
-            except Exception as exc:  # noqa: BLE001 - keep daily already transferred
-                report["errors"].append("mark {}: {}".format(memory_id, exc))
+            except Exception as exc:  # noqa: BLE001
+                report["errors"].append(f"mark {memory_id}: {exc}")
 
-    def _pending_days(self, now: datetime, include_today: bool) -> List[date]:
+    def _cleanup_artifacts(
+        self,
+        report: dict[str, Any],
+        by_id: dict[str, dict[str, Any]],
+        dry_run: bool,
+    ) -> dict[str, Any]:
+        """Remove transient dream artifacts after their report is complete."""
+
+        expired = {
+            str(action.get("memory_id"))
+            for action in report["actions"]
+            if action.get("op") == "expire"
+        }
+        planned = 0
+        removed = 0
+        for memory_id in sorted(by_id):
+            record = by_id[memory_id]
+            kind = _kind(_metadata(record))
+            if not _is_artifact(memory_id, kind) or memory_id in expired:
+                continue
+            planned += 1
+            report["actions"].append(
+                {
+                    "op": "cleanup",
+                    "memory_id": memory_id,
+                    "kind": kind,
+                    "inverse": "recreate from the dream report and sources",
+                }
+            )
+            if dry_run:
+                continue
+            try:
+                self.backend.delete_memory(memory_id)
+            except Exception as exc:  # noqa: BLE001
+                report["errors"].append(f"cleanup {memory_id}: {exc}")
+                continue
+            report["artifacts_removed"].append(memory_id)
+            removed += 1
+        return {"planned": planned, "removed": removed, "dry_run": dry_run}
+
+    def _pending_days(self, now: datetime, include_today: bool) -> list[date]:
         pending = self.daily.pending_days(now)
         if include_today and self.daily.day_for(now) not in pending:
             pending.append(self.daily.day_for(now))
@@ -739,18 +792,18 @@ class DreamRunner:
             tzinfo=timezone.utc,
         )
 
-    def _due_for(self, target_round: int, now: datetime) -> Optional[str]:
+    def _due_for(self, target_round: int, now: datetime) -> str | None:
         if target_round < self.config.dream_rounds:
             return self._next_midnight(now).isoformat()
         return None
 
-    def _over_budget(self, report: Dict[str, Any]) -> bool:
+    def _over_budget(self, report: dict[str, Any]) -> bool:
         if time.monotonic() - self.started >= self.config.dream_budget_seconds:
             report["caps_hit"].append("time_budget")
             return True
         return False
 
-    def _write_report(self, report: Dict[str, Any]) -> None:
+    def _write_report(self, report: dict[str, Any]) -> None:
         self.config.ensure_directories()
         path = self.config.report_dir / (report["run_id"] + ".json")
         temp = path.with_name(path.name + ".tmp")
@@ -768,49 +821,60 @@ class DreamRunner:
     @contextmanager
     def _lock(self):
         self.config.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        handle = open(self.config.lock_path, "a+")
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                try:
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                except OSError as exc:
-                    raise DreamBusy("another dream is running") from exc
-            else:
-                import fcntl
-
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except OSError as exc:
-                    raise DreamBusy("another dream is running") from exc
-            yield
-        finally:
+        with open(self.config.lock_path, "a+") as handle:
             try:
                 if os.name == "nt":
                     import msvcrt
 
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    try:
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    except OSError as exc:
+                        raise DreamBusy("another dream is running") from exc
                 else:
                     import fcntl
 
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except OSError:
-                pass
-            handle.close()
+                    try:
+                        fcntl.flock(
+                            handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
+                        )
+                    except OSError as exc:
+                        raise DreamBusy("another dream is running") from exc
+                yield
+            finally:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
 
 
-def _metadata(record: Dict[str, Any]) -> Dict[str, Any]:
+def _already_redacted(content: str) -> bool:
+    """True when daily content was written after passing the firewall."""
+
+    return "[profile details withheld]" in content or "[profile]" in content
+
+
+def _is_artifact(memory_id: str, kind: str) -> bool:
+    return kind in _ARTIFACT_KINDS or memory_id.startswith(_ARTIFACT_PREFIXES)
+
+
+def _metadata(record: dict[str, Any]) -> dict[str, Any]:
     metadata = record.get("metadata")
     return metadata if isinstance(metadata, dict) else {}
 
 
-def _kind(metadata: Dict[str, Any]) -> str:
+def _kind(metadata: dict[str, Any]) -> str:
     value = metadata.get("sora_kind") or metadata.get("kind") or ""
     return str(value)
 
 
-def _importance(record: Dict[str, Any]) -> float:
+def _importance(record: dict[str, Any]) -> float:
     try:
         return float(record.get("importance") or 0.0)
     except (TypeError, ValueError):
@@ -821,15 +885,15 @@ def _normalize(text: str) -> str:
     return " ".join(re.findall(r"\w+", text.lower()))
 
 
-def _tokens(record: Dict[str, Any]) -> Set[str]:
+def _tokens(record: dict[str, Any]) -> set[str]:
     return set(_TOKEN_RE.findall(str(record.get("content") or "").lower()))
 
 
-def _numbers(text: str) -> Set[str]:
+def _numbers(text: str) -> set[str]:
     return set(_NUMBER_RE.findall(text))
 
 
-def _jaccard(left: Set[str], right: Set[str]) -> float:
+def _jaccard(left: set[str], right: set[str]) -> float:
     if not left or not right:
         return 0.0
     return len(left & right) / float(len(left | right))

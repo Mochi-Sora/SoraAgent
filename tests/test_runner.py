@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
+import pytest  # pyright: ignore[reportMissingImports]
 
 from sora_agent.agent import Agent
 from sora_agent.approval import ApprovalGate
@@ -661,7 +661,7 @@ def test_state_wrapper_preserves_native_tool_calls(
 
 
 def test_openai_provider_parses_native_tool_calls(monkeypatch) -> None:
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeCompletions:
         def create(self, **payload):

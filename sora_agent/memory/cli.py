@@ -8,7 +8,7 @@ import sys
 import time
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .hook import MemoryHook, default_memory
 from .maintenance import optimize_active
@@ -52,9 +52,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    hook = default_memory()
+    hook = default_memory(auto_dream=False)
     if hook is None:
         print("memory is disabled (SORA_MEMORY=0)", file=sys.stderr)
         return 2
@@ -78,9 +78,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             hits = hook.daily.search(args.query, k=args.k, days=7)
             for hit in hits:
                 print(
-                    "[{}#{}] {}: {}".format(
-                        hit.day.isoformat(), hit.message_id, hit.role, hit.content
-                    )
+                    f"[{hit.day.isoformat()}#{hit.message_id}] {hit.role}: {hit.content}"
                 )
             return 0
         if args.command == "download":
@@ -102,7 +100,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
         if args.command == "optimize":
             return _optimize(hook, args)
-    except Exception as exc:  # noqa: BLE001 - CLI boundary
+    except Exception as exc:  # noqa: BLE001
         print("error: " + str(exc), file=sys.stderr)
         return 1
     finally:
@@ -125,7 +123,7 @@ def _doctor(hook: MemoryHook, args: argparse.Namespace) -> int:
 
 
 def _backup(hook: MemoryHook, args: argparse.Namespace) -> int:
-    created: List[Dict[str, Any]] = []
+    created: list[dict[str, Any]] = []
     if args.active or args.all:
         created.append(hook.backup.snapshot_active())
     if args.all or args.daily:
@@ -143,7 +141,7 @@ def _backup(hook: MemoryHook, args: argparse.Namespace) -> int:
 def _restore(hook: MemoryHook, args: argparse.Namespace) -> int:
     snapshot = Path(args.snapshot).expanduser()
     if not args.yes:
-        answer = input("restore active memory from {}? [y/N] ".format(snapshot))
+        answer = input(f"restore active memory from {snapshot}? [y/N] ")
         if answer.strip().lower() not in {"y", "yes"}:
             print("aborted")
             return 1
@@ -151,7 +149,7 @@ def _restore(hook: MemoryHook, args: argparse.Namespace) -> int:
     print(json.dumps(result, indent=2, sort_keys=True))
     try:
         hook.sidecar.ensure_running()
-    except Exception as exc:  # noqa: BLE001 - restored data is already in place
+    except Exception as exc:  # noqa: BLE001
         print("restore complete; sidecar did not restart: " + str(exc), file=sys.stderr)
         return 1
     return 0
@@ -165,7 +163,7 @@ def _optimize(hook: MemoryHook, args: argparse.Namespace) -> int:
     print(json.dumps(result, indent=2, sort_keys=True))
     try:
         hook.sidecar.ensure_running()
-    except Exception as exc:  # noqa: BLE001 - optimization already completed
+    except Exception as exc:  # noqa: BLE001
         print("optimized; sidecar did not restart: " + str(exc), file=sys.stderr)
         return 1
     return 0 if result.get("ok") else 1

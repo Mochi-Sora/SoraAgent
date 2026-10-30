@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
-from typing import Any, Dict
+from typing import Any
 
 from .config import MemoryConfig
 from .net import ssl_context
@@ -20,7 +20,7 @@ class OpenAIWakeGate:
             raise WakeUnavailable("wake model is not configured")
         self.config = config
 
-    def __call__(self, report: Dict[str, Any]) -> str:
+    def __call__(self, report: dict[str, Any]) -> str:
         prompt = _prompt(report)
         payload = {
             "model": self.config.wake_model,
@@ -57,7 +57,7 @@ class OpenAIWakeGate:
         return str(message.get("content") or "")
 
 
-def _prompt(report: Dict[str, Any]) -> str:
+def _prompt(report: dict[str, Any]) -> str:
     lines = [
         "Dream report:",
         "run_id: {}".format(report.get("run_id", "")),
