@@ -22,6 +22,8 @@ from sora_agent.providers import default_provider
 from sora_agent.state_machine import POStateMachine
 from sora_agent.tools import registry
 
+from _demo_memory import DemoMemory
+
 
 def run_copilot_step(user_message: str, po_id: str = "PO-1234", auto_approve: bool = False) -> dict[str, Any]:
     """Entrypoint for an HTTP trigger / Copilot Studio action / Power Automate step."""
@@ -31,7 +33,13 @@ def run_copilot_step(user_message: str, po_id: str = "PO-1234", auto_approve: bo
     if auto_approve:
         approval.request = lambda action, detail: approval.approve_for(action, detail)  # type: ignore[method-assign]
 
-    agent = Agent(provider=provider, registry=registry, approval=approval, quality=QualityGate())
+    agent = Agent(
+        provider=provider,
+        registry=registry,
+        approval=approval,
+        quality=QualityGate(),
+        memory=DemoMemory(),
+    )
     sm = POStateMachine(po_id=po_id)
 
     task = f"{user_message}\nPO id: {po_id}"
@@ -47,6 +55,13 @@ def run_copilot_step(user_message: str, po_id: str = "PO-1234", auto_approve: bo
         "state": str(sm),
         "approved": result.approved,
         "audit": [str(a) for a in approval.audit],
+        "steps": [
+            {
+                "visible": step.tools,
+                "calls": [item.call.name for item in step.results],
+            }
+            for step in result.steps
+        ],
     }
 
 

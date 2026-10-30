@@ -63,6 +63,12 @@ class MemoryHook:
         self.recall_service.redactor = self._redact_memory
 
     def wrap_provider(self, provider: Any) -> Any:
+        """Legacy text-protocol forced recall.
+
+        ``Agent`` now enforces recall through the native first-action gate in
+        the runner.  This wrapper remains for standalone providers that still
+        use the text ``ACTION:`` protocol.
+        """
         if not self.config.force_first_recall:
             return provider
         return RecallEnforcingProvider(

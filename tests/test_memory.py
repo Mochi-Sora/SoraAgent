@@ -28,16 +28,6 @@ from sora_agent.providers import Message
 from sora_agent.tools import Tool
 
 
-class TextProvider:
-    def __init__(self, text: str = "The task is complete.") -> None:
-        self.text = text
-        self.calls: List[List[Message]] = []
-
-    def complete(self, messages, tools):
-        self.calls.append(list(messages))
-        return self.text
-
-
 class ScriptedProvider:
     def __init__(self, responses: List[str]) -> None:
         self.responses = list(responses)
@@ -465,7 +455,13 @@ def test_memory_tool_schema(tmp_path: Path) -> None:
 def test_agent_hook_records_daily_messages(tmp_path: Path) -> None:
     config = config_for(tmp_path)
     hook = MemoryHook(config, client=FakeBackend())
-    agent = Agent(provider=TextProvider(), memory=hook)
+    provider = ScriptedProvider(
+        [
+            'ACTION: memory_recall(query="status")',
+            "The task is complete.",
+        ]
+    )
+    agent = Agent(provider=provider, memory=hook)
     result = agent.run("Summarize the status.")
     assert result.proposal == "The task is complete."
     day = datetime.now(timezone.utc).date()
@@ -506,7 +502,13 @@ def test_agent_voluntary_recall_feeds_result_back(tmp_path: Path) -> None:
 def test_agent_default_memory_is_opt_out(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("SORA_MEMORY", "1")
     monkeypatch.setenv("SORA_MEMORY_ROOT", str(tmp_path))
-    agent = Agent(provider=TextProvider())
+    provider = ScriptedProvider(
+        [
+            'ACTION: memory_recall(query="hello")',
+            "Hello back.",
+        ]
+    )
+    agent = Agent(provider=provider)
     assert agent.memory is not None
     agent.run("hello")
     assert agent.memory.daily.count(datetime.now(timezone.utc).date()) == 2

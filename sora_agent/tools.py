@@ -99,8 +99,17 @@ class ToolRegistry:
     def get(self, name: str) -> Tool:
         return self._tools[name]
 
+    def has(self, name: str) -> bool:
+        return name in self._tools
+
     def all(self) -> list[Tool]:
         return list(self._tools.values())
+
+    def copy(self) -> "ToolRegistry":
+        """Return a shallow clone so one run's discovery cannot leak."""
+        clone = ToolRegistry()
+        clone._tools = dict(self._tools)
+        return clone
 
 
 @dataclass
@@ -116,6 +125,7 @@ class ToolResult:
     stopped: bool = False
     stop_reason: str = ""
     report: Any = None
+    skipped: bool = False
 
 
 class ToolExecutor:

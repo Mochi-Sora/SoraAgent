@@ -213,27 +213,93 @@ def _coerce_turn(value: Any) -> ModelTurn:
 class MockProvider:
     """Returns canned turns so the demo runs without an API key.
 
-    It introspects the latest user message so it can look vaguely smart enough to demo
-    approval + state transitions.  Once the transcript contains a tool result it
-    produces a final answer instead of proposing the same action again.
+    It follows the same contract as a real model: recall memory first when the
+    tool is visible, discover a hidden business tool with ``find_tools``, then
+    call the tool and answer.  That keeps the offline demo on the production
+    path instead of bypassing the discovery gates.
     """
 
     def complete_turn(
         self, messages: list[Message], tools: list[Tool]
     ) -> ModelTurn:
-        if any(message.role == "tool" for message in messages):
-            return ModelTurn(
-                text="Done. The requested tool call completed successfully."
-            )
-
+        visible = {
+            str(getattr(tool, "name", "")) for tool in tools
+        }
+        tool_names = [
+            message.name for message in messages if message.role == "tool"
+        ]
         last_user = next(
-            (message.content for message in reversed(messages) if message.role == "user"),
+            (
+                message.content
+                for message in reversed(messages)
+                if message.role == "user"
+            ),
             "",
         )
         low = last_user.lower()
         order_id = _extract_order_id(last_user)
+        expedite = (
+            "expedite" in low
+            or "stuck" in low
+            or "can't ship" in low
+            or "cannot ship" in low
+        )
+        target = "expedite_order" if expedite else "lookup_order"
+        need = (
+            "expedite a delayed purchase order"
+            if expedite
+            else "look up purchase order status and details"
+        )
 
-        if "expedite" in low or "stuck" in low or "can't ship" in low:
+        if "memory_recall" in visible and not tool_names:
+            return ModelTurn(
+                text="Let me recall relevant context before acting.",
+                tool_calls=[
+                    ToolCall(
+                        id="call_recall",
+                        name="memory_recall",
+                        arguments={
+                            "query": last_user or "task context",
+                            "scope": "auto",
+                            "k": 8,
+                        },
+                    )
+                ],
+            )
+
+        if target in tool_names:
+            if expedite:
+                text = (
+                    f"{order_id} was expedited after approval. "
+                    "The requested tool call completed successfully."
+                )
+            else:
+                text = (
+                    f"{order_id} was checked. "
+                    "The requested tool call completed successfully."
+                )
+            return ModelTurn(text=text)
+
+        if target not in visible:
+            if "find_tools" in visible and "find_tools" not in tool_names:
+                return ModelTurn(
+                    text=f"I need a tool for this. Searching for: {need}.",
+                    tool_calls=[
+                        ToolCall(
+                            id="call_find_tools",
+                            name="find_tools",
+                            arguments={"need": need},
+                        )
+                    ],
+                )
+            return ModelTurn(
+                text=(
+                    "The tool needed for this request is not available. "
+                    "I cannot complete the action."
+                )
+            )
+
+        if expedite:
             return ModelTurn(
                 text=(
                     "I detected an exception on this purchase order (supplier cannot "
@@ -248,17 +314,10 @@ class MockProvider:
                     )
                 ],
             )
-        if "approve" in low:
-            return ModelTurn(
-                text=(
-                    "Approved. Executing expedite via the order system now. "
-                    "Moving PO to closed."
-                )
-            )
         return ModelTurn(
             text=(
-                "Analyzing the request. I propose an action and will ask for "
-                "approval before executing."
+                "Looking up the purchase order status and details. "
+                "This is a read-only action."
             ),
             tool_calls=[
                 ToolCall(

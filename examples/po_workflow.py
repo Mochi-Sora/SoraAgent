@@ -24,6 +24,8 @@ from sora_agent.approval import ApprovalGate
 from sora_agent.providers import default_provider
 from sora_agent.tools import registry
 
+from _demo_memory import DemoMemory
+
 
 class AutoApproveGate(ApprovalGate):
     def request(self, action: str, detail: str) -> bool:
@@ -39,7 +41,12 @@ def main() -> None:
     provider = MockProvider() if args.provider == "mock" else default_provider(args.provider)
     gate = AutoApproveGate() if args.yes else ApprovalGate()
 
-    agent = Agent(provider=provider, registry=registry, approval=gate)
+    agent = Agent(
+        provider=provider,
+        registry=registry,
+        approval=gate,
+        memory=DemoMemory(),
+    )
     sm = POStateMachine(po_id="PO-1234")
 
     task = (
@@ -53,6 +60,13 @@ def main() -> None:
     print("\n--- ANSWER -------------------------------------------")
     print(result.final_answer or result.proposal)
     print(f"\nstop_reason={result.stop_reason}")
+    print("\n--- STEPS --------------------------------------------")
+    for step in result.steps:
+        calls = ", ".join(item.call.name for item in step.results)
+        print(
+            f"  {step.index}: visible={', '.join(step.tools)}"
+            + (f"; calls={calls}" if calls else "")
+        )
     print("\n--- QUALITY GATE -------------------------------------")
     print(result.report)
     print("\n--- TOOL RESULT ---------------------------------------")
