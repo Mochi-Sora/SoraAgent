@@ -497,8 +497,10 @@ def test_agent_voluntary_recall_feeds_result_back(tmp_path: Path) -> None:
     agent = Agent(provider=provider, memory=hook)
     result = agent.run("When is the deploy?")
     assert result.proposal == "The deploy is Monday."
-    assert "TOOL RESULT (memory_recall)" in provider.calls[1][-2].content
-    assert "The deploy is Monday." in provider.calls[1][-2].content
+    tool_message = provider.calls[1][-1]
+    assert tool_message.role == "tool"
+    assert tool_message.name == "memory_recall"
+    assert "The deploy is Monday." in tool_message.content
 
 
 def test_agent_default_memory_is_opt_out(tmp_path: Path, monkeypatch) -> None:

@@ -50,8 +50,9 @@ def main() -> None:
     print(f"\nSTATE BEFORE: {sm}")
     result = agent.run(task, state=sm)
 
-    print("\n--- PROPOSAL -----------------------------------------")
-    print(result.proposal)
+    print("\n--- ANSWER -------------------------------------------")
+    print(result.final_answer or result.proposal)
+    print(f"\nstop_reason={result.stop_reason}")
     print("\n--- QUALITY GATE -------------------------------------")
     print(result.report)
     print("\n--- TOOL RESULT ---------------------------------------")

@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from sora_agent.agent import Agent
+from sora_agent.agent import Agent, AgentResult
 from sora_agent.identity import IdentityConfig, IdentityStore
 from sora_agent.memory.config import MemoryConfig
 from sora_agent.memory.daily import DailyStore
@@ -138,6 +138,47 @@ def test_identity_edit_applies_before_the_user_message_is_stored(
     assert [row["role"] for row in rows] == ["user", "assistant"]
     for row in rows:
         assert_no_profile_facts(row["content"])
+
+
+def test_memory_persists_only_the_final_answer(tmp_path: Path) -> None:
+    hook = MemoryHook(
+        config_for(tmp_path),
+        client=FakeBackend(),
+    )
+
+    hook.before_run("Check PO-1234.")
+    hook.after_run(
+        SimpleNamespace(
+            final_answer="PO-1234 is open.",
+            proposal='ACTION: lookup_order(order_id="PO-1234")',
+        )
+    )
+
+    rows = hook.daily.read_day(datetime.now(timezone.utc).date())
+    assert [row["role"] for row in rows] == ["user", "assistant"]
+    assert rows[1]["content"] == "PO-1234 is open."
+    assert "ACTION:" not in rows[1]["content"]
+
+
+def test_memory_does_not_store_intermediate_action_scaffolding(
+    tmp_path: Path,
+) -> None:
+    hook = MemoryHook(
+        config_for(tmp_path),
+        client=FakeBackend(),
+    )
+
+    hook.before_run("Check PO-1234.")
+    hook.after_run(
+        AgentResult(
+            task="Check PO-1234.",
+            proposal='ACTION: lookup_order(order_id="PO-1234")',
+            stop_reason="max_steps",
+        )
+    )
+
+    rows = hook.daily.read_day(datetime.now(timezone.utc).date())
+    assert [row["role"] for row in rows] == ["user"]
 
 
 def test_dream_redacts_legacy_daily_content_before_transfer(

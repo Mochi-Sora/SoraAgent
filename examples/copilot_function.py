@@ -39,6 +39,8 @@ def run_copilot_step(user_message: str, po_id: str = "PO-1234", auto_approve: bo
 
     return {
         "proposal": result.proposal,
+        "final_answer": result.final_answer,
+        "stop_reason": result.stop_reason,
         "quality": str(result.report),
         "action": result.action,
         "tool_result": result.tool_result,

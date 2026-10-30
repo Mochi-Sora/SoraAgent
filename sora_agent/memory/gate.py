@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import ast
 import logging
-import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-_ACTION_RE = re.compile(r"ACTION:\s*([a-zA-Z_]+)\s*\((.*)\)", re.DOTALL)
+from ..providers import parse_action_calls, provider_text
 
 _FORCE = (
     "Before doing anything else, you MUST call memory_recall to retrieve relevant "
@@ -49,11 +47,11 @@ class RecallEnforcingProvider:
 
     def complete(self, messages: Sequence[Any], tools: Sequence[Any]) -> str:
         if not messages or getattr(messages[-1], "role", "") != "user":
-            return self.inner.complete(messages, tools)
+            return provider_text(self.inner, messages, tools)
         base = list(messages) + [_message("system", _FORCE)]
         response = ""
         for attempt in range(self.max_retries + 1):
-            response = self.inner.complete(base, tools)
+            response = provider_text(self.inner, base, tools)
             name, kwargs = _parse_action(response)
             if name == "memory_recall":
                 return self._after_recall(base, response, kwargs, tools)
@@ -83,7 +81,7 @@ class RecallEnforcingProvider:
                 _message("user", "TOOL RESULT (memory_recall):\n" + result),
                 _message("system", _CONTINUE),
             ]
-            response = self.inner.complete(messages, tools)
+            response = provider_text(self.inner, messages, tools)
             name, kwargs = _parse_action(response)
             if name != "memory_recall":
                 break
@@ -107,50 +105,8 @@ def _message(role: str, content: str) -> Any:
 
 
 def _parse_action(text: str) -> tuple:
-    match = _ACTION_RE.search(text or "")
-    if not match:
+    calls = parse_action_calls(text or "")
+    if not calls:
         return "", {}
-    return match.group(1), _parse_kwargs(match.group(2))
-
-
-def _parse_kwargs(raw: str) -> Dict[str, Any]:
-    kwargs: Dict[str, Any] = {}
-    if not raw.strip():
-        return kwargs
-    for part in _split_top(raw):
-        if "=" not in part:
-            continue
-        key, value = part.split("=", 1)
-        value = value.strip()
-        try:
-            kwargs[key.strip()] = ast.literal_eval(value)
-        except (ValueError, SyntaxError):
-            kwargs[key.strip()] = value.strip("\"'")
-    return kwargs
-
-
-def _split_top(text: str) -> List[str]:
-    out: List[str] = []
-    buf: List[str] = []
-    depth = 0
-    quote = ""
-    for char in text:
-        if char == quote:
-            quote = ""
-            buf.append(char)
-            continue
-        if not quote:
-            if char == "," and depth == 0:
-                out.append("".join(buf))
-                buf = []
-                continue
-            if char in "([{":
-                depth += 1
-            elif char in ")]}":
-                depth -= 1
-            elif char in "\"'":
-                quote = char
-        buf.append(char)
-    if buf:
-        out.append("".join(buf))
-    return out
+    call = calls[0]
+    return call.name, call.arguments

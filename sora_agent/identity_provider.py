@@ -23,7 +23,12 @@ from .identity import (
     IdentityStore,
     extract_identity_edits,
 )
-from .providers import Message
+from .providers import (
+    Message,
+    ModelTurn,
+    provider_text,
+    provider_turn,
+)
 
 log = logging.getLogger(__name__)
 
@@ -47,15 +52,26 @@ class IdentityProvider:
             else max(0, min(int(max_repairs), 5))
         )
 
+    def complete_turn(
+        self, messages: Sequence[Any], tools: Sequence[Any]
+    ) -> ModelTurn:
+        augmented = self._augment(messages)
+        turn = provider_turn(self.inner, augmented, tools)
+        text = self._settle(turn.text, augmented, tools)
+        return ModelTurn(text=text, tool_calls=list(turn.tool_calls))
+
     def complete(self, messages: Sequence[Any], tools: Sequence[Any]) -> str:
+        augmented = self._augment(messages)
+        raw = provider_text(self.inner, augmented, tools)
+        return self._settle(raw, augmented, tools)
+
+    def _augment(self, messages: Sequence[Any]) -> list[Any]:
         try:
             section = self.identity.prompt_section()
         except Exception as exc:  # noqa: BLE001 - identity must fail open
             log.warning("identity prompt section failed: %s", exc)
             section = ""
-        augmented = self._with_identity(messages, section) if section else list(messages)
-        raw = self.inner.complete(augmented, tools)
-        return self._settle(raw, augmented, tools)
+        return self._with_identity(messages, section) if section else list(messages)
 
     # ------------------------------------------------------------------
     # Prompt insertion
@@ -209,7 +225,7 @@ class IdentityProvider:
                 Message("assistant", raw_for_repair),
                 Message("user", repair),
             ]
-            raw_for_repair = self.inner.complete(repair_messages, tools)
+            raw_for_repair = provider_text(self.inner, repair_messages, tools)
             parsed = extract_identity_edits(raw_for_repair)
             accepted, rejected, issues = self._try_apply(parsed, accepted)
             if not issues and not rejected:

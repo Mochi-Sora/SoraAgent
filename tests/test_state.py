@@ -473,7 +473,8 @@ def test_agent_with_stateful_provider_still_parses_action(
             (
                 'ACTION: lookup_order(order_id="PO-1234")\n'
                 f"<state_edit>\n{edit}</state_edit>"
-            )
+            ),
+            "The order is open.",
         ]
     )
     manager = StateManager("s", config)

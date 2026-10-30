@@ -10,7 +10,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from .providers import Message, ModelProvider
+from .providers import (
+    Message,
+    ModelProvider,
+    ModelTurn,
+    provider_text,
+    provider_turn,
+)
 from .state import (
     StateIssue,
     StateManager,
@@ -25,7 +31,20 @@ class StatefulProvider:
         self.inner = inner
         self.state = state
 
+    def complete_turn(
+        self, messages: list[Message], tools: list[Any]
+    ) -> ModelTurn:
+        augmented = self._augment(messages)
+        turn = provider_turn(self.inner, augmented, tools)
+        text = self._settle(turn.text, augmented, tools)
+        return ModelTurn(text=text, tool_calls=list(turn.tool_calls))
+
     def complete(self, messages: list[Message], tools: list[Any]) -> str:
+        augmented = self._augment(messages)
+        raw = provider_text(self.inner, augmented, tools)
+        return self._settle(raw, augmented, tools)
+
+    def _augment(self, messages: list[Message]) -> list[Message]:
         goal = next(
             (
                 message.content
@@ -35,11 +54,9 @@ class StatefulProvider:
             "",
         )
         current = self.state.ensure(goal)
-        augmented = self._with_state(
+        return self._with_state(
             messages, self.state.prompt_section(current)
         )
-        raw = self.inner.complete(augmented, tools)
-        return self._settle(raw, augmented, tools)
 
     def _settle(
         self,
@@ -71,7 +88,7 @@ class StatefulProvider:
                 Message("assistant", raw),
                 Message("user", repair),
             ]
-            raw = self.inner.complete(repair_messages, tools)
+            raw = provider_text(self.inner, repair_messages, tools)
             parsed = extract_state_edit(raw)
 
             if parsed.issues:

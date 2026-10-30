@@ -101,7 +101,14 @@ class MemoryHook:
                 )
             except Exception as exc:  # noqa: BLE001 - memory must not break the agent
                 self.log.warning("daily user write failed: %s", exc)
-        content = str(getattr(result, "proposal", "") or "")
+        # Persist the final answer only.  Intermediate tool-call scaffolding and
+        # action proposals are not memory.  Legacy/partial result objects fall
+        # back to proposal.
+        final = getattr(result, "final_answer", None)
+        if getattr(result, "stop_reason", ""):
+            content = str(final or "")
+        else:
+            content = str(final or getattr(result, "proposal", "") or "")
         if not content.strip():
             return
         assistant_text = self._redact_memory(content, source="assistant")
