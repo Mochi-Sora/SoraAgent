@@ -111,7 +111,11 @@ class FindToolsTool(Tool):
         "language; matching tools become callable on your next step."
     )
 
-    def __init__(self, gate: ToolGate) -> None:
+    # This synthetic tool has no callable ``fn`` to pass to ``Tool.__init__``;
+    # it overrides ``schema`` and ``call`` directly.
+    def __init__(  # pyright: ignore[reportMissingSuperCall]
+        self, gate: ToolGate
+    ) -> None:
         self.gate = gate
 
     @property

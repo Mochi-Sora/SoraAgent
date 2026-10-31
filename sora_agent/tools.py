@@ -30,7 +30,7 @@ _UNION_ORIGINS = (Union,) + (
 class Tool:
     def __init__(
         self,
-        fn: Callable,
+        fn: Callable[..., Any],
         name: str,
         description: str,
         needs_approval: bool = False,
@@ -255,8 +255,10 @@ def _truncate(text: str, limit: int) -> str:
 registry = ToolRegistry()
 
 
-def tool(name: str, description: str, needs_approval: bool = False):
-    def deco(fn: Callable) -> Callable:
+def tool(
+    name: str, description: str, needs_approval: bool = False
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def deco(fn: Callable[..., Any]) -> Callable[..., Any]:
         registry.add(Tool(fn, name, description, needs_approval))
         return fn
 

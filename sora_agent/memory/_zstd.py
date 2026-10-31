@@ -10,7 +10,7 @@ except ImportError:
     _stdlib_zstd = None
 
 try:
-    import zstandard as _zstandard  # type: ignore[import-not-found]
+    import zstandard as _zstandard  # type: ignore[import-not-found]  # pyright: ignore[reportMissingImports]
 except ImportError:
     _zstandard = None
 

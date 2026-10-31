@@ -12,7 +12,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import _zstd
+from ._zstd import compress_file, decompress_file
 from .config import MemoryConfig
 
 
@@ -79,7 +79,7 @@ class BackupManager:
             self._vacuum_into(source, raw)
             self._integrity_check(raw)
             uncompressed_hash = _sha256(raw)
-            _zstd.compress_file(raw, target)
+            compress_file(raw, target)
         try:
             target.chmod(0o600)
         except OSError:
@@ -121,7 +121,7 @@ class BackupManager:
             prefix=".restore-", dir=str(target.parent)
         ) as tmp:
             restored = Path(tmp) / "restored.db"
-            _zstd.decompress_file(snapshot, restored)
+            decompress_file(snapshot, restored)
             self._integrity_check(restored)
             if stop is not None:
                 stop()
@@ -153,7 +153,7 @@ class BackupManager:
         manifests = self.list_snapshots()
         if not manifests:
             return []
-        keep: set = set()
+        keep: set[str] = set()
         active = [m for m in manifests if m.get("kind") == "active"]
         for manifest in active[-max(1, self.config.backup_keep_active):]:
             keep.add(manifest["file"])

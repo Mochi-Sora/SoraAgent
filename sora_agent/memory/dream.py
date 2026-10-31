@@ -197,7 +197,7 @@ class DreamRunner:
                 entity_names, relations = (
                     ([], []) if dry_run else graph_hints(self.backend, content)
                 )
-                payload = {
+                payload: dict[str, Any] = {
                     "memory_id": memory_id,
                     "user_id": self.config.user_id,
                     "session_id": str(message.get("session_id") or "default"),

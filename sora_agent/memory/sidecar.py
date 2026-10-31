@@ -30,7 +30,7 @@ class SidecarError(RuntimeError):
 class SidecarManager:
     def __init__(self, config: MemoryConfig) -> None:
         self.config = config
-        self._process: subprocess.Popen | None = None
+        self._process: subprocess.Popen[str] | None = None
         self._client: CortexDBClient | None = None
         self._http_addr = ""
         self._grpc_addr = ""

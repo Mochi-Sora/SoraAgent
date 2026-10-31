@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 _DAY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.db$")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]{2,}")
@@ -234,7 +234,7 @@ class DailyStore:
                     pass
         return sorted(days)
 
-    def read_day(self, day: date) -> list[dict]:
+    def read_day(self, day: date) -> list[dict[str, Any]]:
         path = self.path_for(day)
         if not path.exists():
             return []

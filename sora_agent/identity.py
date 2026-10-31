@@ -1,3 +1,7 @@
+# ``identity_provider`` imports this module at module scope, so the provider
+# import in ``wrap_provider`` is intentionally lazy.  The static cycle is real
+# but cannot happen at runtime.
+# pyright: reportImportCycles=false
 """Persistent, file-backed identity for SoraAgent.
 
 ``USER.md`` is the single authoritative place for durable facts about the user.

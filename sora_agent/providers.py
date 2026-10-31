@@ -1,3 +1,6 @@
+# ``tools`` imports ``ToolCall`` from this module, so the tool import below is
+# type-checking-only.  The static cycle is real but cannot occur at runtime.
+# pyright: reportImportCycles=false
 """Model provider abstraction.
 
 The agent loop never talks to a vendor directly. Swap the provider and everything else works.
