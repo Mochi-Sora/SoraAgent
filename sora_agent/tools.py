@@ -16,7 +16,17 @@ import json
 import logging
 import types
 from dataclasses import dataclass
-from typing import Any, Callable, Union, get_args, get_origin, get_type_hints
+from enum import Enum
+from typing import (
+    Annotated,
+    Any,
+    Callable,
+    Literal,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from .providers import ToolCall
 
@@ -25,6 +35,8 @@ log = logging.getLogger(__name__)
 _UNION_ORIGINS = (Union,) + (
     (types.UnionType,) if hasattr(types, "UnionType") else ()
 )
+_APPROVAL_MARKER = "[approval required] "
+_JSON_SCALARS = (str, int, float, bool)
 
 
 class Tool:
@@ -44,24 +56,40 @@ class Tool:
     def schema(self) -> dict[str, Any]:
         params = inspect.signature(self.fn).parameters
         try:
-            hints = get_type_hints(self.fn)
+            hints = get_type_hints(self.fn, include_extras=True)
         except Exception:  # noqa: BLE001 - unresolved annotations fall back to strings
             hints = {}
-        props = {
-            name: {"type": _json_type(hints.get(name, param.annotation))}
-            for name, param in params.items()
-        }
+
+        properties: dict[str, Any] = {}
+        required: list[str] = []
+        for name, param in params.items():
+            if param.kind in (
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            ):
+                continue
+            prop = _json_schema(hints.get(name, param.annotation))
+            if (
+                param.default is not inspect.Parameter.empty
+                and param.default is not None
+                and isinstance(param.default, _JSON_SCALARS)
+            ):
+                prop["default"] = param.default
+            properties[name] = prop
+            if param.default is inspect.Parameter.empty:
+                required.append(name)
+
+        description = self.description
+        if self.needs_approval and "approval" not in description.casefold():
+            description = _APPROVAL_MARKER + description
+
         return {
             "name": self.name,
-            "description": self.description,
+            "description": description,
             "parameters": {
                 "type": "object",
-                "properties": props,
-                "required": [
-                    name
-                    for name, param in params.items()
-                    if param.default is inspect.Parameter.empty
-                ],
+                "properties": properties,
+                "required": required,
             },
         }
 
@@ -69,25 +97,91 @@ class Tool:
         return self.fn(**kwargs)
 
 
-def _json_type(annotation: Any) -> str:
-    if annotation in (inspect.Parameter.empty, Any):
-        return "string"
+def _json_schema(annotation: Any) -> dict[str, Any]:
+    """Return a compact JSON Schema fragment for one annotation."""
+    extras: dict[str, Any] = {}
+    metadata = getattr(annotation, "__metadata__", ())
+    if metadata:
+        args = get_args(annotation)
+        if args:
+            annotation = args[0]
+        description = next(
+            (item for item in metadata if isinstance(item, str)), ""
+        )
+        if description:
+            extras["description"] = description
+
     origin = get_origin(annotation)
     if origin in _UNION_ORIGINS:
         args = [arg for arg in get_args(annotation) if arg is not type(None)]
-        return _json_type(args[0]) if args else "string"
+        schema = _json_schema(args[0]) if args else {"type": "string"}
+        schema.update(extras)
+        return schema
+
+    if origin is Literal:
+        values = [
+            value for value in get_args(annotation) if value is not None
+        ]
+        schema = _enum_schema(values)
+        if not schema:
+            schema = {"type": "string"}
+        schema.update(extras)
+        return schema
+
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        schema = _enum_schema([member.value for member in annotation])
+        if not schema:
+            schema = {"type": "string"}
+        schema.update(extras)
+        return schema
+
     if origin in (list, tuple, set):
-        return "array"
-    if origin is dict:
-        return "object"
-    return {
-        str: "string",
-        int: "integer",
-        float: "number",
-        bool: "boolean",
-        dict: "object",
-        list: "array",
-    }.get(annotation, "string")
+        schema = {"type": "array"}
+    elif origin is dict:
+        schema = {"type": "object"}
+    else:
+        schema = {
+            "type": {
+                str: "string",
+                int: "integer",
+                float: "number",
+                bool: "boolean",
+                dict: "object",
+                list: "array",
+            }.get(annotation, "string")
+        }
+    schema.update(extras)
+    return schema
+
+
+def _enum_schema(values: list[Any]) -> dict[str, Any]:
+    if not values or not all(
+        isinstance(value, _JSON_SCALARS) for value in values
+    ):
+        return {}
+    schema: dict[str, Any] = {"enum": values}
+    type_name = _scalar_type(values)
+    if type_name:
+        schema["type"] = type_name
+    return schema
+
+
+def _scalar_type(values: list[Any]) -> str | None:
+    if all(isinstance(value, bool) for value in values):
+        return "boolean"
+    if all(
+        isinstance(value, int) and not isinstance(value, bool)
+        for value in values
+    ):
+        return "integer"
+    if all(
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        for value in values
+    ):
+        return "number"
+    if all(isinstance(value, str) for value in values):
+        return "string"
+    return None
 
 
 class ToolRegistry:
@@ -268,16 +362,22 @@ def tool(
 # --- example tools -----------------------------------------------------------
 
 
-@tool("lookup_order", "Return status and details for a purchase order id.")
-def lookup_order(order_id: str) -> str:
+@tool("lookup_order", "Return a purchase order's status and details.")
+def lookup_order(
+    order_id: Annotated[str, "Purchase order id, e.g. PO-1234"],
+) -> str:
     return f"PO {order_id}: status=open, supplier=ACME, ship_date=2026-09-01"
 
 
-@tool("expedite_order", "Mark an order as expedited (needs human approval).", needs_approval=True)
-def expedite_order(order_id: str) -> str:
+@tool("expedite_order", "Expedite a purchase order.", needs_approval=True)
+def expedite_order(
+    order_id: Annotated[str, "Purchase order id, e.g. PO-1234"],
+) -> str:
     return f"PO {order_id}: marked expedited + rescheduled ship_date to 2026-08-25"
 
 
-@tool("cancel_order", "Cancel a purchase order (needs human approval).", needs_approval=True)
-def cancel_order(order_id: str) -> str:
+@tool("cancel_order", "Cancel a purchase order.", needs_approval=True)
+def cancel_order(
+    order_id: Annotated[str, "Purchase order id, e.g. PO-1234"],
+) -> str:
     return f"PO {order_id}: cancelled"

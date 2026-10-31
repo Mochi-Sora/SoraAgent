@@ -219,7 +219,7 @@ def test_find_tools_loads_matches_with_signatures() -> None:
     assert "Tools for 'expedite a delayed purchase order':" in result
     assert "`expedite_order` (now loaded" in result
     assert "expedite_order(order_id: string)" in result
-    assert "Loaded tools appear in your tool list" in result
+    assert "Loaded tools appear next step" in result
     assert "expedite_order" in gate.visible_names()
 
 

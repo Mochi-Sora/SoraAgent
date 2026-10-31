@@ -7,7 +7,7 @@ import logging
 import re
 import threading
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from .backup import BackupManager
 from .client import MemoryBackend
@@ -222,14 +222,23 @@ class _MemoryTool:
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
-                    "scope": {"type": "string"},
-                    "k": {"type": "integer"},
+                    "scope": {
+                        "type": "string",
+                        "enum": ["auto", "daily", "longterm"],
+                        "default": "auto",
+                    },
+                    "k": {"type": "integer", "default": 8},
                 },
                 "required": ["query"],
             },
         }
 
-    def call(self, query: str, scope: str = "auto", k: int = 8) -> str:
+    def call(
+        self,
+        query: str,
+        scope: Literal["auto", "daily", "longterm"] = "auto",
+        k: int = 8,
+    ) -> str:
         return self._recall(query, scope=scope, k=k)
 
 

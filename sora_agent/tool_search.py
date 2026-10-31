@@ -24,8 +24,8 @@ FIND_TOOLS_NAME = "find_tools"
 MATCH_LIMIT = 5
 MIN_SCORE = 2.0
 MAX_CATALOG_ENTRIES = 60
-MAX_CATALOG_DESCRIPTION = 80
-MAX_RESULT_DESCRIPTION = 220
+MAX_CATALOG_DESCRIPTION = 50
+MAX_RESULT_DESCRIPTION = 160
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _STOPWORDS = frozenset({
@@ -105,10 +105,9 @@ class FindToolsTool(Tool):
     name = FIND_TOOLS_NAME
     needs_approval = False
     description = (
-        "Find and load the tools needed for the current task. The tool list is "
-        "partial by design, so call this before concluding that a capability is "
-        "unavailable or working around a missing tool. Describe the need in plain "
-        "language; matching tools become callable on your next step."
+        "Find and load tools for the current task. The tool list is partial; call "
+        "this before assuming a capability is missing. Describe the need in plain "
+        "language; matches become callable next step."
     )
 
     # This synthetic tool has no callable ``fn`` to pass to ``Tool.__init__``;
@@ -132,10 +131,7 @@ class FindToolsTool(Tool):
                 "properties": {
                     "need": {
                         "type": "string",
-                        "description": (
-                            "What you want to do, in plain language, e.g. "
-                            "'look up a purchase order' or 'expedite an order'."
-                        ),
+                        "description": "What you need, in plain language.",
                     }
                 },
                 "required": ["need"],
@@ -194,7 +190,7 @@ class FindToolsTool(Tool):
         lines = [f"Tools for {query!r}:"]
         for _score, tool in matches:
             if tool.name in loaded:
-                state = "now loaded, call it on your next step"
+                state = "now loaded"
             elif self.gate.is_visible(tool.name):
                 state = "already loaded"
             else:
@@ -208,10 +204,7 @@ class FindToolsTool(Tool):
             )
         if loaded:
             lines.append("")
-            lines.append(
-                "Loaded tools appear in your tool list on the next step; call "
-                "them directly."
-            )
+            lines.append("Loaded tools appear next step; call them directly.")
         return "\n".join(lines)
 
 
@@ -240,7 +233,7 @@ def _render_catalog(tools: list[Tool]) -> str:
     if not tools:
         return ""
     shown = tools[:MAX_CATALOG_ENTRIES]
-    lines = ["Not loaded yet; call this tool to load what you need.", "", "Tools:"]
+    lines = ["Not loaded yet; call find_tools to load:"]
     lines.extend(
         f"- `{tool.name}`: {_clip(tool.description, MAX_CATALOG_DESCRIPTION)}"
         for tool in shown

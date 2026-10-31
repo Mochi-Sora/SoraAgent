@@ -663,7 +663,7 @@ def test_tool_schema_supports_deferred_annotations() -> None:
     schema = Tool(lookup, "lookup", "Look up an order.").schema
     assert schema["parameters"]["properties"] == {
         "order_id": {"type": "string"},
-        "limit": {"type": "integer"},
+        "limit": {"type": "integer", "default": 5},
     }
     assert schema["parameters"]["required"] == ["order_id"]
 
@@ -671,8 +671,14 @@ def test_tool_schema_supports_deferred_annotations() -> None:
 def test_memory_tool_schema(tmp_path: Path) -> None:
     hook = MemoryHook(config_for(tmp_path), client=FakeBackend())
     schema = hook.tool().schema
-    assert schema["parameters"]["properties"]["query"] == {"type": "string"}
-    assert schema["parameters"]["properties"]["k"] == {"type": "integer"}
+    properties = schema["parameters"]["properties"]
+    assert properties["query"] == {"type": "string"}
+    assert properties["scope"] == {
+        "type": "string",
+        "enum": ["auto", "daily", "longterm"],
+        "default": "auto",
+    }
+    assert properties["k"] == {"type": "integer", "default": 8}
     assert schema["parameters"]["required"] == ["query"]
 
 
