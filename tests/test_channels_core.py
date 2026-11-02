@@ -17,7 +17,9 @@ from sora_agent.channels.manager import ChannelManager
 from sora_agent.channels.manifest import ChannelPlugin
 from sora_agent.channels.registry import discover_plugins, load_plugin
 from sora_agent.channels.types import InboundMessage, OutboundMessage
+from sora_agent.eval import EvalReport, QualityGate
 from sora_agent.providers import ModelTurn, ToolCall
+from sora_agent.tool_search import FIND_TOOLS_NAME
 from sora_agent.tools import Tool, ToolRegistry
 
 
@@ -46,9 +48,11 @@ class FakeChannel(BaseChannel):
 class EchoProvider:
     def __init__(self) -> None:
         self.calls: list[list] = []
+        self.seen_tools: list[list[str]] = []
 
     def complete_turn(self, messages, tools) -> ModelTurn:
         self.calls.append(list(messages))
+        self.seen_tools.append([tool.name for tool in tools])
         last = [message for message in messages if message.role == "user"][-1]
         return ModelTurn(text=f"echo:{last.content}")
 
@@ -357,8 +361,9 @@ def test_chat_handler_recalls_memory_first():
     assert len(memory.after) == 1
     assert memory.after[0].final_answer == "answered"
     assert memory.tool_obj.queries == ["hi"]
-    assert "memory_recall" in provider.seen_tools[0]
+    assert provider.seen_tools[0] == ["memory_recall", FIND_TOOLS_NAME]
     assert "## Memory" in provider.calls[0][0].content
+    assert "## Tools" in provider.calls[0][0].content
 
 
 def test_chat_handler_skips_memory_policy_without_memory():
@@ -366,6 +371,7 @@ def test_chat_handler_skips_memory_policy_without_memory():
     handler = ChatHandler(provider, max_steps=1)
     assert handler.handle(_inbound("hi")) == "echo:hi"
     assert "## Memory" not in provider.calls[0][0].content
+    assert provider.seen_tools[0] == [FIND_TOOLS_NAME]
 
 
 def test_chat_handler_survives_a_broken_memory_hook():
@@ -377,6 +383,88 @@ def test_chat_handler_survives_a_broken_memory_hook():
     handler = ChatHandler(MemoryProvider(), memory=memory, max_steps=3)
     assert handler.handle(_inbound("hi")) == "answered"
     assert memory.tool_obj.queries == ["hi"]
+
+
+class DiscoveryProvider:
+    def __init__(self) -> None:
+        self.seen_tools: list[list[str]] = []
+
+    def complete_turn(self, messages, tools) -> ModelTurn:
+        self.seen_tools.append([tool.name for tool in tools])
+        tool_names = [
+            message.name for message in messages if message.role == "tool"
+        ]
+        if not tool_names:
+            return ModelTurn(
+                tool_calls=[
+                    ToolCall(
+                        id="find_1",
+                        name=FIND_TOOLS_NAME,
+                        arguments={"need": "expedite a late purchase order"},
+                    )
+                ]
+            )
+        if "expedite_order" not in tool_names:
+            return ModelTurn(
+                tool_calls=[
+                    ToolCall(
+                        id="expedite_1",
+                        name="expedite_order",
+                        arguments={"order_id": "PO-1"},
+                    )
+                ]
+            )
+        return ModelTurn(text="done")
+
+
+def test_chat_handler_uses_find_tools_for_discovery():
+    executed: list[str] = []
+    registry = ToolRegistry()
+    registry.add(
+        Tool(
+            lambda order_id: executed.append(order_id) or "expedited",
+            "expedite_order",
+            "Expedite a delayed purchase order.",
+        )
+    )
+    provider = DiscoveryProvider()
+    handler = ChatHandler(provider, registry, max_steps=4)
+
+    assert handler.handle(_inbound("expedite PO-1")) == "done"
+    assert provider.seen_tools[0] == [FIND_TOOLS_NAME]
+    assert "expedite_order" in provider.seen_tools[1]
+    assert executed == ["PO-1"]
+
+
+def test_chat_handler_runs_the_quality_guard():
+    executed: list[str] = []
+    registry = ToolRegistry()
+    registry.add(
+        Tool(
+            lambda: executed.append("ran") or "done",
+            "side_effect",
+            "Perform a side effect.",
+        )
+    )
+
+    class ActionProvider:
+        def complete_turn(self, messages, tools) -> ModelTurn:
+            if any(message.role == "tool" for message in messages):
+                return ModelTurn(text="finished")
+            return ModelTurn(
+                text="Trying.",
+                tool_calls=[ToolCall(id="c1", name="side_effect", arguments={})],
+            )
+
+    gate = QualityGate(
+        lambda proposal, context: EvalReport(False, 0.0, ["blocked"])
+    )
+    handler = ChatHandler(
+        ActionProvider(), registry, quality=gate, max_steps=2
+    )
+
+    assert handler.handle(_inbound("do it")) == "Trying."
+    assert executed == []
 
 
 class ApprovalProvider:

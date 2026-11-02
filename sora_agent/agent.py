@@ -14,9 +14,10 @@ from typing import Any
 from .approval import ApprovalGate
 from .eval import QualityGate
 from .providers import Message, ModelProvider, ToolCall
-from .runner import Runner, RunResult, RunSpec, Step
-from .tool_search import FIND_TOOLS_NAME, FindToolsTool, ToolGate
-from .tools import ToolExecutor, ToolRegistry, ToolResult
+from .runner import RunResult, Step
+from .runtime import AgentRuntime, RunRequest, wrap_identity
+from .tool_search import FIND_TOOLS_NAME
+from .tools import ToolRegistry, ToolResult
 
 SYSTEM_PROMPT = (
     "You are a careful enterprise-workflow agent. Use the tools available to complete "
@@ -96,13 +97,7 @@ class Agent:
                 self.memory_tool = self.memory.tool()
             except Exception as exc:  # noqa: BLE001 - memory is optional
                 log.warning("memory tool registration failed: %s", exc)
-        if self.identity is not None and not getattr(
-            self.provider, "__sora_identity__", False
-        ):
-            try:
-                self.provider = self.identity.wrap_provider(self.provider)
-            except Exception as exc:  # noqa: BLE001 - identity is optional
-                log.warning("identity provider wrapper failed: %s", exc)
+        self.provider = wrap_identity(self.identity, self.provider)
 
     def run(self, task: str, state: Any = None) -> AgentResult:
         self._notify("before_run", task, state)
@@ -115,48 +110,24 @@ class Agent:
                 self._notify("after_run", result, state)
 
     def _run(self, task: str, state: Any = None) -> AgentResult:
-        run_registry = self.registry.copy()
-        memory_name = str(getattr(self.memory_tool, "name", "") or "")
-        always_visible = {FIND_TOOLS_NAME}
-        if self.memory_tool is not None and memory_name:
-            run_registry.add(self.memory_tool)
-            always_visible.add(memory_name)
-        gate = ToolGate(run_registry, always_visible=always_visible)
-        run_registry.add(FindToolsTool(gate))
-        required_first = (
-            memory_name
-            if memory_name and run_registry.has(memory_name)
-            else None
-        )
-
-        messages = [
-            Message("system", self._system_prompt()),
-            Message("user", task),
-        ]
-        executor = ToolExecutor(
-            registry=run_registry,
-            approval=self.approval,
-            max_result_chars=self.max_tool_result_chars,
-            after_execute=lambda call, result: self._after_tool(
-                state, call, result
-            ),
-        )
-
-        def guard(proposal: str, _context: str) -> tuple[bool, Any]:
-            return self._quality_guard(
-                proposal,
-                f"state={getattr(state, 'state', '')}",
-            )
-
-        run = Runner(self.provider, executor).run(
-            RunSpec(
-                messages=messages,
-                tools=gate.visible(),
-                tool_provider=gate.visible,
-                required_first_tool=required_first,
+        context = f"state={getattr(state, 'state', '')}"
+        run = AgentRuntime.run(
+            RunRequest(
+                provider=self.provider,
+                registry=self.registry,
+                messages=[
+                    Message("system", self._system_prompt()),
+                    Message("user", task),
+                ],
+                memory_tool=self.memory_tool,
+                approval=self.approval,
+                quality=self.quality,
                 max_steps=self.max_steps,
-                context=f"state={getattr(state, 'state', '')}",
-                guard=guard,
+                max_result_chars=self.max_tool_result_chars,
+                context=context,
+                after_execute=lambda call, result: self._after_tool(
+                    state, call, result
+                ),
             )
         )
         return self._to_result(task, state, run)
@@ -207,12 +178,6 @@ class Agent:
             result.state = getattr(state, "state", "")
         result.audit = self.approval.audit
         return result
-
-    def _quality_guard(
-        self, proposal: str, context: str
-    ) -> tuple[bool, Any]:
-        report = self.quality.grade(proposal, context)
-        return bool(getattr(report, "passed", False)), report
 
     def _after_tool(
         self, state: Any, call: ToolCall, result: ToolResult

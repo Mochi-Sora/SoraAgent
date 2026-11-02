@@ -7,10 +7,13 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
-from ..agent import MEMORY_POLICY
+from ..agent import MEMORY_POLICY, TOOLS_POLICY
+from ..eval import QualityGate
 from ..providers import Message
-from ..runner import Runner, RunResult, RunSpec
-from ..tools import ToolExecutor, ToolRegistry
+from ..runner import RunResult
+from ..runtime import AgentRuntime, RunRequest, wrap_identity
+from ..tool_search import FIND_TOOLS_NAME
+from ..tools import ToolRegistry
 from .approval import ApprovalBroker
 from .types import InboundMessage
 
@@ -46,21 +49,30 @@ class ChatHandler:
         memory: Any = None,
         identity: Any = None,
         approvals: ApprovalBroker | None = None,
+        quality: QualityGate | None = None,
         max_steps: int = 8,
         max_turns: int = 40,
+        max_tool_result_chars: int = 4000,
         system_prompt: str = CHAT_SYSTEM_PROMPT,
     ) -> None:
         self.provider = provider
         self.registry = registry or ToolRegistry()
+        if self.registry.has(FIND_TOOLS_NAME):
+            raise ValueError(
+                f"the tool name {FIND_TOOLS_NAME!r} is reserved for lazy "
+                "tool discovery"
+            )
         self.memory = memory
         self.identity = None if identity is False else identity
         self.approvals = approvals
+        self.quality = quality or QualityGate()
         self.max_steps = max(1, int(max_steps))
         self.max_turns = max(0, int(max_turns))
+        self.max_tool_result_chars = max(0, int(max_tool_result_chars))
         self.system_prompt = system_prompt
         if self.identity is not None:
             self._attach_identity(self.identity, memory)
-            self.provider = _wrap_identity(self.identity, provider)
+            self.provider = wrap_identity(self.identity, provider)
         self.memory_tool: Any = None
         if memory is not None:
             try:
@@ -76,11 +88,6 @@ class ChatHandler:
         with self._lock:
             history = list(self._history.get(key, ()))
 
-        registry = self.registry.copy()
-        memory_name = str(getattr(self.memory_tool, "name", "") or "")
-        if self.memory_tool is not None and memory_name:
-            registry.add(self.memory_tool)
-
         approval = (
             self.approvals.gate(inbound) if self.approvals is not None else None
         )
@@ -91,15 +98,17 @@ class ChatHandler:
         ]
         state = ChatState(session_id=key)
         self._notify("before_run", inbound.content, state)
-        run = Runner(
-            self.provider, ToolExecutor(registry, approval=approval)
-        ).run(
-            RunSpec(
+        run = AgentRuntime.run(
+            RunRequest(
+                provider=self.provider,
+                registry=self.registry,
                 messages=messages,
-                tools=registry.all(),
+                memory_tool=self.memory_tool,
+                approval=approval,
+                quality=self.quality,
                 max_steps=self.max_steps,
+                max_result_chars=self.max_tool_result_chars,
                 context=f"channel={inbound.channel}",
-                required_first_tool=memory_name or None,
             )
         )
         self._notify("after_run", run, state)
@@ -120,9 +129,10 @@ class ChatHandler:
             self._history.pop(session_key, None)
 
     def _prompt(self) -> str:
-        if self.memory_tool is None:
-            return self.system_prompt
-        return self.system_prompt + MEMORY_POLICY
+        prompt = self.system_prompt + TOOLS_POLICY
+        if self.memory_tool is not None:
+            prompt += MEMORY_POLICY
+        return prompt
 
     @staticmethod
     def _attach_identity(identity: Any, memory: Any) -> None:
@@ -144,16 +154,6 @@ class ChatHandler:
             callback(*args)
         except Exception as exc:  # noqa: BLE001 - memory must fail open
             log.warning("memory %s failed: %s", name, exc)
-
-
-def _wrap_identity(identity: Any, provider: Any) -> Any:
-    if getattr(provider, "__sora_identity__", False):
-        return provider
-    try:
-        return identity.wrap_provider(provider)
-    except Exception as exc:  # noqa: BLE001 - identity is optional
-        log.warning("identity provider wrapper failed: %s", exc)
-        return provider
 
 
 def _reply_text(run: RunResult) -> str:
