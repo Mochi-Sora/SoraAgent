@@ -19,6 +19,7 @@ dev = ["pytest>=7", "zstandard>=0.22; python_version < '3.14'"]
 
 [project.scripts]
 sora-memory = "sora_agent.memory.cli:main"
+sora-gateway = "sora_agent.channels.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["sora_agent*"]
