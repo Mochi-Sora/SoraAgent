@@ -113,6 +113,20 @@ class ApprovalBroker:
         pending.event.set()
         return True
 
+    def cancel(self, session_key: str) -> bool:
+        """Deny one session's pending approval.  True if one was waiting.
+
+        ``/cancel`` must release the worker thread, or the session stays locked
+        until the approval times out.
+        """
+        with self._lock:
+            pending = self._pending.pop(session_key, None)
+        if pending is None:
+            return False
+        pending.decision = False
+        pending.event.set()
+        return True
+
     def cancel_all(self) -> None:
         """Deny everything still waiting, so shutdown never hangs on a thread."""
         with self._lock:

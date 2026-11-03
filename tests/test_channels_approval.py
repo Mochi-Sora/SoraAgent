@@ -205,6 +205,25 @@ def test_second_request_for_the_same_session_fails_closed():
     assert asyncio.run(scenario()) == [False, False]
 
 
+def test_cancel_denies_only_that_session_s_pending_request():
+    async def scenario():
+        bus = MessageBus()
+        broker = ApprovalBroker(bus, timeout=5.0)
+        broker.bind(asyncio.get_running_loop())
+        outcome: list[bool] = []
+        worker = threading.Thread(
+            target=lambda: outcome.append(broker.request(_pending()))
+        )
+        worker.start()
+        await asyncio.wait_for(bus.next_outbound(), 2)
+        cancelled = broker.cancel("telegram:42")
+        repeat = broker.cancel("telegram:42")
+        await _join(worker)
+        return cancelled, repeat, outcome
+
+    assert asyncio.run(scenario()) == (True, False, [False])
+
+
 def test_gate_audits_the_actor_and_decision():
     async def scenario():
         bus = MessageBus()

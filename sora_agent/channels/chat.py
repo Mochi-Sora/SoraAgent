@@ -298,6 +298,9 @@ class ChatHandler:
         if token is None:
             return False
         token.cancel()
+        if self.approvals is not None:
+            # A turn blocked on a human must wake now, not at the timeout.
+            self.approvals.cancel(session_key)
         return True
 
     def cancel_all(self) -> int:
@@ -306,6 +309,8 @@ class ChatHandler:
             tokens = list(self._active.values())
         for token in tokens:
             token.cancel()
+        if self.approvals is not None:
+            self.approvals.cancel_all()
         return len(tokens)
 
     def handle_command(self, inbound: InboundMessage) -> str | None:

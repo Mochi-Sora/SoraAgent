@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -215,6 +217,39 @@ def test_manager_supports_async_handlers():
         return channel.sent[0].content
 
     assert asyncio.run(scenario()) == "async hi"
+
+
+def test_manager_serializes_turns_for_the_same_session():
+    """Two messages from one chat must not run their agent turns at once."""
+    timeline: list[tuple[str, str]] = []
+    guard = threading.Lock()
+
+    def handler(inbound: InboundMessage) -> str:
+        with guard:
+            timeline.append(("start", inbound.content))
+        time.sleep(0.05)
+        with guard:
+            timeline.append(("end", inbound.content))
+        return f"echo {inbound.content}"
+
+    async def scenario():
+        bus = MessageBus()
+        channel = FakeChannel(SimpleNamespace(allow_from=("*",)), bus)
+        manager = ChannelManager([channel], bus, handler)
+        task = asyncio.create_task(manager.serve())
+        try:
+            await _wait_for(lambda: channel.is_running)
+            await bus.publish_inbound(_inbound("one"))
+            await bus.publish_inbound(_inbound("two"))
+            await _wait_for(lambda: len(channel.sent) >= 2)
+        finally:
+            manager.request_stop()
+            await asyncio.wait_for(task, 3)
+        return list(timeline), [message.content for message in channel.sent]
+
+    timeline, contents = asyncio.run(scenario())
+    assert contents == ["echo one", "echo two"]
+    assert [kind for kind, _text in timeline] == ["start", "end", "start", "end"]
 
 
 def test_manager_reports_handler_failure_to_the_user():
@@ -664,6 +699,53 @@ def test_approval_timeout_fails_closed():
 
     contents = asyncio.run(scenario())
     assert any("Approval required" in content for content in contents)
+
+
+def test_cancel_releases_a_pending_approval():
+    executed: list[str] = []
+
+    def expedite(order_id: str) -> str:
+        executed.append(order_id)
+        return "expedited"
+
+    registry = ToolRegistry()
+    registry.add(
+        Tool(expedite, "expedite_order", "Expedite an order.", needs_approval=True)
+    )
+
+    async def scenario():
+        bus = MessageBus()
+        broker = ApprovalBroker(bus, timeout=5.0)
+        handler = ChatHandler(
+            ApprovalProvider(), registry, approvals=broker, max_steps=2
+        )
+        channel = FakeChannel(SimpleNamespace(allow_from=("*",)), bus)
+        manager = ChannelManager(
+            [channel],
+            bus,
+            handler.handle,
+            approvals=broker,
+            commands=handler.handle_command,
+        )
+        task = asyncio.create_task(manager.serve())
+        try:
+            await _wait_for(lambda: channel.is_running)
+            await bus.publish_inbound(_inbound("go"))
+            await _wait_for(
+                lambda: any("Approval required" in m.content for m in channel.sent)
+            )
+            await bus.publish_inbound(_inbound("/cancel"))
+            # Without the broker wake-up the turn stays blocked for the full
+            # five-second approval timeout, and the third message never lands.
+            await _wait_for(lambda: len(channel.sent) >= 3, timeout=1.0)
+        finally:
+            manager.request_stop()
+            await asyncio.wait_for(task, 3)
+        return [message.content for message in channel.sent]
+
+    contents = asyncio.run(scenario())
+    assert any("Cancelled" in content for content in contents)
+    assert executed == []
 
 
 # ---------------------------------------------------------------------------
