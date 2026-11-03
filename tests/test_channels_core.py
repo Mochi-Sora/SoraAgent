@@ -436,7 +436,7 @@ def test_chat_handler_uses_find_tools_for_discovery():
     assert executed == ["PO-1"]
 
 
-def test_chat_handler_runs_the_quality_guard():
+def test_chat_handler_reports_without_blocking_execution():
     executed: list[str] = []
     registry = ToolRegistry()
     registry.add(
@@ -457,14 +457,17 @@ def test_chat_handler_runs_the_quality_guard():
             )
 
     gate = QualityGate(
-        lambda proposal, context: EvalReport(False, 0.0, ["blocked"])
+        lambda trajectory: EvalReport(False, 0.0, ["advisory only"])
     )
     handler = ChatHandler(
         ActionProvider(), registry, quality=gate, max_steps=2
     )
 
-    assert handler.handle(_inbound("do it")) == "Trying."
-    assert executed == []
+    assert handler.handle(_inbound("do it")) == "finished"
+    assert executed == ["ran"]
+    report = handler.last_report("fake:42")
+    assert report is not None
+    assert report.passed is False
 
 
 class ApprovalProvider:

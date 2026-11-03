@@ -9,7 +9,6 @@ import pytest  # pyright: ignore[reportMissingImports]
 
 from sora_agent.agent import Agent
 from sora_agent.approval import ApprovalGate
-from sora_agent.eval import EvalReport, QualityGate
 from sora_agent.identity import IdentityConfig, IdentityStore
 from sora_agent.identity_provider import IdentityProvider
 from sora_agent.providers import (
@@ -427,89 +426,6 @@ def test_runner_reports_provider_errors() -> None:
     assert run.stop_reason == "provider_error"
     assert run.error == "RuntimeError: boom"
     assert run.steps == []
-
-
-def test_runner_quality_block_prevents_execution() -> None:
-    executed: list[str] = []
-    tools = ToolRegistry()
-    tools.add(
-        Tool(
-            lambda: executed.append("ran") or "done",
-            "side_effect",
-            "Do a thing.",
-        )
-    )
-    provider = StructuredProvider(
-        [
-            ModelTurn(
-                text="I will do it.",
-                tool_calls=[ToolCall(id="call_1", name="side_effect", arguments={})],
-            )
-        ]
-    )
-    quality = QualityGate(
-        lambda proposal, context: EvalReport(False, 0.0, ["not acceptable"])
-    )
-
-    def guard(proposal: str, context: str) -> tuple[bool, Any]:
-        report = quality.grade(proposal, context)
-        return report.passed, report
-
-    run = Runner(provider, ToolExecutor(tools)).run(
-        RunSpec(
-            messages=[Message("user", "Go")],
-            tools=tools.all(),
-            guard=guard,
-        )
-    )
-
-    assert run.stop_reason == "quality_blocked"
-    assert executed == []
-    assert run.steps[0].results[0].executed is False
-    assert run.steps[0].results[0].report.passed is False
-
-
-def test_quality_guard_runs_once_and_blocks_every_call_in_a_turn() -> None:
-    executed: list[str] = []
-    tools = ToolRegistry()
-    tools.add(Tool(lambda: executed.append("a") or "a", "a", "Tool A."))
-    tools.add(Tool(lambda: executed.append("b") or "b", "b", "Tool B."))
-    provider = StructuredProvider(
-        [
-            ModelTurn(
-                text="Doing both.",
-                tool_calls=[
-                    ToolCall(id="call_1", name="a", arguments={}),
-                    ToolCall(id="call_2", name="b", arguments={}),
-                ],
-            )
-        ]
-    )
-    guarded: list[str] = []
-
-    def guard(proposal: str, context: str) -> tuple[bool, Any]:
-        guarded.append(proposal)
-        return False, EvalReport(False, 0.0, ["not acceptable"])
-
-    run = Runner(provider, ToolExecutor(tools)).run(
-        RunSpec(
-            messages=[Message("user", "Go")],
-            tools=tools.all(),
-            guard=guard,
-        )
-    )
-
-    assert len(guarded) == 1
-    assert executed == []
-    assert [result.call.name for result in run.steps[0].results] == ["a", "b"]
-    tool_messages = [
-        message for message in run.messages if message.role == "tool"
-    ]
-    assert [message.tool_call_id for message in tool_messages] == [
-        "call_1",
-        "call_2",
-    ]
-    assert run.stop_reason == "quality_blocked"
 
 
 def test_agent_adapts_text_actions_at_the_provider_edge() -> None:

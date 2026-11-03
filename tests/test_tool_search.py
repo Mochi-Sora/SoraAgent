@@ -600,50 +600,6 @@ def test_agent_executes_recall_and_skips_other_calls_in_the_same_turn() -> None:
     assert result.action == "memory_recall"
 
 
-def test_recall_prelude_bypasses_the_quality_guard() -> None:
-    guarded: list[str] = []
-
-    def guard(proposal: str, _context: str):
-        guarded.append(proposal)
-        return True, None
-
-    provider = RecordingProvider(
-        [
-            ModelTurn(
-                tool_calls=[
-                    ToolCall(
-                        id="recall_1",
-                        name="memory_recall",
-                        arguments={"query": "PO-1"},
-                    )
-                ]
-            ),
-            ModelTurn(text="Done."),
-        ]
-    )
-    agent = Agent(
-        provider=provider,
-        registry=order_registry(),
-        memory=FakeMemory(),
-        identity=False,
-    )
-
-    # Use the runner directly so the gate's private guard can be observed.
-    run_registry = agent.registry.copy()
-    run_registry.add(agent.memory_tool)
-    run = Runner(provider, ToolExecutor(run_registry)).run(
-        RunSpec(
-            messages=[Message("user", "Check PO-1.")],
-            tools=run_registry.all(),
-            required_first_tool="memory_recall",
-            guard=guard,
-        )
-    )
-
-    assert run.stop_reason == "completed"
-    assert guarded == []
-
-
 def test_runner_requires_first_tool_before_a_direct_answer() -> None:
     registry = ToolRegistry()
     registry.add(Tool(lambda: "memory", "memory_recall", "Recall."))
@@ -908,12 +864,10 @@ def test_search_unlocks_at_most_the_match_limit() -> None:
     assert len(gate.visible_names()) == MATCH_LIMIT + 1
 
 
-def test_quality_gate_still_blocks_business_actions_after_recall() -> None:
+def test_quality_report_does_not_block_business_actions_after_recall() -> None:
     quality = QualityGate(
-        lambda proposal, context: EvalReport(
-            "expedite_order(" not in proposal,
-            1.0 if "expedite_order(" not in proposal else 0.0,
-            ["business action checked"],
+        lambda trajectory: EvalReport(
+            False, 0.0, ["advisory only"]
         )
     )
     provider = RecordingProvider(
@@ -945,6 +899,7 @@ def test_quality_gate_still_blocks_business_actions_after_recall() -> None:
                     )
                 ]
             ),
+            ModelTurn(text="Expedited."),
         ]
     )
     agent = Agent(
@@ -959,9 +914,18 @@ def test_quality_gate_still_blocks_business_actions_after_recall() -> None:
 
     result = agent.run("Expedite PO-1.", state=state)
 
-    assert result.stop_reason == "quality_blocked"
-    assert state.state == State.OPEN
-    assert result.steps[-1].results[0].executed is False
+    assert result.stop_reason == "completed"
+    assert result.action == "expedite_order"
+    assert state.state == State.EXPEDITED
+    assert result.report is not None
+    assert result.report.passed is False
+    executed = [
+        tool_result
+        for step in result.steps
+        for tool_result in step.results
+        if tool_result.call.name == "expedite_order"
+    ]
+    assert executed and executed[0].executed is True
 
 
 def test_mock_provider_follows_recall_discovery_and_action() -> None:

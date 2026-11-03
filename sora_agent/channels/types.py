@@ -57,3 +57,4 @@ class TurnReply:
 
     text: str
     delivered: bool = False
+    report: Any = None

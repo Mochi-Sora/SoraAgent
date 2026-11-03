@@ -2,7 +2,8 @@
 
 The ``Runner`` stays a pure model/tool loop.  This module owns the per-run
 assembly around it: registry isolation, lazy tool discovery, memory-tool
-registration, the quality guard, and the executor.
+registration, and the executor.  Evaluation happens *after* a run and is not
+part of this path.
 """
 
 from __future__ import annotations
@@ -11,7 +12,6 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .eval import QualityGate
 from .providers import Message
 from .runner import RunEvent, Runner, RunResult, RunSpec
 from .tool_search import FIND_TOOLS_NAME, FindToolsTool, ToolGate
@@ -40,7 +40,6 @@ class RunRequest:
     messages: list[Message]
     memory_tool: Any = None
     approval: Any = None
-    quality: QualityGate | None = None
     max_steps: int = 10
     max_result_chars: int = 4000
     tool_timeout: float = 30.0
@@ -88,17 +87,7 @@ class AgentRuntime:
             tool_timeout=request.tool_timeout,
         )
 
-        guard: Callable[[str, str], tuple[bool, Any]] | None = None
-        if request.quality is not None:
-            quality = request.quality
-
-            def _guard(proposal: str, context: str) -> tuple[bool, Any]:
-                report = quality.grade(proposal, context)
-                return bool(getattr(report, "passed", False)), report
-
-            guard = _guard
-
-        return Runner(request.provider, executor).run(
+        result = Runner(request.provider, executor).run(
             RunSpec(
                 messages=request.messages,
                 tools=gate.visible(),
@@ -106,7 +95,6 @@ class AgentRuntime:
                 required_first_tool=required or None,
                 max_steps=request.max_steps,
                 context=request.context,
-                guard=guard,
                 on_delta=request.on_delta,
                 should_stop=request.should_stop,
                 on_event=request.on_event,
@@ -115,3 +103,20 @@ class AgentRuntime:
                 retry_max_delay=request.retry_max_delay,
             )
         )
+        result.tool_schemas = _schemas(run_registry)
+        result.tool_requirements = {
+            tool.name: tuple(getattr(tool, "requires", ()) or ())
+            for tool in run_registry.all()
+        }
+        return result
+
+
+def _schemas(registry: ToolRegistry) -> dict[str, dict[str, Any]]:
+    schemas: dict[str, dict[str, Any]] = {}
+    for tool in registry.all():
+        try:
+            schemas[tool.name] = tool.schema
+        except Exception as exc:  # noqa: BLE001 - evaluation is best-effort
+            log.debug("schema for %s unavailable: %s", tool.name, exc)
+            schemas[tool.name] = {}
+    return schemas

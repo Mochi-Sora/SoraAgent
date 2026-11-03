@@ -48,12 +48,14 @@ class Tool:
         description: str,
         needs_approval: bool = False,
         isolated: bool = False,
+        requires: tuple[str, ...] = (),
     ) -> None:
         self.fn = fn
         self.name = name
         self.description = description
         self.needs_approval = needs_approval
         self.isolated = isolated
+        self.requires = tuple(str(item) for item in requires)
 
     @property
     def schema(self) -> dict[str, Any]:
@@ -225,6 +227,7 @@ class ToolResult:
     stop_reason: str = ""
     report: Any = None
     skipped: bool = False
+    isolated: bool = False
 
 
 class ToolExecutor:
@@ -296,8 +299,9 @@ class ToolExecutor:
                 result.stop_reason = "approval_rejected"
                 return result
 
+        result.isolated = bool(getattr(tool, "isolated", False))
         try:
-            if getattr(tool, "isolated", False):
+            if result.isolated:
                 raw = run_isolated(
                     tool.fn, call.arguments, self.tool_timeout
                 )

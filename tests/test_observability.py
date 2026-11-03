@@ -93,6 +93,30 @@ def test_metrics_count_steps_tools_and_tokens():
     assert metrics.provider_duration >= 0
 
 
+def test_repeated_calls_are_counted_as_redundant():
+    class RepeatProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete_turn(self, messages, tools) -> ModelTurn:
+            self.calls += 1
+            if self.calls <= 2:
+                return ModelTurn(
+                    tool_calls=[
+                        ToolCall(
+                            f"c{self.calls}", "echo", {"text": "hi"}
+                        )
+                    ]
+                )
+            return ModelTurn(text="done")
+
+    result = _run(RepeatProvider())
+
+    assert result.metrics.tool_calls == 2
+    assert result.metrics.executed_tool_calls == 2
+    assert result.metrics.redundant_tool_calls == 1
+
+
 def test_tool_errors_are_counted():
     registry = ToolRegistry()
 
@@ -241,6 +265,8 @@ def test_status_reports_the_last_run():
     assert "1 steps" in status
     assert "0 tool calls" in status
     assert "token usage unavailable" in status
+    assert "ASR 0/0" in status
+    assert "eval pass" in status
 
 
 def test_status_without_a_run():

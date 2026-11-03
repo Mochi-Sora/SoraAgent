@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .approval import ApprovalGate
-from .eval import QualityGate
+from .eval import QualityGate, trajectory_from_run
 from .providers import Message, ModelProvider, ToolCall
 from .runner import RunEvent, RunResult, Step
 from .runtime import AgentRuntime, RunRequest, wrap_identity
@@ -127,7 +127,6 @@ class Agent:
                 ],
                 memory_tool=self.memory_tool,
                 approval=self.approval,
-                quality=self.quality,
                 max_steps=self.max_steps,
                 max_result_chars=self.max_tool_result_chars,
                 tool_timeout=self.tool_timeout,
@@ -139,7 +138,13 @@ class Agent:
                 ),
             )
         )
-        return self._to_result(task, state, run)
+        result = self._to_result(task, state, run)
+        result.report = self.quality.evaluate(
+            trajectory_from_run(
+                task, run, final_answer=result.proposal
+            )
+        )
+        return result
 
     def _system_prompt(self) -> str:
         prompt = SYSTEM_PROMPT + TOOLS_POLICY

@@ -8,9 +8,11 @@ stops the run, or the step budget is exhausted.
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -58,6 +60,11 @@ class RunMetrics:
     tool_calls: int = 0
     tool_errors: int = 0
     tool_duration: float = 0.0
+    executed_tool_calls: int = 0
+    skipped_tool_calls: int = 0
+    approval_denials: int = 0
+    redundant_tool_calls: int = 0
+    isolated_tool_calls: int = 0
     streamed_chars: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -70,9 +77,6 @@ class RunSpec:
     tools: list[Any]
     max_steps: int = 10
     context: str = ""
-    # Called once per action-bearing turn, before any tool runs. Returns
-    # (passed, report). A failed guard stops the run with quality_blocked.
-    guard: Callable[[str, str], tuple[bool, Any]] | None = None
     # Recompute the visible tool list for every model step (lazy discovery).
     tool_provider: Callable[[], list[Any]] | None = None
     # Called with (chunk, step_index) as the model produces text.
@@ -100,6 +104,10 @@ class RunResult:
     report: Any = None
     error: str = ""
     metrics: RunMetrics = field(default_factory=RunMetrics)
+    run_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    required_first_tool: str | None = None
+    tool_schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
+    tool_requirements: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
     def tool_results(self) -> list[ToolResult]:
@@ -125,6 +133,8 @@ class Runner:
         corrections = 0
         started = time.monotonic()
         metrics = RunMetrics()
+        run_id = uuid.uuid4().hex
+        seen_calls: set[str] = set()
 
         def cancelled() -> bool:
             return spec.should_stop is not None and spec.should_stop()
@@ -209,6 +219,7 @@ class Runner:
                             f"Skipped: your first action must be "
                             f"`{required}`; nothing was executed.",
                         )
+                        metrics.skipped_tool_calls += len(results)
                         for result in results:
                             messages.append(_tool_message(result))
                     corrections += 1
@@ -247,38 +258,6 @@ class Runner:
 
             # Recall is a read-only prelude; quality policy applies to the
             # consequential actions that follow.
-            if spec.guard is not None and not recall_turn:
-                proposal = "\n".join(
-                    part
-                    for part in (
-                        turn.text.strip(),
-                        _render_calls(calls),
-                    )
-                    if part
-                )
-                try:
-                    passed, guard_report = spec.guard(
-                        proposal, spec.context
-                    )
-                except Exception as exc:  # noqa: BLE001 - a broken gate blocks
-                    passed, guard_report = False, _GuardFailure(str(exc))
-                if report is None and guard_report is not None:
-                    report = guard_report
-                if not passed:
-                    results = _blocked_results(calls, guard_report)
-                    for result in results:
-                        messages.append(_tool_message(result))
-                    steps.append(
-                        Step(
-                            index=index,
-                            turn=turn,
-                            results=results,
-                            tools=visible,
-                        )
-                    )
-                    stop_reason = "quality_blocked"
-                    break
-
             execute_calls = calls[:1] if recall_turn else calls
             results = []
             stopped = ""
@@ -286,6 +265,10 @@ class Runner:
                 if cancelled():
                     stopped = "cancelled"
                     break
+                signature = _call_signature(call)
+                if signature in seen_calls:
+                    metrics.redundant_tool_calls += 1
+                seen_calls.add(signature)
                 tool_started = time.monotonic()
                 try:
                     result = self.executor.execute(call)
@@ -300,6 +283,12 @@ class Runner:
                 tool_duration = time.monotonic() - tool_started
                 metrics.tool_calls += 1
                 metrics.tool_duration += tool_duration
+                if result.executed:
+                    metrics.executed_tool_calls += 1
+                if result.isolated:
+                    metrics.isolated_tool_calls += 1
+                if result.approval_required and not result.approved:
+                    metrics.approval_denials += 1
                 if result.is_error:
                     metrics.tool_errors += 1
                 notify(
@@ -323,6 +312,7 @@ class Runner:
             if stopped:
                 # Keep the assistant/tool pairing valid even though the run
                 # ends before the remaining calls execute.
+                metrics.skipped_tool_calls += max(0, len(calls) - len(results))
                 for call in calls[len(results):]:
                     messages.append(
                         Message(
@@ -340,6 +330,7 @@ class Runner:
                     f"Skipped: `{required}` must complete before other tools.",
                 ):
                     results.append(result)
+                    metrics.skipped_tool_calls += 1
                     messages.append(_tool_message(result))
 
             steps.append(
@@ -372,35 +363,9 @@ class Runner:
             report=report,
             error=error,
             metrics=metrics,
+            run_id=run_id,
+            required_first_tool=required or None,
         )
-
-
-class _GuardFailure:
-    def __init__(self, message: str) -> None:
-        self.passed = False
-        self.message = message
-
-    def __str__(self) -> str:
-        return f"[FAIL] guard failed: {self.message}"
-
-
-def _blocked_results(
-    calls: list[ToolCall], report: Any
-) -> list[ToolResult]:
-    content = "Blocked by quality gate"
-    if report is not None:
-        content += ":\n" + str(report)
-    return [
-        ToolResult(
-            call=call,
-            content=content,
-            is_error=True,
-            stopped=True,
-            stop_reason="quality_blocked",
-            report=report,
-        )
-        for call in calls
-    ]
 
 
 def _skipped_results(
@@ -533,7 +498,5 @@ def _tool_message(result: ToolResult) -> Message:
     )
 
 
-def _render_calls(calls: list[ToolCall]) -> str:
-    return "\n".join(
-        f"{call.name}({call.arguments})" for call in calls
-    )
+def _call_signature(call: ToolCall) -> str:
+    return f"{call.name}:{json.dumps(call.arguments, sort_keys=True, default=str)}"

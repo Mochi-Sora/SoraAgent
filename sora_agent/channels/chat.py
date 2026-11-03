@@ -10,7 +10,12 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ..agent import MEMORY_POLICY, TOOLS_POLICY
-from ..eval import QualityGate
+from ..eval import (
+    QualityGate,
+    TrajectoryMetrics,
+    trajectory_from_run,
+    trajectory_metrics,
+)
 from ..providers import Message
 from ..runner import RunEvent, RunMetrics, RunResult
 from ..runtime import AgentRuntime, RunRequest, wrap_identity
@@ -205,6 +210,8 @@ class ChatHandler:
         self._active: dict[str, CancelToken] = {}
         self._last_metrics: dict[str, RunMetrics] = {}
         self._last_stop: dict[str, str] = {}
+        self._last_report: dict[str, Any] = {}
+        self._last_efficiency: dict[str, TrajectoryMetrics] = {}
         self._lock = threading.Lock()
 
     def handle(self, inbound: InboundMessage) -> str | TurnReply:
@@ -243,7 +250,6 @@ class ChatHandler:
                     messages=messages,
                     memory_tool=self.memory_tool,
                     approval=approval,
-                    quality=self.quality,
                     max_steps=self.max_steps,
                     max_result_chars=self.max_tool_result_chars,
                     tool_timeout=self.tool_timeout,
@@ -260,12 +266,19 @@ class ChatHandler:
                     del self._active[key]
         self._notify("after_run", run, state)
 
+        reply = _reply_text(run)
+        trajectory = trajectory_from_run(
+            inbound.content, run, final_answer=reply
+        )
+        report = self.quality.evaluate(trajectory)
+        efficiency = trajectory_metrics(trajectory)
         with self._lock:
             self._last_metrics[key] = run.metrics
             self._last_stop[key] = run.stop_reason
+            self._last_report[key] = report
+            self._last_efficiency[key] = efficiency
 
         delivered = writer.finish(run) if writer is not None else False
-        reply = _reply_text(run)
         stored = list(history)
         stored.append(Message("user", inbound.content))
         stored.append(Message("assistant", reply))
@@ -276,7 +289,7 @@ class ChatHandler:
             self._store_history(key, stored)
         if writer is None:
             return reply
-        return TurnReply(reply, delivered=delivered)
+        return TurnReply(reply, delivered=delivered, report=report)
 
     def cancel(self, session_key: str) -> bool:
         """Ask a running turn to stop.  Returns whether one was running."""
@@ -310,12 +323,27 @@ class ChatHandler:
             return "Conversation reset."
         if command == "/status":
             return self._status(inbound.session_key)
+        if command == "/eval":
+            return self.eval_report(inbound.session_key)
         return None
+
+    def last_report(self, session_key: str):
+        """Return the latest evaluation report, if any."""
+        with self._lock:
+            return self._last_report.get(session_key)
+
+    def eval_report(self, session_key: str) -> str:
+        report = self.last_report(session_key)
+        if report is None:
+            return "No evaluation for this session yet."
+        return str(report)
 
     def _status(self, session_key: str) -> str:
         with self._lock:
             metrics = self._last_metrics.get(session_key)
             stop = self._last_stop.get(session_key, "")
+            report = self._last_report.get(session_key)
+            efficiency = self._last_efficiency.get(session_key)
         if metrics is None:
             return "No run in this session yet."
         tokens = (
@@ -323,11 +351,32 @@ class ChatHandler:
             if metrics.total_tokens
             else "token usage unavailable"
         )
+        extras: list[str] = []
+        if efficiency is not None:
+            extras.append(
+                f"ASR {efficiency.successful_tool_calls}/"
+                f"{efficiency.attempted_tool_calls}"
+            )
+            if efficiency.redundant_call_rate:
+                extras.append(
+                    f"redundant {efficiency.redundant_call_rate:.0%}"
+                )
+        if report is not None:
+            if report.error:
+                extras.append("eval error")
+            else:
+                verdict = (
+                    "skipped"
+                    if report.skipped
+                    else ("pass" if report.passed else "fail")
+                )
+                extras.append(f"eval {verdict} {report.score:.2f}")
+        suffix = ("; " + ", ".join(extras)) if extras else ""
         return (
             f"Last run: {stop or 'unknown'}, {metrics.steps} steps, "
             f"{metrics.tool_calls} tool calls "
             f"({metrics.tool_errors} errors), "
-            f"{metrics.duration:.1f}s, {tokens}."
+            f"{metrics.duration:.1f}s, {tokens}{suffix}"
         )
 
     def reset(self, session_key: str) -> None:
