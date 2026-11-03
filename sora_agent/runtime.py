@@ -43,11 +43,15 @@ class RunRequest:
     quality: QualityGate | None = None
     max_steps: int = 10
     max_result_chars: int = 4000
+    tool_timeout: float = 30.0
     context: str = ""
     after_execute: Callable[[ToolCall, ToolResult], None] | None = None
     required_first_tool: str | None = None
     on_delta: Callable[[str, int], None] | None = None
     should_stop: Callable[[], bool] | None = None
+    provider_retries: int = 2
+    retry_base_delay: float = 0.5
+    retry_max_delay: float = 8.0
 
 
 class AgentRuntime:
@@ -80,6 +84,7 @@ class AgentRuntime:
             approval=request.approval,
             max_result_chars=request.max_result_chars,
             after_execute=request.after_execute,
+            tool_timeout=request.tool_timeout,
         )
 
         guard: Callable[[str, str], tuple[bool, Any]] | None = None
@@ -103,5 +108,8 @@ class AgentRuntime:
                 guard=guard,
                 on_delta=request.on_delta,
                 should_stop=request.should_stop,
+                provider_retries=request.provider_retries,
+                retry_base_delay=request.retry_base_delay,
+                retry_max_delay=request.retry_max_delay,
             )
         )

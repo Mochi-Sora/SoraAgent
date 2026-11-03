@@ -28,6 +28,7 @@ from typing import (
     get_type_hints,
 )
 
+from .isolation import IsolationError, ToolTimeout, run_isolated
 from .providers import ToolCall
 
 log = logging.getLogger(__name__)
@@ -46,11 +47,13 @@ class Tool:
         name: str,
         description: str,
         needs_approval: bool = False,
+        isolated: bool = False,
     ) -> None:
         self.fn = fn
         self.name = name
         self.description = description
         self.needs_approval = needs_approval
+        self.isolated = isolated
 
     @property
     def schema(self) -> dict[str, Any]:
@@ -233,11 +236,13 @@ class ToolExecutor:
         approval: Any = None,
         max_result_chars: int = 4000,
         after_execute: Callable[[ToolCall, ToolResult], None] | None = None,
+        tool_timeout: float = 30.0,
     ) -> None:
         self.registry = registry
         self.approval = approval
         self.max_result_chars = max(0, int(max_result_chars))
         self.after_execute = after_execute
+        self.tool_timeout = max(0.1, float(tool_timeout))
 
     def execute(self, call: ToolCall) -> ToolResult:
         result = ToolResult(call=call, content="")
@@ -292,7 +297,20 @@ class ToolExecutor:
                 return result
 
         try:
-            raw = tool.call(**call.arguments)
+            if getattr(tool, "isolated", False):
+                raw = run_isolated(
+                    tool.fn, call.arguments, self.tool_timeout
+                )
+            else:
+                raw = tool.call(**call.arguments)
+        except ToolTimeout as exc:
+            result.content = str(exc)
+            result.is_error = True
+            return result
+        except IsolationError as exc:
+            result.content = f"isolated tool failed: {exc}"
+            result.is_error = True
+            return result
         except Exception as exc:  # noqa: BLE001 - tool failures become observations
             result.content = f"tool call failed: {exc}"
             result.is_error = True

@@ -17,6 +17,7 @@ from .bus import MessageBus
 from .chat import ChatHandler
 from .manager import ChannelManager
 from .registry import discover_plugins, load_channel_class
+from .sessions import SessionStore
 from .telegram.config import TelegramConfig, split_ids
 from .types import OutboundMessage
 
@@ -61,11 +62,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             _serve(
                 channel_cls,
                 config,
-                provider=default_provider(args.provider),
+                provider=default_provider(
+                    args.provider, timeout=args.provider_timeout
+                ),
                 registry=_registry(args.tools),
                 memory=_memory(args.memory),
                 identity=_identity(args.identity),
+                sessions=None if args.no_sessions else SessionStore(),
                 max_steps=args.max_steps,
+                max_turns=args.max_turns,
+                tool_timeout=args.tool_timeout,
+                provider_retries=args.provider_retries,
                 approval_timeout=args.approval_timeout,
             )
         )
@@ -82,7 +89,11 @@ async def _serve(
     registry: ToolRegistry,
     memory,
     identity,
+    sessions,
     max_steps: int,
+    max_turns: int,
+    tool_timeout: float,
+    provider_retries: int,
     approval_timeout: float,
 ) -> None:
     bus = MessageBus()
@@ -103,8 +114,12 @@ async def _serve(
         memory=memory,
         identity=identity,
         approvals=approvals,
+        sessions=sessions,
         emitter=emit,
         max_steps=max_steps,
+        max_turns=max_turns,
+        tool_timeout=tool_timeout,
+        provider_retries=provider_retries,
     )
     channel = channel_cls(config, bus)
     manager = ChannelManager(
@@ -148,6 +163,35 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--max-steps", type=int, default=8, help="tool steps per turn"
+    )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=40,
+        help="conversation turns kept per session",
+    )
+    parser.add_argument(
+        "--no-sessions",
+        action="store_true",
+        help="keep conversation history in memory only",
+    )
+    parser.add_argument(
+        "--provider-timeout",
+        type=float,
+        default=30.0,
+        help="seconds before a provider request is abandoned",
+    )
+    parser.add_argument(
+        "--provider-retries",
+        type=int,
+        default=2,
+        help="retries for transient provider failures",
+    )
+    parser.add_argument(
+        "--tool-timeout",
+        type=float,
+        default=30.0,
+        help="seconds before an isolated tool process is killed",
     )
     parser.add_argument(
         "--tools",

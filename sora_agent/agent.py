@@ -77,6 +77,8 @@ class Agent:
         identity: Any = None,
         max_steps: int = 10,
         max_tool_result_chars: int = 4000,
+        tool_timeout: float = 30.0,
+        provider_retries: int = 2,
     ) -> None:
         self.provider = provider
         self.registry = registry or ToolRegistry()
@@ -89,6 +91,8 @@ class Agent:
         self.quality = quality or QualityGate()
         self.max_steps = max(0, int(max_steps))
         self.max_tool_result_chars = max(0, int(max_tool_result_chars))
+        self.tool_timeout = max(0.1, float(tool_timeout))
+        self.provider_retries = max(0, int(provider_retries))
         self.identity = self._resolve_identity(identity)
         self.memory = self._resolve_memory(memory, self.identity)
         self.memory_tool: Any = None
@@ -124,6 +128,8 @@ class Agent:
                 quality=self.quality,
                 max_steps=self.max_steps,
                 max_result_chars=self.max_tool_result_chars,
+                tool_timeout=self.tool_timeout,
+                provider_retries=self.provider_retries,
                 context=context,
                 after_execute=lambda call, result: self._after_tool(
                     state, call, result

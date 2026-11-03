@@ -421,10 +421,12 @@ class OpenAIChatProvider:
         model: str = "gpt-4o-mini",
         api_key: str | None = None,
         base_url: str | None = None,
+        timeout: float = 30.0,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
         self.base_url = base_url
+        self.timeout = timeout
 
     def complete_turn(
         self, messages: list[Message], tools: list[Tool]
@@ -491,7 +493,11 @@ class OpenAIChatProvider:
                 "OpenAIChatProvider requires the optional 'openai' package. "
                 "Install it with: pip install 'sora-agent[openai]'"
             ) from exc
-        return openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
+        return openai.OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            timeout=self.timeout,
+        )
 
     def _payload(
         self, messages: list[Message], tools: list[Tool]
@@ -603,7 +609,9 @@ def _parse_arguments(raw: Any) -> tuple[dict[str, Any], str]:
     return value, ""
 
 
-def default_provider(kind: str = "mock") -> ModelProvider:
+def default_provider(
+    kind: str = "mock", timeout: float = 30.0
+) -> ModelProvider:
     kind = kind.lower()
     if kind in {"mock", "demo"}:
         return MockProvider()
@@ -611,17 +619,20 @@ def default_provider(kind: str = "mock") -> ModelProvider:
         return OpenAIChatProvider(
             model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
             base_url=os.getenv("OPENAI_BASE_URL"),
+            timeout=timeout,
         )
     if kind in {"deepseek", "ds"}:
         return OpenAIChatProvider(
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
             api_key=os.getenv("DEEPSEEK_API_KEY"),
             base_url="https://api.deepseek.com",
+            timeout=timeout,
         )
     if kind in {"qwen", "dashscope"}:
         return OpenAIChatProvider(
             model=os.getenv("QWEN_MODEL", "qwen-plus"),
             api_key=os.getenv("DASHSCOPE_API_KEY"),
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            timeout=timeout,
         )
     raise ValueError(f"unknown provider kind: {kind}")

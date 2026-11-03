@@ -17,6 +17,7 @@ from ..runtime import AgentRuntime, RunRequest, wrap_identity
 from ..tool_search import FIND_TOOLS_NAME
 from ..tools import ToolRegistry
 from .approval import ApprovalBroker
+from .sessions import SessionStore
 from .types import (
     STREAM_DELTA_KIND,
     STREAM_END_KIND,
@@ -158,11 +159,14 @@ class ChatHandler:
         memory: Any = None,
         identity: Any = None,
         approvals: ApprovalBroker | None = None,
+        sessions: SessionStore | None = None,
         quality: QualityGate | None = None,
         emitter: Callable[[OutboundMessage], None] | None = None,
         max_steps: int = 8,
         max_turns: int = 40,
         max_tool_result_chars: int = 4000,
+        tool_timeout: float = 30.0,
+        provider_retries: int = 2,
         max_stream_chars: int = 3500,
         system_prompt: str = CHAT_SYSTEM_PROMPT,
     ) -> None:
@@ -176,11 +180,14 @@ class ChatHandler:
         self.memory = memory
         self.identity = None if identity is False else identity
         self.approvals = approvals
+        self.sessions = sessions
         self.quality = quality or QualityGate()
         self.emitter = emitter
         self.max_steps = max(1, int(max_steps))
         self.max_turns = max(0, int(max_turns))
         self.max_tool_result_chars = max(0, int(max_tool_result_chars))
+        self.tool_timeout = max(0.1, float(tool_timeout))
+        self.provider_retries = max(0, int(provider_retries))
         self.max_stream_chars = max(1, int(max_stream_chars))
         self.system_prompt = system_prompt
         if self.identity is not None:
@@ -201,7 +208,7 @@ class ChatHandler:
         key = inbound.session_key
         token = CancelToken()
         with self._lock:
-            history = list(self._history.get(key, ()))
+            history = self._load_history(key)
             self._active[key] = token
 
         approval = (
@@ -235,6 +242,8 @@ class ChatHandler:
                     quality=self.quality,
                     max_steps=self.max_steps,
                     max_result_chars=self.max_tool_result_chars,
+                    tool_timeout=self.tool_timeout,
+                    provider_retries=self.provider_retries,
                     context=f"channel={inbound.channel}",
                     on_delta=on_delta if writer is not None else None,
                     should_stop=lambda: token.cancelled,
@@ -248,13 +257,14 @@ class ChatHandler:
 
         delivered = writer.finish(run) if writer is not None else False
         reply = _reply_text(run)
+        stored = list(history)
+        stored.append(Message("user", inbound.content))
+        stored.append(Message("assistant", reply))
+        limit = self.max_turns * 2
+        if limit and len(stored) > limit:
+            del stored[: len(stored) - limit]
         with self._lock:
-            stored = self._history.setdefault(key, [])
-            stored.append(Message("user", inbound.content))
-            stored.append(Message("assistant", reply))
-            limit = self.max_turns * 2
-            if limit and len(stored) > limit:
-                del stored[: len(stored) - limit]
+            self._store_history(key, stored)
         if writer is None:
             return reply
         return TurnReply(reply, delivered=delivered)
@@ -292,9 +302,22 @@ class ChatHandler:
         return None
 
     def reset(self, session_key: str) -> None:
-        """Forget one conversation."""
+        """Forget one conversation, on disk as well as in memory."""
         with self._lock:
             self._history.pop(session_key, None)
+            if self.sessions is not None:
+                self.sessions.clear(session_key)
+
+    def _load_history(self, key: str) -> list[Message]:
+        if self.sessions is not None:
+            return self.sessions.load(key)
+        return list(self._history.get(key, ()))
+
+    def _store_history(self, key: str, messages: list[Message]) -> None:
+        if self.sessions is not None:
+            self.sessions.save(key, messages)
+        else:
+            self._history[key] = messages
 
     def _prompt(self) -> str:
         prompt = self.system_prompt + TOOLS_POLICY

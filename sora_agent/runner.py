@@ -8,11 +8,16 @@ stops the run, or the step budget is exhausted.
 
 from __future__ import annotations
 
+import logging
+import random
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .providers import Message, ModelTurn, ToolCall, provider_turn
 from .tools import ToolExecutor, ToolResult
+
+log = logging.getLogger(__name__)
 
 #: Corrections sent when the model skips the required first tool.  A third
 #: failure hard-stops the run instead of letting it continue without the tool.
@@ -44,6 +49,11 @@ class RunSpec:
     on_delta: Callable[[str, int], None] | None = None
     # Cooperative cancellation, checked between steps and between tool calls.
     should_stop: Callable[[], bool] | None = None
+    # Transient provider failures are retried with exponential backoff and
+    # full jitter.  A retry never repeats a turn that already streamed text.
+    provider_retries: int = 2
+    retry_base_delay: float = 0.5
+    retry_max_delay: float = 8.0
     # When set, the model's first action must be this tool.  Text reasoning is
     # allowed, but a direct answer or another tool call is rejected and retried.
     required_first_tool: str | None = None
@@ -94,19 +104,17 @@ class Runner:
                     if spec.tool_provider is not None
                     else spec.tools
                 )
-                on_delta: Callable[[str], None] | None = None
-                if spec.on_delta is not None:
-                    on_delta = _bind_delta(spec.on_delta, index)
-                turn = provider_turn(
-                    self.provider,
-                    messages,
-                    tools,
-                    on_delta=on_delta,
-                    should_stop=spec.should_stop,
-                )
             except Exception as exc:  # noqa: BLE001 - surface provider failures
                 stop_reason = "provider_error"
                 error = f"{type(exc).__name__}: {exc}"
+                break
+
+            turn, provider_error, was_cancelled = _turn_with_retries(
+                self.provider, spec, messages, tools, index
+            )
+            if turn is None:
+                stop_reason = "cancelled" if was_cancelled else "provider_error"
+                error = provider_error
                 break
 
             if cancelled():
@@ -307,6 +315,86 @@ def _skipped_results(
         ToolResult(call=call, content=content, is_error=True, skipped=True)
         for call in calls
     ]
+
+
+class _DeltaCounter:
+    """Count streamed chunks so a retry never repeats visible text."""
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    def wrap(self, sink: Callable[[str], None]) -> Callable[[str], None]:
+        def emit(chunk: str) -> None:
+            self.count += 1
+            sink(chunk)
+
+        return emit
+
+
+def _turn_with_retries(
+    provider: Any,
+    spec: RunSpec,
+    messages: list[Message],
+    tools: list[Any],
+    step: int,
+) -> tuple[ModelTurn | None, str, bool]:
+    """Call the provider, retrying only failures that streamed nothing."""
+    retries = max(0, int(spec.provider_retries))
+    attempt = 0
+    while True:
+        counter = _DeltaCounter()
+        on_delta: Callable[[str], None] | None = None
+        if spec.on_delta is not None:
+            on_delta = counter.wrap(_bind_delta(spec.on_delta, step))
+        try:
+            turn = provider_turn(
+                provider,
+                messages,
+                tools,
+                on_delta=on_delta,
+                should_stop=spec.should_stop,
+            )
+            return turn, "", False
+        except Exception as exc:  # noqa: BLE001 - retry policy lives here
+            cancelled = spec.should_stop is not None and spec.should_stop()
+            if attempt >= retries or counter.count > 0 or cancelled:
+                return None, f"{type(exc).__name__}: {exc}", cancelled
+            delay = _retry_delay(spec, attempt)
+            log.warning(
+                "provider failed (attempt %d/%d): %s; retrying in %.2fs",
+                attempt + 1,
+                retries + 1,
+                exc,
+                delay,
+            )
+            _sleep_unless_cancelled(delay, spec.should_stop)
+            if spec.should_stop is not None and spec.should_stop():
+                return None, f"{type(exc).__name__}: {exc}", True
+            attempt += 1
+
+
+def _retry_delay(spec: RunSpec, attempt: int) -> float:
+    base = max(0.0, float(spec.retry_base_delay))
+    cap = max(0.0, float(spec.retry_max_delay))
+    window = min(cap, base * (2**attempt)) if base else 0.0
+    if window <= 0:
+        return 0.0
+    # Equal jitter keeps every retry at least half the window, so a retry never
+    # collapses to a hot loop.
+    return random.uniform(window * 0.5, window)
+
+
+def _sleep_unless_cancelled(
+    delay: float, should_stop: Callable[[], bool] | None
+) -> None:
+    deadline = time.monotonic() + max(0.0, delay)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        if should_stop is not None and should_stop():
+            return
+        time.sleep(min(0.05, remaining))
 
 
 def _bind_delta(
