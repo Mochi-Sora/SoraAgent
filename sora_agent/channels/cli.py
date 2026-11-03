@@ -18,6 +18,7 @@ from .chat import ChatHandler
 from .manager import ChannelManager
 from .registry import discover_plugins, load_channel_class
 from .telegram.config import TelegramConfig, split_ids
+from .types import OutboundMessage
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -86,19 +87,34 @@ async def _serve(
 ) -> None:
     bus = MessageBus()
     approvals = ApprovalBroker(bus, timeout=approval_timeout)
+    loop = asyncio.get_running_loop()
+
+    def emit(message: OutboundMessage) -> None:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                bus.publish_outbound(message), loop
+            )
+        except RuntimeError:
+            pass  # the loop is already gone
+
     handler = ChatHandler(
         provider,
         registry,
         memory=memory,
         identity=identity,
         approvals=approvals,
+        emitter=emit,
         max_steps=max_steps,
     )
     channel = channel_cls(config, bus)
     manager = ChannelManager(
-        [channel], bus, handler.handle, approvals=approvals
+        [channel],
+        bus,
+        handler.handle,
+        approvals=approvals,
+        commands=handler.handle_command,
+        on_shutdown=handler.cancel_all,
     )
-    loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         with contextlib.suppress(NotImplementedError, RuntimeError, AttributeError):
             loop.add_signal_handler(sig, manager.request_stop)

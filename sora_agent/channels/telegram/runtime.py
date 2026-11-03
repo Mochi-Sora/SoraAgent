@@ -10,7 +10,11 @@ from typing import Any
 from ..approval import APPROVAL_CALLBACK_KIND, APPROVAL_KIND
 from ..base import BaseChannel
 from ..bus import MessageBus
-from ..types import OutboundMessage
+from ..types import (
+    STREAM_DELTA_KIND,
+    STREAM_END_KIND,
+    OutboundMessage,
+)
 from .config import TelegramConfig
 from .transport import TelegramTransport, UrllibTelegramTransport
 
@@ -37,6 +41,7 @@ class TelegramChannel(BaseChannel):
 
     name = "telegram"
     display_name = "Telegram"
+    supports_streaming = True
 
     def __init__(
         self,
@@ -55,6 +60,8 @@ class TelegramChannel(BaseChannel):
             config.api_base,
             request_timeout=config.request_timeout,
         )
+        self._streams: dict[str, str] = {}
+        self._stream_text: dict[str, str] = {}
 
     async def start(self) -> None:
         """Poll until :meth:`stop` is called.
@@ -98,6 +105,15 @@ class TelegramChannel(BaseChannel):
         self._running = False
 
     async def send(self, msg: OutboundMessage) -> None:
+        kind = msg.metadata.get("kind")
+        if kind == STREAM_END_KIND:
+            stream_id = str(msg.metadata.get("stream_id") or "")
+            self._streams.pop(stream_id, None)
+            self._stream_text.pop(stream_id, None)
+            return
+        if kind == STREAM_DELTA_KIND:
+            await self._send_delta(msg)
+            return
         chunks = split_text(msg.content, self.config.max_message_chars)
         markup = _approval_markup(msg)
         for index, chunk in enumerate(chunks):
@@ -109,6 +125,38 @@ class TelegramChannel(BaseChannel):
                 parse_mode=self.config.parse_mode,
                 reply_markup=markup if index == 0 else None,
             )
+
+    async def _send_delta(self, msg: OutboundMessage) -> None:
+        """Keep one live message per stream and edit it as text grows."""
+        stream_id = str(msg.metadata.get("stream_id") or "")
+        text = msg.content
+        if not stream_id or not text.strip():
+            return
+        if len(text) > self.config.max_message_chars:
+            # Too large to edit live; the final message is chunked normally.
+            return
+        if self._stream_text.get(stream_id) == text:
+            return
+        message_id = self._streams.get(stream_id)
+        if not message_id:
+            sent_id = await asyncio.to_thread(
+                self.transport.send_message,
+                msg.chat_id,
+                text,
+                reply_to=msg.reply_to,
+                parse_mode=self.config.parse_mode,
+            )
+            self._streams[stream_id] = sent_id or ""
+            self._stream_text[stream_id] = text
+            return
+        await asyncio.to_thread(
+            self.transport.edit_message_text,
+            msg.chat_id,
+            message_id,
+            text,
+            parse_mode=self.config.parse_mode,
+        )
+        self._stream_text[stream_id] = text
 
     async def _dispatch_update(self, update: dict[str, Any]) -> None:
         parsed = parse_update(update)

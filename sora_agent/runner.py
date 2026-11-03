@@ -40,6 +40,10 @@ class RunSpec:
     guard: Callable[[str, str], tuple[bool, Any]] | None = None
     # Recompute the visible tool list for every model step (lazy discovery).
     tool_provider: Callable[[], list[Any]] | None = None
+    # Called with (chunk, step_index) as the model produces text.
+    on_delta: Callable[[str, int], None] | None = None
+    # Cooperative cancellation, checked between steps and between tool calls.
+    should_stop: Callable[[], bool] | None = None
     # When set, the model's first action must be this tool.  Text reasoning is
     # allowed, but a direct answer or another tool call is rejected and retried.
     required_first_tool: str | None = None
@@ -77,17 +81,36 @@ class Runner:
         required_pending = bool(required)
         corrections = 0
 
+        def cancelled() -> bool:
+            return spec.should_stop is not None and spec.should_stop()
+
         for index in range(max(0, int(spec.max_steps))):
+            if cancelled():
+                stop_reason = "cancelled"
+                break
             try:
                 tools = (
                     spec.tool_provider()
                     if spec.tool_provider is not None
                     else spec.tools
                 )
-                turn = provider_turn(self.provider, messages, tools)
+                on_delta: Callable[[str], None] | None = None
+                if spec.on_delta is not None:
+                    on_delta = _bind_delta(spec.on_delta, index)
+                turn = provider_turn(
+                    self.provider,
+                    messages,
+                    tools,
+                    on_delta=on_delta,
+                    should_stop=spec.should_stop,
+                )
             except Exception as exc:  # noqa: BLE001 - surface provider failures
                 stop_reason = "provider_error"
                 error = f"{type(exc).__name__}: {exc}"
+                break
+
+            if cancelled():
+                stop_reason = "cancelled"
                 break
 
             visible = [getattr(tool, "name", "") for tool in tools]
@@ -184,6 +207,9 @@ class Runner:
             results = []
             stopped = ""
             for call in execute_calls:
+                if cancelled():
+                    stopped = "cancelled"
+                    break
                 try:
                     result = self.executor.execute(call)
                 except Exception as exc:  # noqa: BLE001 - never lose a tool message
@@ -281,6 +307,15 @@ def _skipped_results(
         ToolResult(call=call, content=content, is_error=True, skipped=True)
         for call in calls
     ]
+
+
+def _bind_delta(
+    sink: Callable[[str, int], None], step: int
+) -> Callable[[str], None]:
+    def emit(chunk: str) -> None:
+        sink(chunk, step)
+
+    return emit
 
 
 def _first_tool_correction(required: str) -> str:

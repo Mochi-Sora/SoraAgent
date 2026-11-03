@@ -18,7 +18,7 @@ import json
 import os
 import re
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, Union
 
@@ -87,17 +87,40 @@ def provider_turn(
     provider: Any,
     messages: Sequence[Message],
     tools: Sequence[Any],
+    *,
+    on_delta: Callable[[str], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> ModelTurn:
     """Ask any provider for a structured turn.
 
-    Providers with ``complete_turn`` are used directly.  Older providers that only
-    implement ``complete`` get their text parsed for a single legacy ``ACTION:`` line.
-    This is the only place where the text protocol is understood.
+    Providers with ``stream_turn`` stream chunks through ``on_delta`` when a
+    consumer asks for them; everyone else is called once and their whole text is
+    emitted as a single chunk.  Providers with only ``complete`` get their text
+    parsed for a single legacy ``ACTION:`` line.  This is the only place where
+    the text protocol is understood.
     """
+    if on_delta is not None:
+        stream = getattr(provider, "stream_turn", None)
+        if callable(stream):
+            return _coerce_turn(
+                stream(
+                    list(messages),
+                    list(tools),
+                    on_delta,
+                    should_stop=should_stop,
+                )
+            )
 
     method = getattr(provider, "complete_turn", None)
     if callable(method):
-        return _coerce_turn(method(list(messages), list(tools)))
+        turn = _coerce_turn(method(list(messages), list(tools)))
+        if (
+            on_delta is not None
+            and turn.text
+            and (should_stop is None or not should_stop())
+        ):
+            on_delta(turn.text)
+        return turn
 
     complete = getattr(provider, "complete", None)
     if not callable(complete):
@@ -105,7 +128,14 @@ def provider_turn(
             f"provider {type(provider).__name__} has neither complete_turn() "
             "nor complete()"
         )
-    return turn_from_text(complete(list(messages), list(tools)))
+    turn = turn_from_text(complete(list(messages), list(tools)))
+    if (
+        on_delta is not None
+        and turn.text
+        and (should_stop is None or not should_stop())
+    ):
+        on_delta(turn.text)
+    return turn
 
 
 def provider_text(
@@ -341,6 +371,33 @@ class MockProvider:
     def complete(self, messages: list[Message], tools: list[Tool]) -> str:
         return self.complete_turn(messages, tools).text
 
+    def stream_turn(
+        self,
+        messages: list[Message],
+        tools: list[Tool],
+        on_delta: Callable[[str], None],
+        *,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> ModelTurn:
+        """Offline stand-in for token streaming: emit word-sized chunks."""
+        turn = self.complete_turn(messages, tools)
+        emit_words(turn.text, on_delta, should_stop)
+        return turn
+
+
+def emit_words(
+    text: str,
+    on_delta: Callable[[str], None],
+    should_stop: Callable[[], bool] | None = None,
+) -> None:
+    """Emit text in word-sized chunks for providers that cannot stream."""
+    if not text:
+        return
+    for match in re.finditer(r"\S+\s*", text):
+        if should_stop is not None and should_stop():
+            return
+        on_delta(match.group(0))
+
 
 def _extract_order_id(text: str) -> str:
     match = _ORDER_RE.search(text)
@@ -372,6 +429,61 @@ class OpenAIChatProvider:
     def complete_turn(
         self, messages: list[Message], tools: list[Tool]
     ) -> ModelTurn:
+        client = self._client()
+        response = client.chat.completions.create(**self._payload(messages, tools))
+        message = response.choices[0].message
+
+        text = message.content or ""
+        if not isinstance(text, str):
+            text = str(text)
+
+        return ModelTurn(
+            text=text,
+            tool_calls=_tool_calls(getattr(message, "tool_calls", None) or []),
+        )
+
+    def stream_turn(
+        self,
+        messages: list[Message],
+        tools: list[Tool],
+        on_delta: Callable[[str], None],
+        *,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> ModelTurn:
+        """Stream tokens through ``on_delta`` and reassemble tool calls."""
+        client = self._client()
+        payload = self._payload(messages, tools)
+        payload["stream"] = True
+        stream = client.chat.completions.create(**payload)
+        parts: list[str] = []
+        fragments: dict[int, dict[str, str]] = {}
+        try:
+            for chunk in stream:
+                if should_stop is not None and should_stop():
+                    break
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                if delta is None:
+                    continue
+                content = getattr(delta, "content", None)
+                if content:
+                    piece = str(content)
+                    parts.append(piece)
+                    on_delta(piece)
+                for raw_call in getattr(delta, "tool_calls", None) or []:
+                    _merge_call(fragments, raw_call)
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
+        return ModelTurn(
+            text="".join(parts),
+            tool_calls=_fragment_calls(fragments),
+        )
+
+    def _client(self) -> Any:
         try:
             import openai  # pyright: ignore[reportMissingImports]  # lazy optional dependency
         except ImportError as exc:
@@ -379,8 +491,11 @@ class OpenAIChatProvider:
                 "OpenAIChatProvider requires the optional 'openai' package. "
                 "Install it with: pip install 'sora-agent[openai]'"
             ) from exc
+        return openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
 
-        client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
+    def _payload(
+        self, messages: list[Message], tools: list[Tool]
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [_message_payload(message) for message in messages],
@@ -389,31 +504,64 @@ class OpenAIChatProvider:
             payload["tools"] = [
                 {"type": "function", "function": tool.schema} for tool in tools
             ]
-        resp = client.chat.completions.create(**payload)
-        message = resp.choices[0].message
-
-        text = message.content or ""
-        if not isinstance(text, str):
-            text = str(text)
-
-        calls: list[ToolCall] = []
-        for index, raw_call in enumerate(getattr(message, "tool_calls", None) or []):
-            function = getattr(raw_call, "function", None)
-            raw_arguments = getattr(function, "arguments", "") or "{}"
-            arguments, error = _parse_arguments(raw_arguments)
-            calls.append(
-                ToolCall(
-                    id=getattr(raw_call, "id", "") or f"call_{index}",
-                    name=getattr(function, "name", "") or "",
-                    arguments=arguments,
-                    raw_arguments=raw_arguments,
-                    error=error,
-                )
-            )
-        return ModelTurn(text=text, tool_calls=calls)
+        return payload
 
     def complete(self, messages: list[Message], tools: list[Tool]) -> str:
         return self.complete_turn(messages, tools).text
+
+
+def _tool_calls(raw_calls: Sequence[Any]) -> list[ToolCall]:
+    calls: list[ToolCall] = []
+    for index, raw_call in enumerate(raw_calls):
+        function = getattr(raw_call, "function", None)
+        raw_arguments = getattr(function, "arguments", "") or "{}"
+        arguments, error = _parse_arguments(raw_arguments)
+        calls.append(
+            ToolCall(
+                id=getattr(raw_call, "id", "") or f"call_{index}",
+                name=getattr(function, "name", "") or "",
+                arguments=arguments,
+                raw_arguments=raw_arguments,
+                error=error,
+            )
+        )
+    return calls
+
+
+def _merge_call(fragments: dict[int, dict[str, str]], raw: Any) -> None:
+    index = getattr(raw, "index", 0)
+    key = index if isinstance(index, int) else 0
+    entry = fragments.setdefault(key, {"id": "", "name": "", "arguments": ""})
+    call_id = getattr(raw, "id", None)
+    if call_id:
+        entry["id"] = str(call_id)
+    function = getattr(raw, "function", None)
+    if function is None:
+        return
+    name = getattr(function, "name", None)
+    if name:
+        entry["name"] = str(name)
+    arguments = getattr(function, "arguments", None)
+    if arguments:
+        entry["arguments"] += str(arguments)
+
+
+def _fragment_calls(fragments: dict[int, dict[str, str]]) -> list[ToolCall]:
+    calls: list[ToolCall] = []
+    for index in sorted(fragments):
+        entry = fragments[index]
+        raw_arguments = entry["arguments"] or "{}"
+        arguments, error = _parse_arguments(raw_arguments)
+        calls.append(
+            ToolCall(
+                id=entry["id"] or f"call_{index}",
+                name=entry["name"],
+                arguments=arguments,
+                raw_arguments=raw_arguments,
+                error=error,
+            )
+        )
+    return calls
 
 
 def _message_payload(message: Message) -> dict[str, Any]:

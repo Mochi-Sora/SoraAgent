@@ -29,8 +29,18 @@ class TelegramTransport(Protocol):
         reply_to: str | None = None,
         parse_mode: str | None = None,
         reply_markup: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Send one message and return its platform id when available."""
+
+    def edit_message_text(
+        self,
+        chat_id: str,
+        message_id: str,
+        text: str,
+        *,
+        parse_mode: str | None = None,
     ) -> None:
-        """Send one message, raising on failure."""
+        """Replace the text of a message already sent."""
 
     def answer_callback_query(self, callback_query_id: str, text: str = "") -> None:
         """Acknowledge a button press so Telegram stops the spinner."""
@@ -78,7 +88,7 @@ class UrllibTelegramTransport:
         reply_to: str | None = None,
         parse_mode: str | None = None,
         reply_markup: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> str | None:
         payload: dict[str, Any] = {
             "chat_id": chat_id,
             "text": text,
@@ -93,7 +103,32 @@ class UrllibTelegramTransport:
                 payload["reply_parameters"] = {"message_id": int(reply_to)}
             except (TypeError, ValueError):
                 pass
-        self._call("sendMessage", payload)
+        result = self._call("sendMessage", payload)
+        if isinstance(result, dict) and result.get("message_id") is not None:
+            return str(result["message_id"])
+        return None
+
+    def edit_message_text(
+        self,
+        chat_id: str,
+        message_id: str,
+        text: str,
+        *,
+        parse_mode: str | None = None,
+    ) -> None:
+        try:
+            numeric_id = int(message_id)
+        except (TypeError, ValueError):
+            return
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": numeric_id,
+            "text": text,
+            "disable_web_page_preview": True,
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        self._call("editMessageText", payload)
 
     def answer_callback_query(self, callback_query_id: str, text: str = "") -> None:
         payload: dict[str, Any] = {"callback_query_id": callback_query_id}

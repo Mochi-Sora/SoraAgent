@@ -25,7 +25,11 @@ from sora_agent.channels.telegram.transport import (
     TelegramError,
     UrllibTelegramTransport,
 )
-from sora_agent.channels.types import OutboundMessage
+from sora_agent.channels.types import (
+    STREAM_DELTA_KIND,
+    STREAM_END_KIND,
+    OutboundMessage,
+)
 from sora_agent.providers import ModelTurn, ToolCall
 from sora_agent.tools import Tool, ToolRegistry
 
@@ -57,6 +61,7 @@ class FakeTransport:
         self.sent: list[tuple] = []
         self.answered: list[tuple] = []
         self.cleared: list[tuple] = []
+        self.edits: list[tuple] = []
 
     def get_updates(self, offset, timeout):
         self.offsets.append(offset)
@@ -71,6 +76,10 @@ class FakeTransport:
         self, chat_id, text, *, reply_to=None, parse_mode=None, reply_markup=None
     ):
         self.sent.append((chat_id, text, reply_to, parse_mode, reply_markup))
+        return "9"
+
+    def edit_message_text(self, chat_id, message_id, text, *, parse_mode=None):
+        self.edits.append((chat_id, message_id, text))
 
     def answer_callback_query(self, callback_query_id, text=""):
         self.answered.append((callback_query_id, text))
@@ -481,6 +490,36 @@ def test_send_renders_approval_buttons():
     }
 
 
+def test_channel_edits_one_live_message_while_streaming():
+    async def scenario():
+        transport = FakeTransport()
+        channel = TelegramChannel(_config(), MessageBus(), transport=transport)
+        meta = {"kind": STREAM_DELTA_KIND, "stream_id": "s1"}
+        await channel.send(
+            OutboundMessage("telegram", "42", "Hel", metadata=meta)
+        )
+        await channel.send(
+            OutboundMessage("telegram", "42", "Hello", metadata=meta)
+        )
+        await channel.send(
+            OutboundMessage(
+                "telegram",
+                "42",
+                "",
+                metadata={"kind": STREAM_END_KIND, "stream_id": "s1"},
+            )
+        )
+        # After the end marker the next run starts a fresh message.
+        await channel.send(
+            OutboundMessage("telegram", "42", "Again", metadata=meta)
+        )
+        return transport
+
+    transport = asyncio.run(scenario())
+    assert [text for _, text, _, _, _ in transport.sent] == ["Hel", "Again"]
+    assert transport.edits == [("42", "9", "Hello")]
+
+
 def test_send_without_approval_metadata_has_no_buttons():
     async def scenario():
         transport = FakeTransport()
@@ -525,7 +564,7 @@ class CallbackTransport(FakeTransport):
     def send_message(
         self, chat_id, text, *, reply_to=None, parse_mode=None, reply_markup=None
     ):
-        super().send_message(
+        message_id = super().send_message(
             chat_id,
             text,
             reply_to=reply_to,
@@ -533,10 +572,11 @@ class CallbackTransport(FakeTransport):
             reply_markup=reply_markup,
         )
         if not reply_markup or not self.pending_callback:
-            return
+            return message_id
         self.pending_callback = False
         data = reply_markup["inline_keyboard"][0][0]["callback_data"]
         self.updates.append(_callback_update(data))
+        return message_id
 
 
 def test_button_press_completes_an_approval():

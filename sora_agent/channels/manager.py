@@ -11,9 +11,16 @@ from typing import Any, Union
 from .approval import APPROVAL_CALLBACK_KIND, ApprovalBroker
 from .base import BaseChannel
 from .bus import MessageBus
-from .types import InboundMessage, OutboundMessage
+from .types import (
+    STREAM_DELTA_KIND,
+    STREAM_END_KIND,
+    InboundMessage,
+    OutboundMessage,
+    TurnReply,
+)
 
-Handler = Callable[[InboundMessage], Union[str, Awaitable[str]]]
+Reply = Union[str, TurnReply]
+Handler = Callable[[InboundMessage], Union[Reply, Awaitable[Reply]]]
 
 _MAX_SEND_ATTEMPTS = 3
 
@@ -33,6 +40,8 @@ class ChannelManager:
         handler: Handler,
         *,
         approvals: ApprovalBroker | None = None,
+        commands: Callable[[InboundMessage], str | None] | None = None,
+        on_shutdown: Callable[[], object] | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         if not channels:
@@ -41,6 +50,8 @@ class ChannelManager:
         self.bus = bus
         self.handler = handler
         self.approvals = approvals
+        self.commands = commands
+        self.on_shutdown = on_shutdown
         self.log = logger or logging.getLogger(__name__)
         self._by_name: dict[str, BaseChannel] = {}
         for channel in self.channels:
@@ -88,6 +99,11 @@ class ChannelManager:
             # Release worker threads blocked on an approval, or the executor
             # shutdown would wait out the whole timeout.
             self.approvals.cancel_all()
+        if self.on_shutdown is not None:
+            try:
+                self.on_shutdown()
+            except Exception:
+                self.log.exception("shutdown hook failed")
         for channel in self.channels:
             try:
                 await channel.stop()
@@ -127,6 +143,11 @@ class ChannelManager:
                     "resolved pending approval for %s", inbound.session_key
                 )
                 continue
+            if self.commands is not None:
+                command = self._command_reply(inbound)
+                if command is not None:
+                    await self._publish_reply(inbound, command)
+                    continue
             # Turns run as separate tasks: a turn blocked on a human approval
             # must not stop the dispatcher from reading the reply.
             task = asyncio.create_task(
@@ -139,23 +160,44 @@ class ChannelManager:
         lock = self._session_locks.setdefault(inbound.session_key, asyncio.Lock())
         async with lock:
             try:
-                reply = await self._invoke(inbound)
+                result = await self._invoke(inbound)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 self.log.exception("handler failed for %s", inbound.session_key)
-                reply = "Sorry — I couldn't complete that request."
-            if not reply:
+                result = "Sorry — I couldn't complete that request."
+            text, delivered = _coerce_reply(result)
+            if not text:
                 return
-            await self.bus.publish_outbound(
-                OutboundMessage(
-                    channel=inbound.channel,
-                    chat_id=inbound.chat_id,
-                    content=reply,
-                    reply_to=_reply_target(inbound),
-                    metadata=dict(inbound.metadata),
-                )
+            channel = self._by_name.get(inbound.channel)
+            if delivered and channel is not None and channel.supports_streaming:
+                return
+            await self._publish_reply(inbound, text)
+
+    def _command_reply(self, inbound: InboundMessage) -> str | None:
+        handler = self.commands
+        if handler is None:
+            return None
+        try:
+            return handler(inbound)
+        except Exception:
+            self.log.exception(
+                "command handler failed for %s", inbound.session_key
             )
+            return None
+
+    async def _publish_reply(self, inbound: InboundMessage, text: str) -> None:
+        if not text:
+            return
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel=inbound.channel,
+                chat_id=inbound.chat_id,
+                content=text,
+                reply_to=_reply_target(inbound),
+                metadata=dict(inbound.metadata),
+            )
+        )
 
     async def _deliver(self) -> None:
         while True:
@@ -163,6 +205,12 @@ class ChannelManager:
             channel = self._by_name.get(message.channel)
             if channel is None:
                 self.log.error("no channel named %r to deliver to", message.channel)
+                continue
+            if (
+                message.metadata.get("kind")
+                in {STREAM_DELTA_KIND, STREAM_END_KIND}
+                and not channel.supports_streaming
+            ):
                 continue
             await self._send(channel, message)
 
@@ -190,7 +238,7 @@ class ChannelManager:
                 )
                 await asyncio.sleep(0.2 * attempt)
 
-    async def _invoke(self, inbound: InboundMessage) -> str:
+    async def _invoke(self, inbound: InboundMessage) -> Any:
         handler = self.handler
         is_async = inspect.iscoroutinefunction(handler)
         if not is_async and not inspect.isroutine(handler):
@@ -206,7 +254,15 @@ class ChannelManager:
             value = await asyncio.to_thread(handler, inbound)
             if inspect.isawaitable(value):
                 value = await value
-        return value if isinstance(value, str) else str(value)
+        return value
+
+
+def _coerce_reply(value: Any) -> tuple[str, bool]:
+    if isinstance(value, TurnReply):
+        return value.text, value.delivered
+    if isinstance(value, str):
+        return value, False
+    return str(value), False
 
 
 def _reply_target(inbound: InboundMessage) -> str | None:
