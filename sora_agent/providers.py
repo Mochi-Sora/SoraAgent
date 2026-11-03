@@ -53,11 +53,21 @@ class Message:
 
 
 @dataclass
+class TokenUsage:
+    """Provider-reported token counts for one turn."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+@dataclass
 class ModelTurn:
     """One assistant turn: visible text plus any structured tool calls."""
 
     text: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
+    usage: TokenUsage | None = None
 
 
 class TurnProvider(Protocol):
@@ -422,11 +432,13 @@ class OpenAIChatProvider:
         api_key: str | None = None,
         base_url: str | None = None,
         timeout: float = 30.0,
+        stream_usage: bool = True,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
         self.base_url = base_url
         self.timeout = timeout
+        self.stream_usage = stream_usage
 
     def complete_turn(
         self, messages: list[Message], tools: list[Tool]
@@ -442,6 +454,7 @@ class OpenAIChatProvider:
         return ModelTurn(
             text=text,
             tool_calls=_tool_calls(getattr(message, "tool_calls", None) or []),
+            usage=_usage_from(getattr(response, "usage", None)),
         )
 
     def stream_turn(
@@ -456,13 +469,19 @@ class OpenAIChatProvider:
         client = self._client()
         payload = self._payload(messages, tools)
         payload["stream"] = True
+        if self.stream_usage:
+            payload["stream_options"] = {"include_usage": True}
         stream = client.chat.completions.create(**payload)
         parts: list[str] = []
         fragments: dict[int, dict[str, str]] = {}
+        usage: TokenUsage | None = None
         try:
             for chunk in stream:
                 if should_stop is not None and should_stop():
                     break
+                chunk_usage = _usage_from(getattr(chunk, "usage", None))
+                if chunk_usage is not None:
+                    usage = chunk_usage
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:
                     continue
@@ -483,6 +502,7 @@ class OpenAIChatProvider:
         return ModelTurn(
             text="".join(parts),
             tool_calls=_fragment_calls(fragments),
+            usage=usage,
         )
 
     def _client(self) -> Any:
@@ -514,6 +534,21 @@ class OpenAIChatProvider:
 
     def complete(self, messages: list[Message], tools: list[Tool]) -> str:
         return self.complete_turn(messages, tools).text
+
+
+def _usage_from(raw: Any) -> TokenUsage | None:
+    if raw is None:
+        return None
+    prompt = int(getattr(raw, "prompt_tokens", 0) or 0)
+    completion = int(getattr(raw, "completion_tokens", 0) or 0)
+    total = int(getattr(raw, "total_tokens", 0) or 0)
+    if not (prompt or completion or total):
+        return None
+    return TokenUsage(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=total or prompt + completion,
+    )
 
 
 def _tool_calls(raw_calls: Sequence[Any]) -> list[ToolCall]:

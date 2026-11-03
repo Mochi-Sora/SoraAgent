@@ -58,7 +58,11 @@ class IdentityProvider:
         augmented = self._augment(messages)
         turn = provider_turn(self.inner, augmented, tools)
         text = self._settle(turn.text, augmented, tools)
-        return ModelTurn(text=text, tool_calls=list(turn.tool_calls))
+        return ModelTurn(
+            text=text,
+            tool_calls=list(turn.tool_calls),
+            usage=turn.usage,
+        )
 
     def complete(self, messages: Sequence[Any], tools: Sequence[Any]) -> str:
         augmented = self._augment(messages)
@@ -85,7 +89,11 @@ class IdentityProvider:
             if turn.text:
                 on_delta(turn.text)
         text = self._settle(turn.text, augmented, tools)
-        return ModelTurn(text=text, tool_calls=list(turn.tool_calls))
+        return ModelTurn(
+            text=text,
+            tool_calls=list(turn.tool_calls),
+            usage=turn.usage,
+        )
 
     def _augment(self, messages: Sequence[Any]) -> list[Any]:
         try:

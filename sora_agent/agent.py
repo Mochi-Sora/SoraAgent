@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from .approval import ApprovalGate
 from .eval import QualityGate
 from .providers import Message, ModelProvider, ToolCall
-from .runner import RunResult, Step
+from .runner import RunEvent, RunResult, Step
 from .runtime import AgentRuntime, RunRequest, wrap_identity
 from .tool_search import FIND_TOOLS_NAME
 from .tools import ToolRegistry, ToolResult
@@ -79,6 +79,7 @@ class Agent:
         max_tool_result_chars: int = 4000,
         tool_timeout: float = 30.0,
         provider_retries: int = 2,
+        on_event: Callable[[RunEvent], None] | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry or ToolRegistry()
@@ -93,6 +94,7 @@ class Agent:
         self.max_tool_result_chars = max(0, int(max_tool_result_chars))
         self.tool_timeout = max(0.1, float(tool_timeout))
         self.provider_retries = max(0, int(provider_retries))
+        self.on_event = on_event
         self.identity = self._resolve_identity(identity)
         self.memory = self._resolve_memory(memory, self.identity)
         self.memory_tool: Any = None
@@ -130,6 +132,7 @@ class Agent:
                 max_result_chars=self.max_tool_result_chars,
                 tool_timeout=self.tool_timeout,
                 provider_retries=self.provider_retries,
+                on_event=self.on_event,
                 context=context,
                 after_execute=lambda call, result: self._after_tool(
                     state, call, result

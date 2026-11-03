@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from .eval import QualityGate
 from .providers import Message
-from .runner import Runner, RunResult, RunSpec
+from .runner import RunEvent, Runner, RunResult, RunSpec
 from .tool_search import FIND_TOOLS_NAME, FindToolsTool, ToolGate
 from .tools import ToolCall, ToolExecutor, ToolRegistry, ToolResult
 
@@ -49,6 +49,7 @@ class RunRequest:
     required_first_tool: str | None = None
     on_delta: Callable[[str, int], None] | None = None
     should_stop: Callable[[], bool] | None = None
+    on_event: Callable[[RunEvent], None] | None = None
     provider_retries: int = 2
     retry_base_delay: float = 0.5
     retry_max_delay: float = 8.0
@@ -108,6 +109,7 @@ class AgentRuntime:
                 guard=guard,
                 on_delta=request.on_delta,
                 should_stop=request.should_stop,
+                on_event=request.on_event,
                 provider_retries=request.provider_retries,
                 retry_base_delay=request.retry_base_delay,
                 retry_max_delay=request.retry_max_delay,

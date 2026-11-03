@@ -35,6 +35,36 @@ class Step:
 
 
 @dataclass
+class RunEvent:
+    """One observable moment in a run."""
+
+    kind: str
+    step: int = -1
+    name: str = ""
+    duration: float = 0.0
+    ok: bool = True
+    detail: str = ""
+
+
+@dataclass
+class RunMetrics:
+    """Deterministic accounting for one run."""
+
+    duration: float = 0.0
+    steps: int = 0
+    provider_calls: int = 0
+    provider_retries: int = 0
+    provider_duration: float = 0.0
+    tool_calls: int = 0
+    tool_errors: int = 0
+    tool_duration: float = 0.0
+    streamed_chars: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+@dataclass
 class RunSpec:
     messages: list[Message]
     tools: list[Any]
@@ -57,6 +87,8 @@ class RunSpec:
     # When set, the model's first action must be this tool.  Text reasoning is
     # allowed, but a direct answer or another tool call is rejected and retried.
     required_first_tool: str | None = None
+    # Called for each observable moment.  An observer must never affect a run.
+    on_event: Callable[[RunEvent], None] | None = None
 
 
 @dataclass
@@ -67,6 +99,7 @@ class RunResult:
     stop_reason: str = "max_steps"
     report: Any = None
     error: str = ""
+    metrics: RunMetrics = field(default_factory=RunMetrics)
 
     @property
     def tool_results(self) -> list[ToolResult]:
@@ -90,9 +123,21 @@ class Runner:
         required = str(spec.required_first_tool or "").strip()
         required_pending = bool(required)
         corrections = 0
+        started = time.monotonic()
+        metrics = RunMetrics()
 
         def cancelled() -> bool:
             return spec.should_stop is not None and spec.should_stop()
+
+        def notify(event: RunEvent) -> None:
+            if spec.on_event is None:
+                return
+            try:
+                spec.on_event(event)
+            except Exception:
+                log.debug("run event handler failed", exc_info=True)
+
+        notify(RunEvent("run_started"))
 
         for index in range(max(0, int(spec.max_steps))):
             if cancelled():
@@ -109,13 +154,36 @@ class Runner:
                 error = f"{type(exc).__name__}: {exc}"
                 break
 
+            provider_started = time.monotonic()
             turn, provider_error, was_cancelled = _turn_with_retries(
-                self.provider, spec, messages, tools, index
+                self.provider, spec, messages, tools, index, metrics, notify
             )
+            provider_duration = time.monotonic() - provider_started
+            metrics.provider_duration += provider_duration
             if turn is None:
                 stop_reason = "cancelled" if was_cancelled else "provider_error"
                 error = provider_error
+                notify(
+                    RunEvent(
+                        "provider_finished",
+                        step=index,
+                        duration=provider_duration,
+                        ok=False,
+                        detail=provider_error,
+                    )
+                )
                 break
+            notify(
+                RunEvent(
+                    "provider_finished",
+                    step=index,
+                    duration=provider_duration,
+                )
+            )
+            if turn.usage is not None:
+                metrics.prompt_tokens += turn.usage.prompt_tokens
+                metrics.completion_tokens += turn.usage.completion_tokens
+                metrics.total_tokens += turn.usage.total_tokens
 
             if cancelled():
                 stop_reason = "cancelled"
@@ -218,6 +286,7 @@ class Runner:
                 if cancelled():
                     stopped = "cancelled"
                     break
+                tool_started = time.monotonic()
                 try:
                     result = self.executor.execute(call)
                 except Exception as exc:  # noqa: BLE001 - never lose a tool message
@@ -228,6 +297,21 @@ class Runner:
                         stopped=True,
                         stop_reason="tool_error",
                     )
+                tool_duration = time.monotonic() - tool_started
+                metrics.tool_calls += 1
+                metrics.tool_duration += tool_duration
+                if result.is_error:
+                    metrics.tool_errors += 1
+                notify(
+                    RunEvent(
+                        "tool_finished",
+                        step=index,
+                        name=call.name,
+                        duration=tool_duration,
+                        ok=not result.is_error,
+                        detail=result.stop_reason,
+                    )
+                )
                 results.append(result)
                 messages.append(_tool_message(result))
                 if report is None and result.report is not None:
@@ -270,6 +354,16 @@ class Runner:
                 stop_reason = stopped
                 break
 
+        metrics.duration = time.monotonic() - started
+        metrics.steps = len(steps)
+        notify(
+            RunEvent(
+                "run_finished",
+                duration=metrics.duration,
+                ok=stop_reason == "completed",
+                detail=stop_reason,
+            )
+        )
         return RunResult(
             messages=messages,
             steps=steps,
@@ -277,6 +371,7 @@ class Runner:
             stop_reason=stop_reason,
             report=report,
             error=error,
+            metrics=metrics,
         )
 
 
@@ -322,10 +417,12 @@ class _DeltaCounter:
 
     def __init__(self) -> None:
         self.count = 0
+        self.chars = 0
 
     def wrap(self, sink: Callable[[str], None]) -> Callable[[str], None]:
         def emit(chunk: str) -> None:
             self.count += 1
+            self.chars += len(chunk)
             sink(chunk)
 
         return emit
@@ -337,11 +434,14 @@ def _turn_with_retries(
     messages: list[Message],
     tools: list[Any],
     step: int,
+    metrics: RunMetrics,
+    notify: Callable[[RunEvent], None],
 ) -> tuple[ModelTurn | None, str, bool]:
     """Call the provider, retrying only failures that streamed nothing."""
     retries = max(0, int(spec.provider_retries))
     attempt = 0
     while True:
+        metrics.provider_calls += 1
         counter = _DeltaCounter()
         on_delta: Callable[[str], None] | None = None
         if spec.on_delta is not None:
@@ -354,11 +454,21 @@ def _turn_with_retries(
                 on_delta=on_delta,
                 should_stop=spec.should_stop,
             )
+            metrics.streamed_chars += counter.chars
             return turn, "", False
         except Exception as exc:  # noqa: BLE001 - retry policy lives here
             cancelled = spec.should_stop is not None and spec.should_stop()
             if attempt >= retries or counter.count > 0 or cancelled:
                 return None, f"{type(exc).__name__}: {exc}", cancelled
+            metrics.provider_retries += 1
+            notify(
+                RunEvent(
+                    "provider_retry",
+                    step=step,
+                    ok=False,
+                    detail=f"{type(exc).__name__}: {exc}",
+                )
+            )
             delay = _retry_delay(spec, attempt)
             log.warning(
                 "provider failed (attempt %d/%d): %s; retrying in %.2fs",

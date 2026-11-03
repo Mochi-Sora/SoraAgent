@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import logging
 import signal
 import sys
 from collections.abc import Sequence
 from dataclasses import replace
 
 from ..providers import default_provider
+from ..runner import RunEvent
 from ..tools import ToolRegistry
 from .approval import ApprovalBroker
 from .bus import MessageBus
@@ -28,6 +30,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.list:
         _print_channels()
         return 0
+    logging.basicConfig(level=logging.WARNING)
+    logging.getLogger("sora_agent.run").setLevel(logging.INFO)
     if args.channel != "telegram":
         print(
             f"sora-gateway: no configuration is wired for channel "
@@ -116,6 +120,7 @@ async def _serve(
         approvals=approvals,
         sessions=sessions,
         emitter=emit,
+        on_event=_log_run_event,
         max_steps=max_steps,
         max_turns=max_turns,
         tool_timeout=tool_timeout,
@@ -225,6 +230,18 @@ def _parser() -> argparse.ArgumentParser:
         "--list", action="store_true", help="list discovered channels and exit"
     )
     return parser
+
+
+def _log_run_event(event: RunEvent) -> None:
+    logging.getLogger("sora_agent.run").info(
+        "run %s step=%s name=%s ok=%s duration=%.3fs %s",
+        event.kind,
+        event.step,
+        event.name,
+        event.ok,
+        event.duration,
+        event.detail,
+    )
 
 
 def _print_channels() -> None:

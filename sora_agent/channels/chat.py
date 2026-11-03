@@ -12,7 +12,7 @@ from typing import Any, Callable
 from ..agent import MEMORY_POLICY, TOOLS_POLICY
 from ..eval import QualityGate
 from ..providers import Message
-from ..runner import RunResult
+from ..runner import RunEvent, RunMetrics, RunResult
 from ..runtime import AgentRuntime, RunRequest, wrap_identity
 from ..tool_search import FIND_TOOLS_NAME
 from ..tools import ToolRegistry
@@ -167,6 +167,7 @@ class ChatHandler:
         max_tool_result_chars: int = 4000,
         tool_timeout: float = 30.0,
         provider_retries: int = 2,
+        on_event: Callable[[RunEvent], None] | None = None,
         max_stream_chars: int = 3500,
         system_prompt: str = CHAT_SYSTEM_PROMPT,
     ) -> None:
@@ -188,6 +189,7 @@ class ChatHandler:
         self.max_tool_result_chars = max(0, int(max_tool_result_chars))
         self.tool_timeout = max(0.1, float(tool_timeout))
         self.provider_retries = max(0, int(provider_retries))
+        self.on_event = on_event
         self.max_stream_chars = max(1, int(max_stream_chars))
         self.system_prompt = system_prompt
         if self.identity is not None:
@@ -201,6 +203,8 @@ class ChatHandler:
                 log.warning("memory tool registration failed: %s", exc)
         self._history: dict[str, list[Message]] = {}
         self._active: dict[str, CancelToken] = {}
+        self._last_metrics: dict[str, RunMetrics] = {}
+        self._last_stop: dict[str, str] = {}
         self._lock = threading.Lock()
 
     def handle(self, inbound: InboundMessage) -> str | TurnReply:
@@ -247,6 +251,7 @@ class ChatHandler:
                     context=f"channel={inbound.channel}",
                     on_delta=on_delta if writer is not None else None,
                     should_stop=lambda: token.cancelled,
+                    on_event=self.on_event,
                 )
             )
         finally:
@@ -254,6 +259,10 @@ class ChatHandler:
                 if self._active.get(key) is token:
                     del self._active[key]
         self._notify("after_run", run, state)
+
+        with self._lock:
+            self._last_metrics[key] = run.metrics
+            self._last_stop[key] = run.stop_reason
 
         delivered = writer.finish(run) if writer is not None else False
         reply = _reply_text(run)
@@ -299,7 +308,27 @@ class ChatHandler:
         if command == "/reset":
             self.reset(inbound.session_key)
             return "Conversation reset."
+        if command == "/status":
+            return self._status(inbound.session_key)
         return None
+
+    def _status(self, session_key: str) -> str:
+        with self._lock:
+            metrics = self._last_metrics.get(session_key)
+            stop = self._last_stop.get(session_key, "")
+        if metrics is None:
+            return "No run in this session yet."
+        tokens = (
+            f"{metrics.total_tokens} tokens"
+            if metrics.total_tokens
+            else "token usage unavailable"
+        )
+        return (
+            f"Last run: {stop or 'unknown'}, {metrics.steps} steps, "
+            f"{metrics.tool_calls} tool calls "
+            f"({metrics.tool_errors} errors), "
+            f"{metrics.duration:.1f}s, {tokens}."
+        )
 
     def reset(self, session_key: str) -> None:
         """Forget one conversation, on disk as well as in memory."""
