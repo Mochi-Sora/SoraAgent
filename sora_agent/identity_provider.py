@@ -4,7 +4,7 @@ The wrapper inserts the identity section into the system prompt and removes
 ``<user_edit>`` / ``<soul_edit>`` blocks from the visible answer.  Identity is
 always inserted before the existing session-state section so the final order is:
 
-    base system prompt -> USER -> SOUL -> state -> user message
+    base system prompt -> USER -> SOUL -> state -> clock -> user message
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import logging
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any, cast
 
+from .clock import append_clock, extract_clock, strip_clock
 from .identity import (
     IDENTITY_HEADING,
     SOUL_LIMIT,
@@ -108,7 +109,8 @@ class IdentityProvider:
     # ------------------------------------------------------------------
     @staticmethod
     def _with_identity(messages: Sequence[Any], section: str) -> list[Any]:
-        augmented = list(messages)
+        clock = extract_clock(messages)
+        augmented = strip_clock(messages)
 
         # Replace an existing identity section in place rather than duplicating it.
         for index, message in enumerate(augmented):
@@ -119,7 +121,7 @@ class IdentityProvider:
                 )
             ):
                 augmented[index] = Message("system", section)
-                return augmented
+                return append_clock(augmented, clock)
 
         insert_at = 0
         for index, message in enumerate(augmented):
@@ -132,7 +134,7 @@ class IdentityProvider:
             insert_at = index + 1
 
         augmented.insert(insert_at, Message("system", section))
-        return augmented
+        return append_clock(augmented, clock)
 
     # ------------------------------------------------------------------
     # Edit handling

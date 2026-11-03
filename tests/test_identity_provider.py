@@ -238,7 +238,7 @@ def test_agent_auto_wraps_identity_and_injects_prompt(
     store: IdentityStore,
 ) -> None:
     inner = ScriptedProvider(["hi"])
-    agent = Agent(provider=inner, identity=store, memory=False)
+    agent = Agent(provider=inner, identity=store, memory=False, clock=False)
 
     assert isinstance(agent.provider, IdentityProvider)
     assert agent.identity is store
@@ -258,7 +258,7 @@ def test_agent_does_not_double_wrap_an_identity_provider(
 ) -> None:
     inner = ScriptedProvider(["hi"])
     wrapped = IdentityProvider(inner, store)
-    agent = Agent(provider=wrapped, identity=store, memory=False)
+    agent = Agent(provider=wrapped, identity=store, memory=False, clock=False)
     assert agent.provider is wrapped
 
 
@@ -266,7 +266,7 @@ def test_agent_identity_false_disables_the_wrapper(
     store: IdentityStore,
 ) -> None:
     inner = ScriptedProvider(["hi"])
-    agent = Agent(provider=inner, identity=False, memory=False)
+    agent = Agent(provider=inner, identity=False, memory=False, clock=False)
     assert agent.identity is None
     assert agent.provider is inner
 
@@ -279,7 +279,7 @@ def test_agent_default_identity_uses_the_environment(
         "SORA_IDENTITY_ROOT", str(tmp_path / "identity")
     )
     inner = ScriptedProvider(["hi"])
-    agent = Agent(provider=inner, memory=False)
+    agent = Agent(provider=inner, memory=False, clock=False)
     assert isinstance(agent.identity, IdentityStore)
     assert isinstance(agent.provider, IdentityProvider)
 

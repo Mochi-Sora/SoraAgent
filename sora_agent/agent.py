@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .approval import ApprovalGate
+from .calendar import register_calendar_tools, resolve_calendar
+from .clock import wrap_clock
 from .eval import QualityGate, trajectory_from_run
 from .providers import Message, ModelProvider, ToolCall
 from .runner import RunEvent, RunResult, Step
@@ -80,6 +82,9 @@ class Agent:
         tool_timeout: float = 30.0,
         provider_retries: int = 2,
         on_event: Callable[[RunEvent], None] | None = None,
+        clock: Any = None,
+        calendar: Any = None,
+        calendar_db: Any = None,
     ) -> None:
         self.provider = provider
         self.registry = registry or ToolRegistry()
@@ -103,7 +108,15 @@ class Agent:
                 self.memory_tool = self.memory.tool()
             except Exception as exc:  # noqa: BLE001 - memory is optional
                 log.warning("memory tool registration failed: %s", exc)
+        self.calendar = self._resolve_calendar(calendar, calendar_db)
+        if self.calendar is not None:
+            try:
+                register_calendar_tools(self.registry, self.calendar)
+            except Exception as exc:  # noqa: BLE001 - calendar is optional
+                log.warning("calendar tool registration failed: %s", exc)
+                self.calendar = None
         self.provider = wrap_identity(self.identity, self.provider)
+        self.provider = wrap_clock(self.provider, clock)
 
     def run(self, task: str, state: Any = None) -> AgentResult:
         self._notify("before_run", task, state)
@@ -247,6 +260,14 @@ class Agent:
                 except Exception as exc:  # noqa: BLE001 - memory is optional
                     log.warning("memory identity attachment failed: %s", exc)
         return memory
+
+    @staticmethod
+    def _resolve_calendar(calendar: Any, calendar_db: Any = None) -> Any:
+        try:
+            return resolve_calendar(calendar, calendar_db)
+        except Exception as exc:  # noqa: BLE001 - calendar is optional
+            log.warning("calendar initialization failed: %s", exc)
+            return None
 
     def _notify(self, name: str, *args: Any) -> None:
         if self.memory is None:

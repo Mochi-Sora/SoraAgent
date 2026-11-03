@@ -10,6 +10,7 @@ import signal
 import sys
 from collections.abc import Sequence
 from dataclasses import replace
+from typing import Any
 
 from ..providers import default_provider
 from ..runner import RunEvent
@@ -78,6 +79,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 tool_timeout=args.tool_timeout,
                 provider_retries=args.provider_retries,
                 approval_timeout=args.approval_timeout,
+                clock=not args.no_clock,
+                calendar=False if args.no_calendar else None,
+                calendar_db=args.calendar_db,
             )
         )
     except KeyboardInterrupt:
@@ -99,6 +103,9 @@ async def _serve(
     tool_timeout: float,
     provider_retries: int,
     approval_timeout: float,
+    clock: bool = True,
+    calendar: Any = None,
+    calendar_db: Any = None,
 ) -> None:
     bus = MessageBus()
     approvals = ApprovalBroker(bus, timeout=approval_timeout)
@@ -125,6 +132,9 @@ async def _serve(
         max_turns=max_turns,
         tool_timeout=tool_timeout,
         provider_retries=provider_retries,
+        clock=clock,
+        calendar=calendar,
+        calendar_db=calendar_db,
     )
     channel = channel_cls(config, bus)
     manager = ChannelManager(
@@ -219,6 +229,22 @@ def _parser() -> argparse.ArgumentParser:
         type=float,
         default=300.0,
         help="seconds to wait for a chat approval",
+    )
+    parser.add_argument(
+        "--no-clock",
+        action="store_true",
+        help="omit the current time section from the system prompt",
+    )
+    parser.add_argument(
+        "--no-calendar",
+        action="store_true",
+        help="disable the native calendar tools",
+    )
+    parser.add_argument(
+        "--calendar-db",
+        default=None,
+        help="path to the calendar SQLite database "
+        "(default: ~/.sora_agent/calendar.db)",
     )
     parser.add_argument("--token", default=None, help="Telegram bot token")
     parser.add_argument(

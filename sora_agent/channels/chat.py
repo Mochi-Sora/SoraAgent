@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ..agent import MEMORY_POLICY, TOOLS_POLICY
+from ..calendar import register_calendar_tools, resolve_calendar
+from ..clock import wrap_clock
 from ..eval import (
     QualityGate,
     TrajectoryMetrics,
@@ -175,6 +177,9 @@ class ChatHandler:
         on_event: Callable[[RunEvent], None] | None = None,
         max_stream_chars: int = 3500,
         system_prompt: str = CHAT_SYSTEM_PROMPT,
+        clock: Any = None,
+        calendar: Any = None,
+        calendar_db: Any = None,
     ) -> None:
         self.provider = provider
         self.registry = registry or ToolRegistry()
@@ -200,6 +205,14 @@ class ChatHandler:
         if self.identity is not None:
             self._attach_identity(self.identity, memory)
             self.provider = wrap_identity(self.identity, provider)
+        self.provider = wrap_clock(self.provider, clock)
+        self.calendar = self._resolve_calendar(calendar, calendar_db)
+        if self.calendar is not None:
+            try:
+                register_calendar_tools(self.registry, self.calendar)
+            except Exception as exc:  # noqa: BLE001 - calendar is optional
+                log.warning("calendar tool registration failed: %s", exc)
+                self.calendar = None
         self.memory_tool: Any = None
         if memory is not None:
             try:
@@ -407,6 +420,14 @@ class ChatHandler:
         if self.memory_tool is not None:
             prompt += MEMORY_POLICY
         return prompt
+
+    @staticmethod
+    def _resolve_calendar(calendar: Any, calendar_db: Any = None) -> Any:
+        try:
+            return resolve_calendar(calendar, calendar_db)
+        except Exception as exc:  # noqa: BLE001 - calendar is optional
+            log.warning("calendar initialization failed: %s", exc)
+            return None
 
     @staticmethod
     def _attach_identity(identity: Any, memory: Any) -> None:

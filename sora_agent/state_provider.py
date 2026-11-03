@@ -3,7 +3,8 @@
 This is the only file that connects the self-contained state subsystem to the
 rest of SoraAgent. It wraps a provider, appends the session state to the *end*
 of the system prompt (preserving the static prefix for prompt caching), extracts
-state edits from responses, and runs the bounded deterministic repair loop.
+state edits from responses, and runs the bounded deterministic repair loop.  If
+a clock section is already present it stays last, behind the state.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, cast
 
+from .clock import append_clock, extract_clock, strip_clock
 from .providers import (
     Message,
     ModelProvider,
@@ -145,13 +147,15 @@ class StatefulProvider:
     def _with_state(
         messages: list[Message], section: str
     ) -> list[Message]:
-        """Insert the state as the final system message.
+        """Insert the state as the final system message, before the clock.
 
         The original system messages are left byte-for-byte untouched so their
         cached prefix remains valid. Later static system content can be added
-        before this trailing state message.
+        before this trailing state message. If a clock section is already
+        present it is moved behind the state so it stays last.
         """
-        augmented = list(messages)
+        clock = extract_clock(messages)
+        augmented = strip_clock(messages)
         insert_at = 0
         for index, message in enumerate(augmented):
             if getattr(message, "role", "") == "system":
@@ -159,4 +163,4 @@ class StatefulProvider:
             else:
                 break
         augmented.insert(insert_at, Message("system", section))
-        return augmented
+        return append_clock(augmented, clock)

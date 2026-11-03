@@ -294,7 +294,7 @@ def test_chat_handler_keeps_history():
     assert handler.handle(_inbound("two")) == "echo:two"
 
     roles = [message.role for message in provider.calls[-1]]
-    assert roles == ["system", "user", "assistant", "user"]
+    assert roles == ["system", "system", "user", "assistant", "user"]
 
 
 def test_chat_handler_reset_forgets_the_session():
@@ -305,7 +305,7 @@ def test_chat_handler_reset_forgets_the_session():
     handler.handle(_inbound("two"))
 
     roles = [message.role for message in provider.calls[-1]]
-    assert roles == ["system", "user"]
+    assert roles == ["system", "system", "user"]
 
 
 def test_chat_handler_trims_old_turns():
@@ -315,7 +315,7 @@ def test_chat_handler_trims_old_turns():
         handler.handle(_inbound(text))
 
     roles = [message.role for message in provider.calls[-1]]
-    assert roles == ["system", "user", "assistant", "user"]
+    assert roles == ["system", "system", "user", "assistant", "user"]
 
 
 # ---------------------------------------------------------------------------
@@ -542,7 +542,7 @@ class FakeIdentity:
 def test_chat_handler_wraps_the_provider_with_identity():
     provider = EchoProvider()
     identity = FakeIdentity()
-    handler = ChatHandler(provider, identity=identity, max_steps=1)
+    handler = ChatHandler(provider, identity=identity, max_steps=1, clock=False)
 
     assert isinstance(handler.provider, WrappedProvider)
     assert handler.provider.inner is provider
@@ -553,7 +553,7 @@ def test_chat_handler_wraps_the_provider_with_identity():
 def test_chat_handler_does_not_double_wrap_identity():
     already = WrappedProvider(EchoProvider())
     identity = FakeIdentity()
-    handler = ChatHandler(already, identity=identity, max_steps=1)
+    handler = ChatHandler(already, identity=identity, max_steps=1, clock=False)
 
     assert handler.provider is already
     assert identity.wrapped == []
@@ -573,7 +573,7 @@ def test_chat_handler_survives_a_failing_identity_wrapper():
             raise RuntimeError("identity is down")
 
     provider = EchoProvider()
-    handler = ChatHandler(provider, identity=BrokenIdentity(), max_steps=1)
+    handler = ChatHandler(provider, identity=BrokenIdentity(), max_steps=1, clock=False)
 
     assert handler.provider is provider
     assert handler.handle(_inbound("hi")) == "echo:hi"

@@ -460,6 +460,7 @@ def test_agent_does_not_wrap_provider_with_forced_recall() -> None:
         registry=order_registry(),
         memory=FakeMemory(),
         identity=False,
+        clock=False,
     )
 
     assert agent.provider is provider
