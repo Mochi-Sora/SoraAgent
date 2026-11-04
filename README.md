@@ -1,0 +1,1118 @@
+# SoraAgent
+
+**A model-agnostic agent harness with human-approval and quality gates.**
+
+SoraAgent is a small, standard-library-only Python framework for building
+agentic applications on top of any chat model. The model/tool loop is
+deliberately tiny; the production concerns live in explicit gates around it:
+
+- **Approval gate** — tools marked `needs_approval` never execute without a
+  human saying yes (stdin for CLI/library use, chat replies or buttons for
+  channels).
+- **Quality gate** — the finished trajectory of every `Agent` or chat run is
+  graded by a deterministic structural evaluator that *cannot* affect execution.
+- **Lazy tool discovery** — only `find_tools` (plus `memory_recall`) is visible
+  at the start of a run; other tools stay hidden until the model searches for
+  them, keeping the prompt small and stable.
+- **Predictable failure modes** — safety paths (approval, tool validation) fail
+  closed; optional conveniences (memory, identity, clock, calendar, observers)
+  fail open and never break a run.
+- **Model-facing subsystems** — a per-turn clock, a native calendar, a
+  persistent file-backed identity (`USER.md` / `SOUL.md`), a validated session
+  state document, and an optional CortexDB-backed long-term memory with daily
+  verbatim recall and nightly consolidation ("dreams").
+- **Chat channels** — pluggable transports (a Telegram channel ships in-box)
+  with streaming replies, per-session history, and human approvals rendered as
+  chat prompts.
+
+The core imports only the Python standard library; optional integrations
+(`openai`, `zstandard`) are extras. Requires Python **3.9+**. Current version:
+**0.1.0**.
+
+---
+
+## Table of contents
+
+1. [Requirements](#requirements)
+2. [Installation](#installation)
+3. [Quick start](#quick-start)
+4. [Architecture](#architecture)
+5. [The model/tool loop (Runner)](#the-modeltool-loop-runner)
+6. [Providers](#providers)
+7. [Tools](#tools)
+8. [Lazy tool discovery](#lazy-tool-discovery)
+9. [Human approval](#human-approval)
+10. [Quality gate and evaluation](#quality-gate-and-evaluation)
+11. [Optional trajectory judge](#optional-trajectory-judge)
+12. [Clock](#clock)
+13. [Calendar](#calendar)
+14. [Session state](#session-state)
+15. [Identity (USER.md / SOUL.md)](#identity-usermd--soulmd)
+16. [Memory (CortexDB)](#memory-cortexdb)
+17. [Chat channels and the gateway](#chat-channels-and-the-gateway)
+18. [Command-line interfaces](#command-line-interfaces)
+19. [Environment variables](#environment-variables)
+20. [Project layout](#project-layout)
+21. [Development](#development)
+22. [License](#license)
+
+---
+
+## Requirements
+
+- Python **3.9+** (declared in `pyproject.toml`; static checks target 3.9).
+- No mandatory third-party dependencies.
+- Optional:
+  - `openai>=1.0` for the OpenAI-compatible provider (`pip install 'sora-agent[openai]'`).
+  - `zstandard>=0.22` for compressed memory backups on Python < 3.14
+    (`pip install 'sora-agent[memory]'`). On Python 3.14+ the standard library
+    `compression.zstd` module is used instead.
+  - Telegram works over `urllib`; no `python-telegram-bot` dependency is needed.
+
+## Installation
+
+```bash
+git clone https://github.com/Mochi-Sora/SoraAgent.git
+cd SoraAgent
+
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+
+# Core harness (no dependencies)
+pip install -e .
+
+# Optional extras
+pip install -e ".[openai,memory,dev]"
+```
+
+This installs two console scripts:
+
+| Command | Module | Purpose |
+| --- | --- | --- |
+| `sora-gateway` | `sora_agent.channels.cli:main` | Run the agent behind a chat channel |
+| `sora-memory` | `sora_agent.memory.cli:main` | Operate the memory subsystem |
+
+Both also run as modules: `python -m sora_agent.channels` and
+`python -m sora_agent.memory`.
+
+## Quick start
+
+### An offline agent with approval and a quality report
+
+The `mock` provider returns canned turns so everything below runs without an API
+key. The demo order tools ship in `sora_agent/tools.py`, registered at import
+time by the `@tool` decorator.
+
+```python
+from sora_agent import Agent, MockProvider, POStateMachine
+from sora_agent.approval import ApprovalGate
+from sora_agent.tools import registry
+
+
+class AutoApprove(ApprovalGate):
+    """Approve everything in this demo; production gates ask a human."""
+    def request(self, action: str, detail: str) -> bool:
+        return self.approve_for(action, detail)
+
+
+agent = Agent(
+    provider=MockProvider(),
+    registry=registry.copy(),          # keep the demo's global registry pristine
+    approval=AutoApprove(),
+    memory=False,                      # keep the sample dependency-free
+    identity=False,
+    calendar=False,                    # no files written for this demo
+)
+
+sm = POStateMachine(po_id="PO-1234")
+result = agent.run(
+    "Purchase order PO-1234 is stuck; the supplier can't ship on time. "
+    "Expedite it.",
+    state=sm,
+)
+
+print(result.final_answer)   # model's answer
+print(result.report)         # EvalReport: [PASS] score=1.00 ...
+print(result.stop_reason)    # "completed"
+print(sm.state)              # State.EXPEDITED — transitioned only after approval
+```
+
+What happens: the model calls `find_tools` to discover `expedite_order` (which is
+hidden and marked `needs_approval=True`), the executor pauses for the approval
+gate, the tool runs on approval, the state machine transitions, and the quality
+gate grades the finished trajectory. Expected output: `state=State.EXPEDITED`,
+`stop_reason=completed`, and a `[PASS] score=1.00` report.
+
+### Adding your own tool
+
+```python
+from typing import Annotated
+
+from sora_agent.tools import Tool, ToolRegistry
+
+
+def refund_order(
+    order_id: Annotated[str, "Purchase order id, e.g. PO-1234"],
+    reason: Annotated[str, "Why the refund is needed"] = "",
+) -> str:
+    return f"PO {order_id}: refund queued ({reason or 'no reason given'})"
+
+
+tools = ToolRegistry()
+tools.add(Tool(
+    refund_order,
+    name="refund_order",
+    description="Refund a purchase order.",
+    needs_approval=True,               # always routed through the approval gate
+))
+```
+
+Argument descriptions come from `Annotated[str, "..."]`; `Literal`/`Enum`
+annotations become JSON-schema enums; optional parameters and scalar defaults
+are preserved. See [Tools](#tools).
+
+### Using a real model
+
+```python
+from sora_agent.providers import default_provider
+
+provider = default_provider("openai")   # also: azure, deepseek, qwen, mock
+```
+
+| Kind | Backend | Required env |
+| --- | --- | --- |
+| `mock` / `demo` | `MockProvider`, no network | — |
+| `openai` / `azure` | OpenAI-compatible chat completions | `OPENAI_API_KEY` (plus optional `OPENAI_MODEL`, `OPENAI_BASE_URL`) |
+| `deepseek` / `ds` | DeepSeek | `DEEPSEEK_API_KEY` (optional `DEEPSEEK_MODEL`, default `deepseek-chat`) |
+| `qwen` / `dashscope` | DashScope compatible mode | `DASHSCOPE_API_KEY` (optional `QWEN_MODEL`, default `qwen-plus`) |
+
+`azure` is an alias for the same OpenAI-compatible provider; set
+`OPENAI_BASE_URL` to your deployment endpoint (and `OPENAI_MODEL` to the
+deployment name). The provider is a thin wrapper, so any OpenAI-compatible
+gateway works the same way.
+
+### Running the bundled examples
+
+```bash
+python examples/po_workflow.py               # interactive: asks y/N per approval
+python examples/po_workflow.py --yes         # auto-approve, non-interactive
+python examples/po_workflow.py --provider openai
+python examples/copilot_function.py          # Azure Function-style entry point
+```
+
+Both examples run without `pip install -e .` (they adjust `sys.path`) and use
+`examples/_demo_memory.py`, an offline stand-in for the real memory hook.
+
+---
+
+## Architecture
+
+```
+              library callers                  chat platforms
+                    │                                │
+                    ▼                                ▼
+               Agent facade                     ChatHandler
+                    │                                │
+                    └───────────────┬────────────────┘
+                                    ▼
+                          AgentRuntime.run(RunRequest)
+                     (per-run registry copy, tool gate, memory
+                      tool, required-first-tool policy, executor)
+                                    │
+                                    ▼
+                                 Runner
+                           pure model/tool loop
+                        ┌───────────┴───────────┐
+                        ▼                       ▼
+                     Provider             ToolExecutor
+             clock → identity → state →   validate → approve →
+             your base provider           execute → truncate → audit
+                                                │
+                                                ▼
+                                           ToolRegistry
+```
+
+The layers are intentionally separable:
+
+| Layer | Module | Responsibility |
+| --- | --- | --- |
+| Agent facade | `sora_agent/agent.py` | Assemble the system prompt, wire memory/identity/calendar/clock, execute the run, evaluate it, and map the result to `AgentResult`. |
+| Per-run runtime | `sora_agent/runtime.py` | Build one isolated run: registry copy, `find_tools` gate, memory tool, `ToolExecutor`. |
+| Pure loop | `sora_agent/runner.py` | Ask the provider, execute tool calls, feed observations back, stop on answer / budget / policy. Knows nothing about sessions, files, or the CLI. |
+| Providers | `sora_agent/providers.py` | `Message`, `ModelTurn`, `ToolCall`, `MockProvider`, `OpenAIChatProvider`, text-`ACTION:` parsing. |
+| Tools | `sora_agent/tools.py` | `Tool`, `ToolRegistry`, `ToolExecutor`, `ToolResult`, schema generation, the `@tool` decorator. |
+| Discovery | `sora_agent/tool_search.py` | `ToolGate`, `FindToolsTool`, lexical need-based ranking. |
+| Approval | `sora_agent/approval.py` | `ApprovalGate`, `AuditEntry`; chat variant in `channels/approval.py`. |
+| Evaluation | `sora_agent/eval.py` | `Trajectory`, `EvalReport`, `QualityGate`, `structural_grader`, metrics. |
+| Judge | `sora_agent/judge.py` | Optional sampled, calibrated, advisory trajectory judge. |
+| Channels | `sora_agent/channels/` | Buses, manager, chat handler, sessions, approvals, Telegram transport, plugin discovery. |
+| Memory | `sora_agent/memory/` | Daily verbatim store, CortexDB client/sidecar, recall, dreaming, backups. |
+| Model-facing extras | `clock.py`, `calendar.py`, `identity*.py`, `state*.py` | Time, schedule, persona/profile, session state. |
+| Ancillary | `isolation.py`, `rag.py` | Process-isolated tool calls; a minimal retriever protocol. |
+
+### `Agent` options
+
+`Agent` is the library entry point; `ChatHandler` takes a similar subset for
+channel use.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `provider` | required | Any `TurnProvider` or `TextProvider`. |
+| `registry` | empty `ToolRegistry()` | Tool catalog. `find_tools` is a reserved name. |
+| `approval` | `ApprovalGate()` (stdin) | Gate used by tools marked `needs_approval`. |
+| `quality` | `QualityGate()` | Post-run structural evaluation. |
+| `memory` | on (`default_memory()`) | Memory hook; `False` disables it. |
+| `identity` | on (`default_identity()`) | USER.md/SOUL.md injection; `False` disables it. |
+| `max_steps` | `10` | Provider turns allowed per run. |
+| `max_tool_result_chars` | `4000` | Truncation cap for tool observations. |
+| `tool_timeout` | `30.0` | Timeout for `isolated=True` tools (seconds). |
+| `provider_retries` | `2` | Retries for transient provider failures. |
+| `on_event` | `None` | `RunEvent` observer; it can never affect a run. |
+| `clock` | on (`default_clock`) | Current-time prompt section; `False` disables it. |
+| `calendar` | on (`default_calendar`) | Calendar store and tools; `False` disables them. |
+| `calendar_db` | `~/.sora_agent/calendar.db` | Calendar database path override. |
+
+`memory`, `identity`, `clock`, and `calendar` are resolved at construction and
+fail open: a missing optional dependency, corrupt file, or bad configuration
+logs a warning and leaves the rest of the agent working.
+
+### `AgentResult`
+
+`agent.run(task, state=None)` returns an `AgentResult`:
+
+| Field | Meaning |
+| --- | --- |
+| `task` | The task text. |
+| `proposal` | Final answer, or the last assistant text if the model never produced one. |
+| `final_answer` | The model's final answer (empty if the run did not complete). |
+| `stop_reason` | Why the run stopped (see the table under [Runner](#the-modeltool-loop-runner)). |
+| `steps` | The `Step` list: one assistant turn plus the tool results it produced. |
+| `action` / `tool_result` | The last executed tool call and its (truncated) content. |
+| `approved` | Whether any approval-required call was approved. |
+| `audit` | `AuditEntry` list from the approval gate. |
+| `state` | `state.state` when a state object was passed. |
+| `report` | The post-run `EvalReport`. |
+| `error` | Provider/runner error text, if any. |
+
+Passing `state=` also enables state transitions on successful tool calls:
+`expedite_order → EXPEDITED`, `cancel_order → CANCELLED`,
+`defer_order → DEFERRED`, `reroute_order → REROUTED`. A rejected approval never
+transitions.
+
+The bundled `POStateMachine` (`sora_agent/state_machine.py`) models:
+
+```
+open ──► deferred | expedited | cancelled | rerouted | exception
+  any of those ──► executed ──► closed
+```
+
+## The model/tool loop (Runner)
+
+`Runner.run(RunSpec(...))` is the pure loop. `Agent`, `ChatHandler`, and any
+custom integration all funnel through it via `AgentRuntime`.
+
+### `RunSpec` (inputs)
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `messages` | required | Conversation so far, including the system prompt. |
+| `tools` | required | Initial visible tools. |
+| `max_steps` | `10` | Provider turns allowed. `Agent` default 10; `ChatHandler` default 8. |
+| `tool_provider` | `None` | Recompute the visible tool list before every step (lazy discovery). |
+| `on_delta` | `None` | `(chunk, step_index)` callback for streamed text. |
+| `should_stop` | `None` | Cooperative cancellation, checked between steps and calls. |
+| `provider_retries` | `2` | Retries for transient provider failures. |
+| `retry_base_delay` / `retry_max_delay` | `0.5` / `8.0` | Exponential backoff window, equal jitter. |
+| `required_first_tool` | `None` | The model's first action must be this tool. |
+| `on_event` | `None` | `RunEvent` observer; an observer can never affect a run. |
+
+### `RunResult` (outputs)
+
+`RunResult` carries the full message transcript (with tool observations
+appended), `steps`, `final_answer`, `stop_reason`, `error`, `metrics`
+(`RunMetrics`), `run_id`, `report`, plus `tool_schemas` /
+`tool_requirements` snapshots used by evaluation.
+
+### Stop reasons
+
+| `stop_reason` | Trigger |
+| --- | --- |
+| `completed` | The model answered without calling a tool. |
+| `max_steps` | Step budget exhausted. |
+| `cancelled` | `should_stop()` returned true. |
+| `provider_error` | Provider raised and retries were exhausted (or a streamed turn failed). |
+| `tool_error` | The tool executor itself crashed. |
+| `approval_rejected` | A human denied the action, or the gate failed/timed out. |
+| `<tool>_required` | The required first tool (e.g. `memory_recall_required`) was skipped repeatedly; the third violation hard-stops the run. |
+| Any tool's `stop_reason` | A tool may end a run deliberately (e.g. a policy stop). |
+
+### Reliability behavior
+
+- **Retries**: transient provider failures retry with exponential backoff and
+  equal jitter. A turn that already streamed text to the user is **never**
+  retried, so visible text cannot be duplicated. Backoff sleeps in 50 ms slices
+  so cancellation is immediate.
+- **Required first tool**: when set (or when memory is enabled — see
+  [Memory](#memory-cortexdb)), a direct answer or wrong tool is rejected with a
+  correction message. The first two violations get a correction; the third
+  hard-stops with `<tool>_required`. Skipped calls are recorded in the transcript
+  so the assistant/tool message pairing stays valid.
+- **Many calls per turn**: all native tool calls in a turn execute in order;
+  after a *required first tool* completes, remaining calls from that same turn
+  are skipped so the model can see the result before acting on it.
+- **Truncation**: tool output is truncated to `max_tool_result_chars`
+  (`Agent`/`ChatHandler` default 4000) with an explicit
+  `...[truncated N chars]` marker.
+- **Redundancy telemetry**: identical `name + sorted-args` calls are counted in
+  `metrics.redundant_tool_calls` and penalize the quality score, but are not
+  blocked.
+- **Events**: `run_started`, `provider_finished`, `provider_retry`,
+  `tool_finished`, `run_finished` — each with step, name, duration, ok, detail.
+- **Metrics**: durations, provider calls/retries, tool calls/errors/executions/
+  skips, approval denials, redundant calls, isolated calls, streamed chars, and
+  token usage when the provider reports it.
+
+## Providers
+
+A provider is anything matching one of two protocols:
+
+```python
+class TurnProvider(Protocol):
+    def complete_turn(self, messages: list[Message], tools: list[Tool]) -> ModelTurn: ...
+
+class TextProvider(Protocol):
+    def complete(self, messages: list[Message], tools: list[Tool]) -> str: ...
+```
+
+`ModelTurn` carries `text`, `tool_calls: list[ToolCall]`, and optional
+`TokenUsage`. Optional `stream_turn(messages, tools, on_delta, should_stop=...)`
+adds token streaming; the runtime's provider edge (`provider_turn()`) adapts
+non-streaming providers by emitting their whole text as one chunk.
+
+Text-only providers may speak a legacy single-action protocol — exactly one
+line such as:
+
+```
+ACTION: expedite_order(order_id="PO-1234")
+```
+
+Parsing happens once, at the provider edge, so the runner only ever sees
+structured turns. Providers that only implement `complete` automatically get
+this behavior.
+
+Provider wrappers compose transparently (each guards against double-wrapping).
+From the outermost call inwards:
+
+```
+ClockProvider (applied last, current time)
+    └─► IdentityProvider (USER/SOUL)
+            └─► StatefulProvider (optional, session state)
+                    └─► your base provider
+```
+
+`MockProvider` follows the production path offline: recall first when memory is
+visible, discover a hidden business tool with `find_tools`, then call it.
+`OpenAIChatProvider` is a thin Chat Completions wrapper with native tool calls,
+streaming, and usage reporting.
+
+## Tools
+
+### Defining tools
+
+```python
+# Decorator form — registers into sora_agent.tools.registry
+from sora_agent.tools import tool
+
+@tool("lookup_order", "Return a purchase order's status and details.")
+def lookup_order(order_id: str) -> str:
+    return f"PO {order_id}: status=open"
+
+# Constructor form — full control
+from sora_agent.tools import Tool, ToolRegistry
+
+
+def refund_order(order_id: str) -> str:
+    return f"PO {order_id}: refund queued"
+
+
+registry = ToolRegistry()
+registry.add(Tool(
+    refund_order,
+    name="refund_order",
+    description="Refund a purchase order.",
+    needs_approval=True,
+))
+```
+
+`Tool` options:
+
+| Option | Meaning |
+| --- | --- |
+| `needs_approval=True` | Routed through the approval gate before execution; the schema description gets a `[approval required]` marker. |
+| `isolated=True` | Runs in a spawned child process so a hang can actually be killed (`tool_timeout`, default 30 s). Arguments and return value must be picklable. This is crash/hang isolation, **not** a security sandbox. |
+| `requires=("lookup_order",)` | Declares prerequisites; the structural grader checks they succeeded earlier. |
+
+### Schema generation
+
+`Tool.schema` is derived from the function signature and type hints:
+
+- `Annotated[str, "description"]` adds a parameter description.
+- `Literal[...]` and `Enum` classes become JSON-schema `enum`s.
+- `Optional[T]` / `T | None` unwrap to `T`.
+- Scalar defaults (`str`, `int`, `float`, `bool`) are emitted as `default`.
+- `*args` / `**kwargs` are ignored; parameters without defaults are required.
+- The result is JSON-serializable and ready for OpenAI-style function calling.
+
+### Execution pipeline
+
+`ToolExecutor.execute(call)` is the only place a model tool call becomes a
+result, in this order:
+
+1. Unknown tool → error observation.
+2. Malformed JSON arguments (`call.error`) → error observation.
+3. Arguments must be an object and must bind against the callable's signature.
+4. `needs_approval` → `ApprovalGate.request(...)`. Any gate error, missing gate,
+   or denial **fails closed** with `stop_reason="approval_rejected"`.
+5. Execute directly, or via `run_isolated` for `isolated=True`.
+6. Tool exceptions become observations (`tool call failed: ...`) — they never
+   crash the loop.
+7. Truncate, run the `after_execute` policy hook, and log to the audit trail.
+
+`ToolResult` fields: `call`, `content`, `is_error`, `approval_required`,
+`approved`, `executed`, `stopped`, `stop_reason`, `report`, `skipped`,
+`isolated`.
+
+## Lazy tool discovery
+
+The initial tool list is intentionally partial. At the start of a run the model
+sees only:
+
+- `find_tools` — always;
+- `memory_recall` — when memory is enabled (and it must be the first action).
+
+Everything else stays registered but hidden. The hidden catalog is rendered
+*inside the `find_tools` schema* (name + one-line purpose, capped at 60 entries)
+so the prompt prefix stays small and stable.
+
+`find_tools(need="...")` ranks registered tools lexically — token overlap plus
+`difflib.SequenceMatcher`, with name matches weighted above description matches
+and small typos tolerated — and unlocks up to 5 matches (minimum score 2.0).
+Unlocked tools appear in the model's tool list on the next step. Discovery is
+per-run: `AgentRuntime` copies the registry and builds a fresh `ToolGate`, so one
+run's unlocks never leak into another. `find_tools` is a reserved name —
+registering a tool with it raises `ValueError`.
+
+## Human approval
+
+`ApprovalGate` is synchronous and blocking:
+
+```python
+from sora_agent.approval import ApprovalGate
+
+gate = ApprovalGate()
+approved = gate.request("expedite_order", 'ACTION: expedite_order(order_id="PO-1234")')
+# prompts on stdin: "Approve? [y/N]"
+```
+
+Every decision is appended to `gate.audit` as an `AuditEntry`
+(`ts`, `action`, `actor`, `decision`, `detail`). For tests and non-interactive
+runs use `gate.approve_for(action, detail, actor="human-reviewer")`.
+
+For chat channels, `channels/approval.py` provides:
+
+- **`ApprovalBroker`** — publishes the prompt to the chat, blocks the worker
+  thread on a `threading.Event`, and resolves it when the reply arrives.
+- **`ChannelApprovalGate`** — an `ApprovalGate` whose question goes to the chat
+  and whose audit records the sender as the actor.
+
+Behavior details:
+
+- Clear replies (`yes`, `y`, `ok`, `approve`, ... / `no`, `n`, `reject`, ...)
+  decide the request; anything else is left for the agent, so a user can ask a
+  follow-up question while an approval is pending.
+- A timeout (default 300 s in the gateway) **denies** the request.
+- Button presses carry an `approval_id`; a button from an older prompt cannot
+  decide a newer request.
+- `/cancel` and gateway shutdown release blocked approvals immediately.
+
+## Quality gate and evaluation
+
+Evaluation is deliberately **non-executional**: no tool call may depend on a
+verdict. Safety lives in the approval gate and the tool policy. A grader error
+therefore produces a report, not a block.
+
+```python
+from sora_agent.eval import QualityGate, trajectory_from_run
+
+# Agent evaluates automatically:
+result = agent.run(task)
+print(result.report)   # [PASS] score=1.00 / [FAIL] / [SKIP]
+
+# Or grade a finished Runner run yourself (`run` is a RunResult):
+report = QualityGate().evaluate(
+    trajectory_from_run(task, run, final_answer=final_text)
+)
+print(report.passed, report.score, report.checks, report.dimensions)
+```
+
+`structural_grader` (the default) checks what a finished trajectory can prove:
+
+- the final answer is non-empty;
+- every called tool is in the tool set;
+- arguments conform to the tool's JSON schema (required fields and types);
+- declared `Tool.requires` prerequisites succeeded earlier;
+- a tool never executes after the run stopped;
+- a tool never executes without the approval it required;
+- the required first tool (when set) was actually first;
+- repeated identical calls are reported (score penalty, not a hard failure).
+
+It deliberately does **not** check semantic correctness, grounding of claims in
+tool results, safety/desirability of side effects, business rules, idempotency,
+prompt injection, whether a better tool existed, undeclared dependencies, or
+argument semantics beyond schema shape.
+
+`trajectory_metrics(trajectory)` derives efficiency measures: action success
+rate, redundant-call rate, steps to answer, attempted/successful calls, token
+counts, and provider/tool seconds.
+
+### Chat inspection and control
+
+`ChatHandler` exposes the latest report and cooperative control over chat:
+
+- `/status` — last run's stop reason, steps, tool calls, errors, duration,
+  tokens, action-success rate, redundancy, and eval verdict.
+- `/eval` — the full latest `EvalReport`.
+- `/cancel` — cooperatively stop the running turn.
+- `/reset` — forget the conversation (in memory **and** on disk).
+
+## Optional trajectory judge
+
+`judge.py` adds a sampled LLM judge. It is **off by default** and never
+participates in execution: its verdict cannot approve, block, or alter a tool
+call. One judged run costs one provider call, so sampling is the budget control.
+
+```python
+from sora_agent.judge import JudgeConfig, JudgeGrader
+
+judge = JudgeGrader(
+    provider=judge_provider,                      # a different model family
+    config=JudgeConfig(
+        sample_rate=0.1,
+        calibration_path="judge_calibration.json",
+        agent_family="gpt-4o-mini",
+        model_family="claude-sonnet",
+    ),
+)
+agent.quality = QualityGate(grader=judge)
+```
+
+Guardrails:
+
+- **Calibration gate**: `JudgeGrader` refuses to score until a calibration
+  manifest meets minimum agreement (0.80), Cohen's kappa (0.60), and recall on
+  bad trajectories (0.80).
+- **Family rule**: `agent_family` and `model_family` are declarations, not
+  verifiable facts, but using the same family is rejected.
+- **Advisory safety**: the `safety` dimension appears in the report and lowers
+  the score, but never decides `passed` and never influences execution.
+- `calibrate_judge(judge, labelled)` and `calibration_metrics(labels, preds)`
+  compute agreement/kappa/recall against human labels; `save_calibration` /
+  `load_calibration` persist the manifest.
+
+## Clock
+
+The loop has no inherent sense of "now". `ClockProvider` appends one small
+per-turn system section so the model can resolve "today", "tomorrow", and
+relative deadlines:
+
+```
+## CURRENT TIME
+Local: 2026-11-04T18:01:23+08:00 (Wednesday, CST)
+UTC: 2026-11-04T10:01:23Z
+Treat this as the authoritative current time. ...
+```
+
+- Enabled by default for `Agent` and `ChatHandler`; disable with `clock=False`.
+- The section is always ordered last: after the base prompt, identity, and
+  state. The identity/state wrappers use `extract_clock`/`append_clock` to
+  preserve that ordering no matter which order wrappers are composed in.
+- `resolve_clock` accepts `False`, `True`/`None`/`"default"`, a fixed
+  `datetime` (useful in tests), or any callable returning a datetime. A broken
+  clock fails open and never breaks a turn.
+
+## Calendar
+
+A small, dependency-free calendar the model reaches through ordinary tools.
+
+- Storage: one SQLite file at `~/.sora_agent/calendar.db`
+  (override with `SORA_CALENDAR_DB`).
+- Item kinds: `event` (title, start, optional end) and `todo` (title, optional
+  due date, completed flag, completion timestamp).
+- Importance slider with exactly three stops: `important`, `balanced`,
+  `not important` (stored with a sort rank; common aliases like "high" or "low"
+  are normalized).
+- Dates accept ISO 8601 (`2026-11-05`, `2026-11-05 14:30`,
+  `2026-11-05T14:30:00+08:00`) plus `now`, `today`, `tomorrow`, `yesterday`.
+  Naive values use the clock's timezone.
+
+Tools registered on the (hidden) registry — reached via `find_tools`:
+
+| Tool | Purpose |
+| --- | --- |
+| `calendar_list` | List events/to-dos in a window (default: today onward, 30 days; to-dos without due dates included). |
+| `calendar_add_event` | Add an event with title, start, optional end, notes, importance. |
+| `calendar_add_todo` | Add a to-do with optional due date, notes, importance. |
+| `calendar_complete_todo` | Mark a to-do done. |
+| `calendar_set_importance` | Move an item's importance slider. |
+
+`Agent(calendar=None)` and `ChatHandler()` register the calendar by default;
+disable with `calendar=False` or point at another file with
+`calendar_db="/path/to.db"` (also `--no-calendar` / `--calendar-db` on the
+gateway).
+
+## Session state
+
+`state.py` is a self-contained, session-scoped persistent state document — the
+agent's cumulative working memory for one conversation. It uses only the
+standard library and knows nothing about the loop; `state_provider.py` is the
+single adapter.
+
+- **Storage**: `<session_id>.state.md` inside a caller-supplied root (there is
+  deliberately no default root). Writes are atomic (`fsync` + `os.replace`,
+  0600 files, 0700 root); the previous valid document is kept as
+  `<session_id>.state.md.bak`.
+- **Format**: exactly four `## ` headings in order —
+
+  ```
+  ## Goal
+  ...
+  ## Current State
+  ...
+  ## Next to do if prompted or approved to
+  ...
+  ## User
+  Feeling: ...
+  Thinking: ...
+  ```
+
+- **Validation** (`StateMonitor`, pure and deterministic): missing/duplicate/
+  misplaced headings, empty sections, placeholders like `TODO`, code fences,
+  control/invisible characters, reserved `<state_edit>` sentinels, gibberish
+  (repeated tokens, long runs, implausible tokens), clearing a previously
+  non-empty section or a `Feeling:`/`Thinking:` value, and character limits.
+- **Limits**: length 2048–8096 chars (default 4076); repair attempts 1–5
+  (default 3). State is **never** deleted, cleared, or reset. A corrupt file is
+  never overwritten by the recovery path; rejected edits leave the file
+  untouched; an unchanged edit is a no-op.
+- **Protocol**: the provider wrapper appends a state protocol plus the current
+  document inside `<<<STATE ... STATE>>>`; the model may append at most one
+  full-replacement `<state_edit>...</state_edit>` block. Invalid edits trigger a
+  bounded deterministic repair loop, and the visible answer is never rewritten
+  by a repair.
+- **Prompt caching**: the original system messages stay byte-for-byte untouched;
+  the state is inserted as the final system message (before the clock).
+
+```python
+from pathlib import Path
+
+from sora_agent.agent import Agent
+from sora_agent.providers import MockProvider
+from sora_agent.state import StateConfig, StateManager
+from sora_agent.state_provider import StatefulProvider
+
+manager = StateManager(
+    "po-1234",
+    StateConfig(root=Path.home() / ".sora_agent" / "state"),
+)
+manager.ensure("Handle the stuck PO exception")   # creates the first document
+
+agent = Agent(
+    provider=StatefulProvider(MockProvider(), manager),
+    memory=False,
+    identity=False,
+    calendar=False,
+)
+```
+
+## Identity (USER.md / SOUL.md)
+
+Persistent, file-backed identity for long-lived assistants.
+
+- `USER.md` — the single authoritative place for durable facts and preferences
+  about the user (limit 1000 chars).
+- `SOUL.md` — the single authoritative place for the agent's stable persona,
+  voice, values, and boundaries (limit 1500 chars).
+- There is deliberately **no** `AGENTS.md` support and no directory scan; only
+  exactly these two documents are ever loaded.
+- Default location `~/.sora_agent/identity` (override `SORA_IDENTITY_ROOT`,
+  disable with `SORA_IDENTITY=0`). For `Agent`, identity is **on by default**
+  and opt-out; the gateway enables it with `--identity`.
+
+Document format is intentionally strict — one fact per line:
+
+```
+- Name: Jaden
+- Age: 24
+- Likes: potatoes
+```
+
+Validation rejects headings, prose, code fences, placeholders, duplicate keys,
+keys longer than 40 chars, values longer than 200 chars, values that look like
+secrets (keys containing "password"/"token"/"api key"/..., or values matching
+`sk-...`, GitHub tokens, AWS keys, PEM headers), reserved edit markers, and
+documents over the limit.
+
+The model updates identity with exactly one full-replacement block per
+document, `<user_edit>...</user_edit>` and/or `<soul_edit>...</soul_edit>`.
+Blocks are removed from the visible answer before the user sees it; rejected
+edits go through a bounded repair loop that never rewrites the answer.
+
+Durability: every accepted edit archives the previous active backup and writes
+new gzip backups with a `manifest.json` carrying compressed/plaintext SHA-256
+hashes and character counts. Backups are verified after write; corrupt primary
+files fall back to the active backup and are never overwritten; there is an OS
+file lock per document; retention defaults to 3 payloads per document.
+
+The **memory firewall** lives here: `IdentityStore.redact_for_memory(text)`
+removes known profile terms/bullets and (for user messages) common explicit
+profile/PII patterns before anything is written to memory or returned from
+recall, replacing them with `[profile]` / `[profile details withheld]`.
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `SORA_IDENTITY` | `true` | Master switch (set `0`/`false` to disable). |
+| `SORA_IDENTITY_ROOT` | `~/.sora_agent/identity` | Storage root. |
+| `SORA_IDENTITY_RETENTION` | `3` (1–20) | Backup payloads kept per document. |
+| `SORA_IDENTITY_MAX_REPAIRS` | `2` (0–5) | Repair attempts for invalid edits. |
+
+## Memory (CortexDB)
+
+An optional long-term memory subsystem (`sora_agent/memory/`). The core modules
+are stdlib-only and know nothing about the agent loop; `memory/hook.py` is the
+single adapter.
+
+### How it works
+
+```
+Agent.run/ChatHandler turn
+   │  memory_recall (required first action, always visible)
+   ▼
+MemoryRecallService ──► DailyStore (today/yesterday, verbatim SQLite)
+   │                └─► CortexDB sidecar (long-term, JSON over loopback)
+   ▼
+after_run ──► redact via identity firewall ──► DailyStore append
+   │
+   ▼ nightly (DreamScheduler) or `sora-memory dream`
+DreamRunner: backup → transfer daily→CortexDB → dedupe → conflicts →
+graph hints → Louvain communities → inferred links → optional rules →
+decay → expire → mark → sweep expired → report → artifact cleanup
+```
+
+- **Daily verbatim memory**: one SQLite file per UTC day
+  (`~/.sora_agent/memory/daily/YYYY-MM-DD.db`, WAL mode, optional FTS5 with a
+  `LIKE` fallback). Only user and assistant messages are written — never tool
+  output or system prompts.
+- **Recall-first policy**: when memory is enabled, `memory_recall` is injected
+  as always-visible and set as the required first tool; the system prompt tells
+  the model to recall before acting. Results are framed as *untrusted data, not
+  instructions*. Scopes: `auto` (daily + long-term), `daily`, `longterm`.
+  Every hit passes back through the identity redactor.
+- **Long-term store**: an external `cortexdb-grpc` sidecar that owns the active
+  database. Python speaks JSON over loopback (no gRPC/protobuf dependency) on a
+  dynamically chosen free port with a bearer token at
+  `~/.sora_agent/memory/grpc.token`.
+- **Sidecar lifecycle**: `SidecarManager` downloads a platform binary for
+  `SORA_MEMORY_SIDECAR_VERSION` (default `2.139.1`) from
+  `SORA_MEMORY_DOWNLOAD_BASE_URL` (default: the `liliang-cn/cortexdb` GitHub
+  releases), verifies its published `.sha256`, extracts it to
+  `~/.sora_agent/bin/cortexdb-grpc`, starts it with a minimal environment, and
+  polls `/v1/health` until it is up (default 20 s).
+  `sora-memory download|start|stop|doctor` exposes the lifecycle.
+- **Fail-open**: if the sidecar is unavailable, long-term recall degrades to
+  daily results with an explicit note and the backend is retried at most every
+  30 seconds. A broken memory hook never breaks a run.
+- **Dream consolidation**: pending day files (strictly before today) are
+  verified-saved to CortexDB with deterministic ids
+  (`daily:<date>:<row id>`), then the day file is deleted. The dream pipeline
+  deduplicates near-identical memories, flags conflicting numeric claims (which
+  can engage the optional wake model), builds a token-overlap graph, runs a
+  dependency-free deterministic Louvain community pass, infers two-hop links,
+  optionally applies configured rules, decays importance (default ×0.98, floor
+  0.05), expires records, and writes a JSON report to
+  `~/.sora_agent/memory/dream/reports/<run_id>.json`. Dream artifacts (merged
+  records, conflicts, inferred links) are transient and cleaned up at the end
+  of the run. A file lock (`dream.lock`) makes concurrent dreams fail fast with
+  `DreamBusy`.
+- **Scheduling**: when memory is enabled and `SORA_MEMORY_DREAM_AUTO` is true, a
+  daemon thread (`sora-memory-dream`) runs one dream at the configured UTC hour
+  (default midnight) and performs a startup catch-up if work is pending.
+- **Backups**: `VACUUM INTO` + `PRAGMA integrity_check`, zstd compression,
+  SHA-256 manifests, and retention of 4 active / 14 daily / 8 weekly / 12
+  monthly snapshots. Restore verifies the manifest checksum and integrity,
+  stops the sidecar, preserves the previous DB as `*.pre-restore-<stamp>`, and
+  restarts the sidecar.
+
+### Key configuration
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `SORA_MEMORY` | `true` | Master switch (opt-out). |
+| `SORA_MEMORY_ROOT` | `~/.sora_agent` | Root for db, daily files, backups, logs. |
+| `SORA_MEMORY_USER_ID` | `sora` | Scope used when writing/recalling memories. |
+| `SORA_MEMORY_RECALL_TOP_K` | `8` (1–50) | Recall result budget. |
+| `SORA_MEMORY_RECALL_MAX_CHARS` | `6000` | Rendered recall text cap. |
+| `SORA_MEMORY_RECALL_MODE` | `auto` | Retrieval mode: `auto`, `lexical`, `graph`, `ppr`. |
+| `SORA_MEMORY_AUTO_DOWNLOAD` | `true` | Download the sidecar when missing. |
+| `SORA_MEMORY_DOWNLOAD_BASE_URL` | CortexDB release base URL | Where to download the sidecar from. |
+| `SORA_MEMORY_SIDECAR_BIN` | — | Use an existing binary instead. |
+| `SORA_MEMORY_SIDECAR_VERSION` | `2.139.1` | Release to download. |
+| `SORA_MEMORY_HTTP_ADDR` / `SORA_MEMORY_GRPC_ADDR` | `127.0.0.1:0` | Listen addresses (port 0 = free port). |
+| `SORA_MEMORY_TOKEN` | generated file | Bearer token for the HTTP API. |
+| `SORA_MEMORY_REQUEST_TIMEOUT` / `SORA_MEMORY_START_TIMEOUT` | `10.0` / `20.0` | Seconds. |
+| `SORA_MEMORY_DREAM_AUTO` | `true` | Automatic nightly dreams. |
+| `SORA_MEMORY_DREAM_HOUR_UTC` | `0` | Hour of the nightly run. |
+| `SORA_MEMORY_DREAM_ROUNDS` | `2` | Consolidation rounds per memory. |
+| `SORA_MEMORY_DREAM_BUDGET` | `120` | Pipeline seconds budget. |
+| `SORA_MEMORY_DREAM_EDGE` | `0.45` | Jaccard threshold for graph edges. |
+| `SORA_MEMORY_DREAM_DECAY` / `SORA_MEMORY_DREAM_MIN_IMPORTANCE` | `0.98` / `0.05` | Importance decay and floor. |
+| `SORA_MEMORY_BACKUP_ACTIVE` / `_DAILY` / `_WEEKLY` / `_MONTHLY` | `4` / `14` / `8` / `12` | Retention counts. |
+| `SORA_MEMORY_WAKE_MODEL`, `SORA_MEMORY_WAKE_BASE_URL`, `SORA_MEMORY_WAKE_API_KEY`, `SORA_MEMORY_WAKE_TIMEOUT` | — | Optional wake-model review of conflict-bearing dream reports. |
+
+Additional caps: `SORA_MEMORY_DREAM_MAX_MEMORIES` (500),
+`SORA_MEMORY_DREAM_MAX_MERGES` (20), `SORA_MEMORY_DREAM_MAX_CONFLICTS` (20),
+`SORA_MEMORY_DREAM_MAX_INFERENCES` (20), `SORA_MEMORY_DREAM_MAX_UPDATES` (300),
+and `SORA_MEMORY_RULES` (a JSON array of rule dicts).
+
+### Using memory
+
+```python
+from sora_agent import Agent
+from sora_agent.memory import default_memory
+
+agent = Agent(provider=provider)              # memory on by default (opt-out)
+# or explicitly:
+agent = Agent(provider=provider, memory=default_memory())
+# or disable:
+agent = Agent(provider=provider, memory=False)
+```
+
+After each run the hook records the (redacted) user message and the assistant's
+reasoning/final text to daily memory. Tool output and system prompts are never
+stored. Identity edits apply *before* the user message is buffered, so the
+firewall always redacts against the updated profile.
+
+## Chat channels and the gateway
+
+`sora_agent/channels/` decouples transports from the agent:
+
+| Piece | Role |
+| --- | --- |
+| `InboundMessage` / `OutboundMessage` | Channel-agnostic payloads (channel, sender, chat, content, media `file_id`s, metadata). |
+| `MessageBus` | Two asyncio queues (inbound/outbound) so a slow platform never blocks the model loop. |
+| `BaseChannel` | Transport ABC: `start()` (blocks), `stop()` (idempotent), `send()`, plus the shared `allow_from` authorization rule (`"*"` allows everyone; an empty list denies everyone — a token is not an access policy). |
+| `ChannelManager` | Supervises channels, dispatches commands, runs turns in tasks with per-session locks, answers control commands, delivers outbound with retries. If a channel dies, the gateway shuts down rather than half-serving. |
+| `ChatHandler` | Per-session history, run assembly, streaming, cancellation, `/status`, `/eval`, `/reset`, `/cancel`. |
+| `SessionStore` | Durable JSON conversation history, one hashed file per session under `~/.sora_agent/sessions` (override `SORA_SESSIONS_ROOT`). History is trimmed to `max_turns * 2` messages (default 40 turns). |
+| `ApprovalBroker` / `ChannelApprovalGate` | Chat-based approvals (see [Human approval](#human-approval)). |
+
+### Telegram
+
+The in-box channel long-polls the Bot API using only `urllib` (`getUpdates`),
+records attachment `file_id`s without downloading, and delivers replies in
+platform-sized chunks that prefer natural breaks.
+
+- **Streaming**: Telegram `supports_streaming=True`; the handler edits one live
+  message per run step as tokens arrive (coalesced: ≥0.25 s or ≥16 chars), and
+  the final answer is only re-sent if it never rendered completely.
+- **Approvals**: approval prompts get Approve/Reject inline buttons
+  (`approval:<yes|no>:<id>`); button presses are acknowledged and the keyboard
+  removed. Replies by text (`yes` / `no`) work too.
+- **Topics**: a `message_thread_id` scopes the session to
+  `telegram:<chat>:<thread>`.
+- **Config**: `SORA_TELEGRAM_TOKEN` (required), `SORA_TELEGRAM_ALLOW_FROM`
+  (comma-separated user ids, or `*`), `SORA_TELEGRAM_API_BASE`,
+  `SORA_TELEGRAM_POLL_TIMEOUT`, `SORA_TELEGRAM_REQUEST_TIMEOUT`,
+  `SORA_TELEGRAM_PARSE_MODE` (`HTML`/`Markdown`/`MarkdownV2`),
+  `SORA_TELEGRAM_MAX_CHARS` (default 4096).
+
+Start it with:
+
+```bash
+export SORA_TELEGRAM_TOKEN=123456:ABC...
+export SORA_TELEGRAM_ALLOW_FROM=98765432   # your numeric user id
+
+sora-gateway --provider mock --tools demo --memory --identity
+```
+
+### Adding a channel
+
+Discovery imports only a tiny manifest per package, so a channel whose platform
+SDK is missing does not break the rest (`discover_plugins` skips with a
+warning):
+
+```python
+# sora_agent/channels/mychannel/manifest.py
+from ..manifest import ChannelPlugin
+
+PLUGIN = ChannelPlugin(
+    name="mychannel",
+    display_name="My Channel",
+    runtime=f"{__package__}.runtime:MyChannel",
+)
+
+# sora_agent/channels/mychannel/runtime.py
+from ..base import BaseChannel
+
+class MyChannel(BaseChannel):
+    name = "mychannel"
+    async def start(self) -> None: ...   # poll/receive loop
+    async def stop(self) -> None: ...    # idempotent
+    async def send(self, msg) -> None: ...  # deliver one outbound message
+```
+
+`ChannelPlugin` validates names/runtime targets; `sora-gateway --list` prints
+every discovered channel with its declared dependencies.
+
+## Command-line interfaces
+
+### `sora-gateway`
+
+```
+sora-gateway [--channel telegram] [--provider mock|openai|deepseek|qwen]
+             [--max-steps 8] [--max-turns 40] [--no-sessions]
+             [--provider-timeout 30] [--provider-retries 2]
+             [--tool-timeout 30] [--tools none|demo]
+             [--memory] [--identity] [--approval-timeout 300]
+             [--no-clock] [--no-calendar] [--calendar-db PATH]
+             [--token TOKEN] [--allow IDS] [--list]
+```
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--channel` | `telegram` | Channel to run. |
+| `--provider` | `mock` | Provider kind passed to `default_provider`. |
+| `--max-steps` | `8` | Tool steps per turn. |
+| `--max-turns` | `40` | Conversation turns kept per session. |
+| `--no-sessions` | off | Keep history in memory only. |
+| `--provider-timeout` | `30` | Provider request timeout (s). |
+| `--provider-retries` | `2` | Provider retries. |
+| `--tool-timeout` | `30` | Isolated tool process timeout (s). |
+| `--tools` | `none` | `demo` registers the sample order tools. |
+| `--memory` | off | Enable the CortexDB memory hook. |
+| `--identity` | off | Inject the persistent USER.md/SOUL.md identity. |
+| `--approval-timeout` | `300` | Seconds to wait for a chat approval. |
+| `--no-clock` | off | Omit the current-time section. |
+| `--no-calendar` | off | Disable calendar tools. |
+| `--calendar-db` | `~/.sora_agent/calendar.db` | Calendar database path. |
+| `--token` / `--allow` | env | Override Telegram token / allow list. |
+| `--list` | — | Print discovered channels and exit. |
+
+### `sora-memory`
+
+```
+sora-memory doctor [--json]              # configuration and health
+sora-memory dream [--dry-run] [--today]  # transfer + consolidate
+sora-memory backup [--active|--all|--daily YYYY-MM-DD ...]
+sora-memory restore SNAPSHOT [--yes]     # restore from a snapshot
+sora-memory recall QUERY [--scope auto|daily|longterm] [--k 8]
+sora-memory daily-search QUERY [--k 8]   # verbatim search in daily files
+sora-memory download | start | stop      # sidecar lifecycle
+sora-memory optimize [--vacuum]          # offline SQLite maintenance
+```
+
+`sora-memory` refuses to run when memory is disabled (`SORA_MEMORY=0`).
+`dream` prints the report path; `--dry-run` writes a full report without
+mutating the store, and `--today` includes today's daily file.
+
+## Environment variables
+
+### Provider
+
+| Variable | Used by |
+| --- | --- |
+| `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL` | `openai` / `azure` provider (and any OpenAI-compatible base URL). |
+| `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL` | `deepseek` provider. |
+| `DASHSCOPE_API_KEY`, `QWEN_MODEL` | `qwen` provider. |
+
+### Subsystems
+
+| Variable | Subsystem | Default |
+| --- | --- | --- |
+| `SORA_IDENTITY`, `SORA_IDENTITY_ROOT`, `SORA_IDENTITY_RETENTION`, `SORA_IDENTITY_MAX_REPAIRS` | Identity | on, `~/.sora_agent/identity`, 3, 2 |
+| `SORA_MEMORY`, `SORA_MEMORY_ROOT`, and all `SORA_MEMORY_*` knobs | Memory | on, `~/.sora_agent` |
+| `SORA_CALENDAR_DB` | Calendar | `~/.sora_agent/calendar.db` |
+| `SORA_SESSIONS_ROOT` | Chat sessions | `~/.sora_agent/sessions` |
+| `SORA_TELEGRAM_*` | Telegram channel | token required; deny-all allow list |
+
+See the [Memory](#memory-cortexdb) and [Identity](#identity-usermd--soulmd)
+sections for the full tables.
+
+## Project layout
+
+```
+SoraAgent/
+├── pyproject.toml              # packaging, extras, console scripts
+├── pyrightconfig.json          # pyright in standard mode, Python 3.9
+├── LICENSE                     # AGPL-3.0-only
+├── README.md
+├── examples/
+│   ├── po_workflow.py          # interactive PO exception demo
+│   ├── copilot_function.py     # Azure Function-style entry point
+│   └── _demo_memory.py         # offline memory stand-in used by the examples
+├── tests/                      # 371 pytest tests across 19 test files
+└── sora_agent/
+    ├── agent.py                # Agent facade + AgentResult
+    ├── runtime.py              # per-run assembly (AgentRuntime, RunRequest)
+    ├── runner.py               # pure model/tool loop (Runner, RunSpec, Step, events, metrics)
+    ├── providers.py            # Message/ModelTurn/ToolCall, MockProvider, OpenAIChatProvider
+    ├── tools.py                # Tool, ToolRegistry, ToolExecutor, ToolResult, @tool
+    ├── tool_search.py          # ToolGate, FindToolsTool, lexical ranking
+    ├── isolation.py            # spawned-process tool isolation with real timeouts
+    ├── approval.py             # ApprovalGate + AuditEntry
+    ├── eval.py                 # Trajectory, EvalReport, QualityGate, structural grader
+    ├── judge.py                # optional calibrated trajectory judge
+    ├── clock.py                # per-turn CURRENT TIME injection
+    ├── calendar.py             # SQLite calendar + calendar tools
+    ├── state.py                # session state document: store, monitor, protocol
+    ├── state_provider.py       # StatefulProvider adapter
+    ├── state_machine.py        # PO exception-handling state machine
+    ├── identity.py             # USER.md/SOUL.md storage, validation, memory firewall
+    ├── identity_provider.py    # identity prompt injection + edit handling
+    ├── rag.py                  # minimal Retriever protocol + in-memory stub
+    ├── channels/               # transports, bus, manager, chat handler, sessions, approvals
+    │   ├── cli.py              # sora-gateway
+    │   └── telegram/           # manifest + urllib transport + polling runtime
+    └── memory/                 # CortexDB client/sidecar, daily store, recall, dream, backups
+        └── cli.py              # sora-memory
+```
+
+## Development
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[openai,memory,dev]"
+
+pytest                          # 371 tests
+pyright                         # static checks, standard mode (Python 3.9; install separately)
+```
+
+Notes for contributors:
+
+- `tests/conftest.py` disables default memory and identity
+  (`SORA_MEMORY=0`, `SORA_IDENTITY=0`, `SORA_MEMORY_AUTO_DOWNLOAD=0`) and points
+  the calendar at a temp directory, so tests never touch the network or the
+  real home directory.
+- The codebase follows a strict philosophy: safety paths fail **closed**
+  (approval, argument validation) while optional conveniences fail **open**
+  (memory, identity, clock, calendar, observers, RAG).
+- Evaluation and the judge are deliberately **non-executional** — do not wire a
+  verdict into a tool call.
+- Prefer standard library solutions; the core package has zero dependencies and
+  the memory core, state core, and calendar are stdlib-only by design.
+
+## License
+
+GNU Affero General Public License v3.0 only (`AGPL-3.0-only`).
+
+Copyright (C) 2026 Tam Kuan Hou (譚君浩 / Marco Tam) — GitHub:
+[Mochi-Sora](https://github.com/Mochi-Sora).
