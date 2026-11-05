@@ -88,7 +88,9 @@ irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.ps1 | ie
 The installer needs Python **3.9+** already available and downloads the latest
 release (falling back to `main` when no release exists). It installs SoraAgent
 into an isolated virtual environment, adds the command directory to your PATH,
-and verifies both console scripts. Re-running the same command upgrades in
+and verifies both console scripts. On Debian/Ubuntu systems without
+`python3-venv`, it creates the environment without pip and bootstraps pip
+inside it, so no `sudo` is required. Re-running the same command upgrades in
 place; user data under `~/.sora_agent` is never touched.
 
 Common options:

@@ -258,10 +258,14 @@ find_python
 info "Using Python $("$PYTHON_BIN" -c 'import sys; print("{}.{}.{}".format(*sys.version_info[:3]))')"
 
 TMP_DIR=""
+GET_PIP=""
 PIP_LOG="$(mktemp "${TMPDIR:-/tmp}/sora-agent.log.XXXXXX")"
 cleanup() {
     if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
         rm -rf "$TMP_DIR"
+    fi
+    if [ -n "$GET_PIP" ]; then
+        rm -f "$GET_PIP"
     fi
     rm -f "$PIP_LOG"
 }
@@ -324,9 +328,26 @@ mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 if [ ! -x "$VENV_PY" ]; then
     info "Creating virtual environment in $VENV_DIR..."
     if ! "$PYTHON_BIN" -m venv "$VENV_DIR" >"$PIP_LOG" 2>&1; then
-        cat "$PIP_LOG" >&2
+        # Debian/Ubuntu ship ensurepip in a separate python3-venv package.
+        # Create the environment without pip and bootstrap pip inside it, so
+        # the installer does not need sudo or system packages.
         rm -rf "$VENV_DIR"
-        die "could not create a virtual environment (on Debian/Ubuntu, install python3-venv)"
+        info "ensurepip is unavailable; bootstrapping pip inside the virtual environment..."
+        if ! "$PYTHON_BIN" -m venv --without-pip "$VENV_DIR" >"$PIP_LOG" 2>&1; then
+            cat "$PIP_LOG" >&2
+            rm -rf "$VENV_DIR"
+            die "could not create a virtual environment (install python3-venv for your Python version)"
+        fi
+        GET_PIP="$(mktemp "${TMPDIR:-/tmp}/sora-agent-get-pip.XXXXXX.py")"
+        if ! download "https://bootstrap.pypa.io/get-pip.py" "$GET_PIP"; then
+            die "could not download the pip bootstrap script"
+        fi
+        if ! "$VENV_PY" "$GET_PIP" --quiet >"$PIP_LOG" 2>&1; then
+            cat "$PIP_LOG" >&2
+            die "could not bootstrap pip inside the virtual environment"
+        fi
+        rm -f "$GET_PIP"
+        GET_PIP=""
     fi
 fi
 
