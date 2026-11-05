@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -177,39 +177,111 @@ class MemoryConfig:
 
     @classmethod
     def from_env(cls) -> MemoryConfig:
-        root = os.getenv("SORA_MEMORY_ROOT")
-        binary = os.getenv("SORA_MEMORY_SIDECAR_BIN")
+        """Build a config from ``SORA_MEMORY_*`` variables only."""
+        return cls.from_settings({})
+
+    @classmethod
+    def from_settings(
+        cls,
+        settings: Mapping[str, Any] | None = None,
+        *,
+        root: str | Path | None = None,
+        wake_model: str = "",
+        wake_base_url: str = "",
+        wake_api_key: str = "",
+    ) -> MemoryConfig:
+        """Build a config from the wizard's memory section.
+
+        Settings provide the base values; environment variables still win,
+        preserving the documented precedence.  ``from_env()`` is the same
+        function with an empty settings mapping.
+        """
+        raw = settings if isinstance(settings, Mapping) else {}
+        defaults = cls()
+
+        configured_root = root or raw.get("root")
+        env_root = os.getenv("SORA_MEMORY_ROOT")
+        resolved_root = (
+            Path(env_root).expanduser()
+            if env_root
+            else (
+                Path(configured_root).expanduser()
+                if configured_root
+                else defaults.root
+            )
+        )
+
+        sidecar = _pick_bool(raw, "sidecar", True)
+        auto_download = _pick_bool(raw, "auto_download", True) and sidecar
+        dream = _pick_bool(raw, "dream", True)
+        wake = _pick_bool(raw, "wake", True)
+
+        binary_value = raw.get("sidecar_binary")
+        env_binary = os.getenv("SORA_MEMORY_SIDECAR_BIN")
+        binary = env_binary or binary_value
+
         rules: tuple[dict[str, Any], ...] = ()
         raw_rules = os.getenv("SORA_MEMORY_RULES")
         if raw_rules:
             try:
                 parsed = json.loads(raw_rules)
                 if isinstance(parsed, list):
-                    rules = tuple(item for item in parsed if isinstance(item, dict))
+                    rules = tuple(
+                        item for item in parsed if isinstance(item, dict)
+                    )
             except (TypeError, ValueError):
                 rules = ()
+
+        if not wake:
+            wake_model = wake_base_url = wake_api_key = ""
+
         return cls(
-            root=Path(root).expanduser() if root else Path.home() / ".sora_agent",
-            enabled=_env_bool("SORA_MEMORY", True),
+            root=resolved_root,
+            enabled=_env_bool(
+                "SORA_MEMORY", _pick_bool(raw, "enabled", True)
+            ),
             user_id=os.getenv("SORA_MEMORY_USER_ID", "sora"),
-            recall_top_k=_env_int("SORA_MEMORY_RECALL_TOP_K", 8),
-            recall_max_chars=_env_int("SORA_MEMORY_RECALL_MAX_CHARS", 6000),
-            recall_retrieval_mode=os.getenv("SORA_MEMORY_RECALL_MODE", "auto"),
-            sidecar_version=os.getenv("SORA_MEMORY_SIDECAR_VERSION", "2.139.1"),
+            recall_top_k=_env_int(
+                "SORA_MEMORY_RECALL_TOP_K",
+                _pick_int(raw, "recall_top_k", 8),
+            ),
+            recall_max_chars=_env_int(
+                "SORA_MEMORY_RECALL_MAX_CHARS",
+                _pick_int(raw, "recall_max_chars", 6000),
+            ),
+            recall_retrieval_mode=os.getenv(
+                "SORA_MEMORY_RECALL_MODE",
+                _pick_str(raw, "retrieval_mode", "auto"),
+            ),
+            sidecar_version=os.getenv(
+                "SORA_MEMORY_SIDECAR_VERSION",
+                _pick_str(raw, "sidecar_version", "2.139.1"),
+            ),
             sidecar_binary=Path(binary).expanduser() if binary else None,
             http_addr=os.getenv("SORA_MEMORY_HTTP_ADDR", "127.0.0.1:0"),
             grpc_addr=os.getenv("SORA_MEMORY_GRPC_ADDR", "127.0.0.1:0"),
             token=os.getenv("SORA_MEMORY_TOKEN") or None,
-            auto_download=_env_bool("SORA_MEMORY_AUTO_DOWNLOAD", True),
+            auto_download=_env_bool(
+                "SORA_MEMORY_AUTO_DOWNLOAD", auto_download
+            ),
             download_base_url=os.getenv(
                 "SORA_MEMORY_DOWNLOAD_BASE_URL",
                 "https://github.com/liliang-cn/cortexdb/releases/download",
             ),
             request_timeout=_env_float("SORA_MEMORY_REQUEST_TIMEOUT", 10.0),
-            sidecar_start_timeout=_env_float("SORA_MEMORY_START_TIMEOUT", 20.0),
-            dream_auto=_env_bool("SORA_MEMORY_DREAM_AUTO", True),
-            dream_rounds=_env_int("SORA_MEMORY_DREAM_ROUNDS", 2),
-            dream_hour_utc=_env_int("SORA_MEMORY_DREAM_HOUR_UTC", 0),
+            sidecar_start_timeout=_env_float(
+                "SORA_MEMORY_START_TIMEOUT",
+                _pick_float(raw, "sidecar_start_timeout", 20.0),
+            ),
+            dream_auto=_env_bool("SORA_MEMORY_DREAM_AUTO", dream),
+            dream_rounds=_env_int(
+                "SORA_MEMORY_DREAM_ROUNDS",
+                _pick_int(raw, "dream_rounds", 2),
+            ),
+            dream_hour_utc=_env_int(
+                "SORA_MEMORY_DREAM_HOUR_UTC",
+                _pick_int(raw, "dream_hour_utc", 0),
+            ),
             dream_max_memories=_env_int("SORA_MEMORY_DREAM_MAX_MEMORIES", 500),
             dream_max_merges=_env_int("SORA_MEMORY_DREAM_MAX_MERGES", 20),
             dream_max_conflicts=_env_int("SORA_MEMORY_DREAM_MAX_CONFLICTS", 20),
@@ -224,8 +296,44 @@ class MemoryConfig:
             backup_keep_weekly=_env_int("SORA_MEMORY_BACKUP_WEEKLY", 8),
             backup_keep_monthly=_env_int("SORA_MEMORY_BACKUP_MONTHLY", 12),
             backup_keep_active=_env_int("SORA_MEMORY_BACKUP_ACTIVE", 4),
-            wake_model=os.getenv("SORA_MEMORY_WAKE_MODEL", ""),
-            wake_base_url=os.getenv("SORA_MEMORY_WAKE_BASE_URL", ""),
-            wake_api_key=os.getenv("SORA_MEMORY_WAKE_API_KEY", ""),
+            wake_model=os.getenv("SORA_MEMORY_WAKE_MODEL", wake_model),
+            wake_base_url=os.getenv(
+                "SORA_MEMORY_WAKE_BASE_URL", wake_base_url
+            ),
+            wake_api_key=os.getenv("SORA_MEMORY_WAKE_API_KEY", wake_api_key),
             wake_timeout=_env_float("SORA_MEMORY_WAKE_TIMEOUT", 60.0),
         )
+
+
+def _pick_bool(raw: Mapping[str, Any], key: str, default: bool) -> bool:
+    value = raw.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _pick_int(raw: Mapping[str, Any], key: str, default: int) -> int:
+    value = raw.get(key)
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _pick_float(raw: Mapping[str, Any], key: str, default: float) -> float:
+    value = raw.get(key)
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _pick_str(raw: Mapping[str, Any], key: str, default: str) -> str:
+    value = raw.get(key)
+    return default if value is None or value == "" else str(value)

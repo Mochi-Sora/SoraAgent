@@ -52,3 +52,23 @@ class ApprovalGate:
 
     def log(self, action: str, decision: str, detail: str, actor: str = "agent") -> None:
         self.audit.append(AuditEntry(time.time(), action, actor, decision, detail))
+
+
+class AutoApprovalGate(ApprovalGate):
+    """The explicit "approval off" policy gate.
+
+    This is not the absence of a gate.  It records every consequential call as
+    auto-approved so the audit trail still explains what happened.
+    """
+
+    def request(self, action: str, detail: str) -> bool:
+        self.audit.append(
+            AuditEntry(
+                time.time(),
+                action,
+                "policy:approval-off",
+                "auto-approved",
+                detail,
+            )
+        )
+        return True

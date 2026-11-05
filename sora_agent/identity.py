@@ -1387,23 +1387,38 @@ class IdentityStore:
         return IdentityProvider(provider, self, max_repairs=max_repairs)
 
 
-def default_identity() -> IdentityStore | None:
-    if not _env_bool("SORA_IDENTITY", True):
+def default_identity(
+    *,
+    enabled: bool = True,
+    root: str | Path | None = None,
+    retention: int | None = None,
+    max_repairs: int | None = None,
+) -> IdentityStore | None:
+    """Build the default identity store.
+
+    Explicit values come from the settings file; ``SORA_IDENTITY*``
+    environment variables still take precedence, so existing deployments are
+    unaffected.
+    """
+    if not _env_bool("SORA_IDENTITY", enabled):
         return None
     root_value = os.getenv("SORA_IDENTITY_ROOT")
-    root = (
-        Path(root_value).expanduser()
-        if root_value
-        else Path.home() / ".sora_agent" / "identity"
-    )
+    if root_value:
+        root_path = Path(root_value).expanduser()
+    elif root is not None:
+        root_path = Path(root).expanduser()
+    else:
+        root_path = Path.home() / ".sora_agent" / "identity"
     return IdentityStore(
         IdentityConfig(
-            root=root,
+            root=root_path,
             retention=_env_int(
-                "SORA_IDENTITY_RETENTION", DEFAULT_RETENTION
+                "SORA_IDENTITY_RETENTION",
+                DEFAULT_RETENTION if retention is None else retention,
             ),
             max_repairs=_env_int(
-                "SORA_IDENTITY_MAX_REPAIRS", DEFAULT_MAX_REPAIRS
+                "SORA_IDENTITY_MAX_REPAIRS",
+                DEFAULT_MAX_REPAIRS if max_repairs is None else max_repairs,
             ),
         )
     )

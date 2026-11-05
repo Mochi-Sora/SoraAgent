@@ -433,12 +433,18 @@ class OpenAIChatProvider:
         base_url: str | None = None,
         timeout: float = 30.0,
         stream_usage: bool = True,
+        temperature: float | None = None,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
         self.base_url = base_url
         self.timeout = timeout
         self.stream_usage = stream_usage
+        if temperature is not None and not 0.0 <= float(temperature) <= 2.0:
+            raise ValueError("temperature must be between 0.0 and 2.0")
+        self.temperature = (
+            None if temperature is None else float(temperature)
+        )
 
     def complete_turn(
         self, messages: list[Message], tools: list[Tool]
@@ -526,6 +532,8 @@ class OpenAIChatProvider:
             "model": self.model,
             "messages": [_message_payload(message) for message in messages],
         }
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
         if tools:
             payload["tools"] = [
                 {"type": "function", "function": tool.schema} for tool in tools
@@ -645,29 +653,66 @@ def _parse_arguments(raw: Any) -> tuple[dict[str, Any], str]:
 
 
 def default_provider(
-    kind: str = "mock", timeout: float = 30.0
+    kind: str = "mock",
+    timeout: float = 30.0,
+    *,
+    model: str | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    temperature: float | None = None,
 ) -> ModelProvider:
+    """Build a provider from explicit values and environment defaults.
+
+    Explicit arguments win, then the environment, then the built-in defaults
+    for that provider kind.  Existing callers that pass only ``kind`` keep
+    their exact previous behaviour.
+    """
     kind = kind.lower()
     if kind in {"mock", "demo"}:
         return MockProvider()
     if kind in {"openai", "azure"}:
         return OpenAIChatProvider(
-            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-            base_url=os.getenv("OPENAI_BASE_URL"),
+            model=model or os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            api_key=api_key,
+            base_url=base_url or os.getenv("OPENAI_BASE_URL"),
             timeout=timeout,
+            temperature=temperature,
         )
     if kind in {"deepseek", "ds"}:
         return OpenAIChatProvider(
-            model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
-            api_key=os.getenv("DEEPSEEK_API_KEY"),
-            base_url="https://api.deepseek.com",
+            model=model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+            api_key=api_key or os.getenv("DEEPSEEK_API_KEY"),
+            base_url=(
+                base_url
+                or os.getenv("DEEPSEEK_BASE_URL")
+                or "https://api.deepseek.com"
+            ),
             timeout=timeout,
+            temperature=temperature,
         )
     if kind in {"qwen", "dashscope"}:
         return OpenAIChatProvider(
-            model=os.getenv("QWEN_MODEL", "qwen-plus"),
-            api_key=os.getenv("DASHSCOPE_API_KEY"),
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            model=model or os.getenv("QWEN_MODEL", "qwen-plus"),
+            api_key=api_key or os.getenv("DASHSCOPE_API_KEY"),
+            base_url=(
+                base_url
+                or os.getenv("QWEN_BASE_URL")
+                or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            ),
             timeout=timeout,
+            temperature=temperature,
+        )
+    if kind in {"custom", "openai-compatible"}:
+        if not base_url:
+            raise ValueError(
+                "custom provider requires a base_url (an OpenAI-compatible "
+                "chat completions endpoint)"
+            )
+        return OpenAIChatProvider(
+            model=model or os.getenv("SORA_CUSTOM_MODEL", "gpt-4o-mini"),
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            temperature=temperature,
         )
     raise ValueError(f"unknown provider kind: {kind}")

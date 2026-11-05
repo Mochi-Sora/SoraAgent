@@ -12,6 +12,7 @@ from typing import Any, Callable
 from ..agent import MEMORY_POLICY, TOOLS_POLICY
 from ..calendar import register_calendar_tools, resolve_calendar
 from ..clock import wrap_clock
+from ..context import trim_messages
 from ..eval import (
     QualityGate,
     TrajectoryMetrics,
@@ -166,8 +167,9 @@ class ChatHandler:
         memory: Any = None,
         identity: Any = None,
         approvals: ApprovalBroker | None = None,
+        approval_gate: Any = None,
         sessions: SessionStore | None = None,
-        quality: QualityGate | None = None,
+        quality: QualityGate | None | bool = None,
         emitter: Callable[[OutboundMessage], None] | None = None,
         max_steps: int = 8,
         max_turns: int = 40,
@@ -180,6 +182,8 @@ class ChatHandler:
         clock: Any = None,
         calendar: Any = None,
         calendar_db: Any = None,
+        context_window: int | None = None,
+        streaming: bool = True,
     ) -> None:
         self.provider = provider
         self.registry = registry or ToolRegistry()
@@ -191,9 +195,21 @@ class ChatHandler:
         self.memory = memory
         self.identity = None if identity is False else identity
         self.approvals = approvals
+        self.approval_gate = approval_gate
         self.sessions = sessions
-        self.quality = quality or QualityGate()
+        if quality is False:
+            self.quality: QualityGate | None = None
+        elif quality is None:
+            self.quality = QualityGate()
+        else:
+            self.quality = quality
         self.emitter = emitter
+        self.streaming = bool(streaming)
+        self.context_window = (
+            max(1_000, int(context_window))
+            if context_window is not None
+            else None
+        )
         self.max_steps = max(1, int(max_steps))
         self.max_turns = max(0, int(max_turns))
         self.max_tool_result_chars = max(0, int(max_tool_result_chars))
@@ -235,12 +251,15 @@ class ChatHandler:
             history = self._load_history(key)
             self._active[key] = token
 
-        approval = (
-            self.approvals.gate(inbound) if self.approvals is not None else None
-        )
+        if self.approval_gate is not None:
+            approval = self.approval_gate
+        elif self.approvals is not None:
+            approval = self.approvals.gate(inbound)
+        else:
+            approval = None
         writer = (
             _StreamWriter(inbound, self.emitter, self.max_stream_chars)
-            if self.emitter is not None
+            if self.emitter is not None and self.streaming
             else None
         )
 
@@ -250,7 +269,7 @@ class ChatHandler:
 
         messages = [
             Message("system", self._prompt()),
-            *history,
+            *self._fit_context(history, inbound.content),
             Message("user", inbound.content),
         ]
         state = ChatState(session_id=key)
@@ -280,16 +299,25 @@ class ChatHandler:
         self._notify("after_run", run, state)
 
         reply = _reply_text(run)
-        trajectory = trajectory_from_run(
-            inbound.content, run, final_answer=reply
-        )
-        report = self.quality.evaluate(trajectory)
-        efficiency = trajectory_metrics(trajectory)
+        report = None
+        efficiency = None
+        if self.quality is not None:
+            trajectory = trajectory_from_run(
+                inbound.content, run, final_answer=reply
+            )
+            report = self.quality.evaluate(trajectory)
+            efficiency = trajectory_metrics(trajectory)
         with self._lock:
             self._last_metrics[key] = run.metrics
             self._last_stop[key] = run.stop_reason
-            self._last_report[key] = report
-            self._last_efficiency[key] = efficiency
+            if report is None:
+                self._last_report.pop(key, None)
+            else:
+                self._last_report[key] = report
+            if efficiency is None:
+                self._last_efficiency.pop(key, None)
+            else:
+                self._last_efficiency[key] = efficiency
 
         delivered = writer.finish(run) if writer is not None else False
         stored = list(history)
@@ -351,6 +379,8 @@ class ChatHandler:
             return self._last_report.get(session_key)
 
     def eval_report(self, session_key: str) -> str:
+        if self.quality is None:
+            return "Quality evaluation is disabled in this configuration."
         report = self.last_report(session_key)
         if report is None:
             return "No evaluation for this session yet."
@@ -420,6 +450,21 @@ class ChatHandler:
         if self.memory_tool is not None:
             prompt += MEMORY_POLICY
         return prompt
+
+    def _fit_context(
+        self, history: list[Message], inbound_content: str
+    ) -> list[Message]:
+        """Trim persisted history to the configured context window."""
+        limit = self.max_turns * 2
+        if limit and len(history) > limit:
+            history = history[-limit:]
+        if self.context_window is None:
+            return list(history)
+        return trim_messages(
+            history,
+            self.context_window,
+            fixed_texts=(self._prompt(), inbound_content),
+        )
 
     @staticmethod
     def _resolve_calendar(calendar: Any, calendar_db: Any = None) -> Any:

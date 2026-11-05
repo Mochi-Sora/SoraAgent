@@ -4,13 +4,13 @@
 #   curl -fsSL https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.sh | bash
 #
 # Installs SoraAgent into an isolated virtual environment and puts the
-# `sora-gateway` and `sora-memory` commands on your PATH. Re-run the same
-# command to upgrade. Requires Python 3.9 or newer.
+# `sora`, `sora-gateway`, and `sora-memory` commands on your PATH. Re-run the
+# same command to upgrade. Requires Python 3.9 or newer.
 set -euo pipefail
 
 REPO="${SORA_REPO:-Mochi-Sora/SoraAgent}"
 PACKAGE="sora-agent"
-DEFAULT_EXTRAS="openai,memory"
+DEFAULT_EXTRAS="openai,memory,cli"
 
 VERSION="${SORA_VERSION:-latest}"
 EXTRAS="${SORA_EXTRAS-$DEFAULT_EXTRAS}"
@@ -32,7 +32,7 @@ Usage:
 
 Options:
   -v, --version VERSION   Release tag to install, or "main" (default: latest)
-  -e, --extras EXTRAS     Comma-separated extras, e.g. "openai,memory",
+  -e, --extras EXTRAS     Comma-separated extras, e.g. "openai,memory,cli",
                           or "none" for the dependency-free core
                           (default: $DEFAULT_EXTRAS)
       --source PATH       Install from a local checkout instead of GitHub
@@ -83,7 +83,7 @@ strip_path_block() {
 }
 
 remove_wrappers() {
-    for name in sora-gateway sora-memory; do
+    for name in sora sora-gateway sora-memory; do
         rm -f "$BIN_DIR/$name"
     done
 }
@@ -376,7 +376,7 @@ if ! (
     die "pip install failed"
 fi
 
-for name in sora-gateway sora-memory; do
+for name in sora sora-gateway sora-memory; do
     target="$VENV_DIR/bin/$name"
     [ -x "$target" ] || die "installation completed but $name is missing"
     wrapper_tmp="$BIN_DIR/.sora-agent-$name.$$"
@@ -414,12 +414,16 @@ case ":$PATH:" in
         ;;
 esac
 
+"$VENV_DIR/bin/sora" --version >/dev/null 2>&1 \
+    || warn "sora did not start correctly"
 "$VENV_DIR/bin/sora-gateway" --help >/dev/null 2>&1 \
     || warn "sora-gateway did not start correctly"
 "$VENV_DIR/bin/sora-memory" --help >/dev/null 2>&1 \
     || warn "sora-memory did not start correctly"
 
 printf '\nSoraAgent installed.\n\n'
+printf '  sora setup\n'
+printf '  sora --help\n'
 printf '  sora-gateway --help\n'
 printf '  sora-memory doctor\n\n'
 printf 'Install root: %s\n' "$INSTALL_DIR"

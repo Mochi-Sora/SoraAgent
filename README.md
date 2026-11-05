@@ -67,6 +67,8 @@ The core imports only the Python standard library; optional integrations
   - `zstandard>=0.22` for compressed memory backups on Python < 3.14
     (`pip install 'sora-agent[memory]'`). On Python 3.14+ the standard library
     `compression.zstd` module is used instead.
+  - `typer`, `rich`, and `questionary` for the guided `sora` command
+    (`pip install 'sora-agent[cli]'`). The core library never imports them.
   - Telegram works over `urllib`; no `python-telegram-bot` dependency is needed.
 
 ## Installation
@@ -88,7 +90,7 @@ irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.ps1 | ie
 The installer needs Python **3.9+** already available and downloads the latest
 release (falling back to `main` when no release exists). It installs SoraAgent
 into an isolated virtual environment, adds the command directory to your PATH,
-and verifies both console scripts. On Debian/Ubuntu systems without
+and verifies all console scripts. On Debian/Ubuntu systems without
 `python3-venv`, it creates the environment without pip and bootstraps pip
 inside it, so no `sudo` is required. Re-running the same command upgrades in
 place; user data under `~/.sora_agent` is never touched.
@@ -96,7 +98,7 @@ place; user data under `~/.sora_agent` is never touched.
 Common options:
 
 ```bash
-# Core package only (no openai/memory extras)
+# Core package only (no optional extras; no `sora` wizard)
 curl -fsSL .../install.sh | SORA_EXTRAS=none bash
 
 # Select a branch or release tag (the v prefix is optional)
@@ -120,7 +122,7 @@ parameters:
 | Option | Environment variable | Default |
 | --- | --- | --- |
 | release tag or `main` | `SORA_VERSION` | latest release, else `main` |
-| extras (`openai,memory`, ...) or `none` | `SORA_EXTRAS` | `openai,memory` |
+| extras (`openai,memory,cli`, ...) or `none` | `SORA_EXTRAS` | `openai,memory,cli` |
 | install root | `SORA_INSTALL_DIR` | `~/.local/share/sora-agent` (`%LOCALAPPDATA%\SoraAgent` on Windows) |
 | command directory | `SORA_BIN_DIR` | `~/.local/bin` (`<install root>\bin` on Windows) |
 | Python executable | `SORA_PYTHON` | first Python 3.9+ found |
@@ -140,20 +142,67 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -e .
 
 # Optional extras
-pip install -e ".[openai,memory,dev]"
+pip install -e ".[openai,memory,cli,dev]"
 ```
 
-Both install routes create two console scripts:
+Both install routes create three console scripts:
 
 | Command | Module | Purpose |
 | --- | --- | --- |
+| `sora` | `sora_agent.cli:main` | Guided setup, terminal chat, one-shot runs, gateway, config, doctor |
 | `sora-gateway` | `sora_agent.channels.cli:main` | Run the agent behind a chat channel |
 | `sora-memory` | `sora_agent.memory.cli:main` | Operate the memory subsystem |
 
-Both also run as modules: `python -m sora_agent.channels` and
-`python -m sora_agent.memory`.
+All three also run as modules: `python -m sora_agent.cli`,
+`python -m sora_agent.channels`, and `python -m sora_agent.memory`.
 
 ## Quick start
+
+### Set up Sora with the wizard
+
+The `sora` command configures the gateway, model provider, memory, identity,
+tools, approvals, and quality evaluation in one place:
+
+```bash
+sora setup
+```
+
+The first screen offers exactly two paths:
+
+| Mode | What it does |
+| --- | --- |
+| **Recommended Setup** | Everything on and tuned for daily use. Asks only for the channel, main model, agent name/icon, temperature, and personality, then shows a review you can edit. |
+| **Advanced Setup (tinker with caution)** | Every optional subsystem starts **off**, including memory, identity, clock, calendar, sessions, tools, streaming, approval prompts, and quality evaluation. Each section can be edited individually and ends with an explicit save confirmation. |
+
+Recommended Setup writes full long-term memory (including the CortexDB
+sidecar), identity, clock, calendar, sessions, the demo tool pack, streaming,
+approval prompts, quality evaluation, and limits of 12 steps / 80 turns / 60 s
+timeouts / 3 retries.
+
+Advanced Setup starts with temperature `0.1` and safety features disabled. It
+shows warning panels and requires typing `I understand` before continuing and
+`save` before writing the file. With approval off, consequential tools execute
+without asking (an audit entry is still recorded). With quality off, `/eval`
+reports that evaluation is disabled. Low-level validation, timeouts, process
+isolation, and audit logging always remain active.
+
+After setup:
+
+```bash
+sora chat                              # local terminal chat
+sora run "expedite PO-1234"            # one task, then exit
+sora gateway                           # Telegram gateway
+sora doctor                            # configuration and safety check
+```
+
+`SORA_CONFIG` and `SORA_SECRETS` can point at different files; the defaults are
+`~/.sora_agent/config.json` and `~/.sora_agent/secrets.env`. Both are written
+atomically with mode `0600`, and the directory is mode `0700`. The config file
+never contains API keys or bot tokens. Precedence is always:
+
+```
+command-line flag  >  environment variable  >  config file  >  built-in default
+```
 
 ### An offline agent with approval and a quality report
 
@@ -1033,22 +1082,105 @@ every discovered channel with its declared dependencies.
 
 ## Command-line interfaces
 
+### `sora`
+
+```
+sora [--version]
+sora setup [--mode recommended|advanced]
+sora onboard [--mode recommended|advanced]     # alias for setup
+sora chat
+sora run TASK
+sora gateway [start|run]
+sora gateway setup
+sora doctor
+sora set-key [provider|telegram]
+sora config list
+sora config get KEY
+sora config set KEY VALUE
+sora config unset KEY
+```
+
+Running `sora` with no command starts the local chat. If no configuration
+exists, it offers the setup wizard first.
+
+| Command | Purpose |
+| --- | --- |
+| `setup` | Run Recommended or Advanced Setup and write `config.json` + `secrets.env`. |
+| `chat` | Local REPL with `/reset`, `/status`, `/eval`, `/help`, and `/exit`. |
+| `run` | Execute one task with the configured provider, tools, and policies, then exit. |
+| `gateway` | Start the chat gateway using the saved configuration. `gateway setup` runs the wizard first. |
+| `doctor` | Read-only check of paths, credentials, features, and safety warnings. |
+| `set-key` | Store an API key or Telegram token in `secrets.env` without re-running setup. |
+| `config list/get` | Inspect the saved configuration. `config get` uses dotted keys such as `provider.model`. |
+| `config set/unset` | Change one value or remove it so the preset default applies again. Values are validated before saving. |
+
+The config file is deliberately plain JSON:
+
+```json
+{
+  "version": 1,
+  "setup": {"mode": "recommended", "completed_at": "2026-11-05T00:00:00+00:00"},
+  "agent": {
+    "name": "Sora",
+    "icon": "☁️",
+    "personality": {"base": "friendly", "warmth": "very_warm"}
+  },
+  "provider": {
+    "kind": "openai",
+    "model": "gpt-4o-mini",
+    "temperature": 0.7,
+    "context_window": 128000,
+    "base_url": null
+  },
+  "channel": {"kind": "telegram", "allow_from": ["123456789"], "parse_mode": null},
+  "features": {
+    "memory": {"enabled": true, "sidecar": true, "auto_download": true},
+    "identity": true,
+    "clock": true,
+    "calendar": true,
+    "sessions": true,
+    "tools": "demo",
+    "streaming": true,
+    "approval": "ask",
+    "quality": true
+  },
+  "limits": {"max_steps": 12, "max_turns": 80},
+  "paths": {"sessions_root": null, "calendar_db": null}
+}
+```
+
+The example is abbreviated; `sora config list` prints the complete document.
+`agent.icon` is used in terminal banners and signatures only. It is not
+appended to every reply. `agent.personality` is prompt guidance, not an
+automatic rewrite of `SOUL.md`.
+
+Keys that come from the environment (for example `OPENAI_API_KEY` or
+`SORA_TELEGRAM_TOKEN`) are stored separately in `secrets.env`. Environment
+variables always override the file at runtime, even when setup saves a value.
+
 ### `sora-gateway`
 
 ```
-sora-gateway [--channel telegram] [--provider mock|openai|deepseek|qwen]
-             [--max-steps 8] [--max-turns 40] [--no-sessions]
-             [--provider-timeout 30] [--provider-retries 2]
-             [--tool-timeout 30] [--tools none|demo]
-             [--memory] [--identity] [--approval-timeout 300]
+sora-gateway [--channel CHANNEL] [--provider KIND] [--model ID]
+             [--temperature F] [--max-steps N] [--max-turns N]
+             [--no-sessions] [--provider-timeout S] [--provider-retries N]
+             [--tool-timeout S] [--tools none|demo]
+             [--memory] [--identity] [--approval off|ask]
+             [--approval-timeout S] [--no-quality] [--no-streaming]
              [--no-clock] [--no-calendar] [--calendar-db PATH]
              [--token TOKEN] [--allow IDS] [--list]
 ```
 
-| Flag | Default | Meaning |
+A saved `sora setup` configuration supplies the defaults. With no config file,
+the gateway keeps its original environment-only defaults, so existing
+deployments behave exactly as before. Flags and `SORA_*` variables still win.
+
+| Flag | No config file | Meaning |
 | --- | --- | --- |
-| `--channel` | `telegram` | Channel to run. |
-| `--provider` | `mock` | Provider kind passed to `default_provider`. |
+| `--channel` | `telegram` | Channel to run. With a config, `channel.kind` is the default. |
+| `--provider` | `mock` | `mock`, `openai`, `deepseek`, `qwen`, or `custom`. |
+| `--model` | provider default | Model id; overrides `OPENAI_MODEL` style variables. |
+| `--temperature` | provider default | Sampling temperature; overrides `SORA_TEMPERATURE`. |
 | `--max-steps` | `8` | Tool steps per turn. |
 | `--max-turns` | `40` | Conversation turns kept per session. |
 | `--no-sessions` | off | Keep history in memory only. |
@@ -1058,12 +1190,18 @@ sora-gateway [--channel telegram] [--provider mock|openai|deepseek|qwen]
 | `--tools` | `none` | `demo` registers the sample order tools. |
 | `--memory` | off | Enable the CortexDB memory hook. |
 | `--identity` | off | Inject the persistent USER.md/SOUL.md identity. |
+| `--approval` | `ask` | `off` auto-approves consequential tools but still audits them. |
 | `--approval-timeout` | `300` | Seconds to wait for a chat approval. |
+| `--no-quality` | off | Disable post-run quality evaluation. |
+| `--no-streaming` | off | Wait for the completed reply instead of live updates. |
 | `--no-clock` | off | Omit the current-time section. |
 | `--no-calendar` | off | Disable calendar tools. |
 | `--calendar-db` | `~/.sora_agent/calendar.db` | Calendar database path. |
 | `--token` / `--allow` | env | Override Telegram token / allow list. |
 | `--list` | — | Print discovered channels and exit. |
+
+`sora gateway` is a shortcut for the same process when you want the saved
+configuration without retyping flags.
 
 ### `sora-memory`
 
@@ -1084,6 +1222,29 @@ mutating the store, and `--today` includes today's daily file.
 
 ## Environment variables
 
+### Configuration and policy
+
+Every saved setting is a default. These variables override it:
+
+| Variable | Effect |
+| --- | --- |
+| `SORA_CONFIG` | Path to `config.json` (default `~/.sora_agent/config.json`). |
+| `SORA_SECRETS` | Path to `secrets.env` (default `~/.sora_agent/secrets.env`). |
+| `SORA_PROVIDER` | Provider kind: `mock`, `openai`, `deepseek`, `qwen`, or `custom`. |
+| `SORA_TEMPERATURE` | Sampling temperature (`0.0`–`2.0`). |
+| `SORA_CONTEXT_WINDOW` | Context-window budget in tokens (minimum `1000`). |
+| `SORA_APPROVAL` | `ask` or `off`. Off still records audit entries. |
+| `SORA_QUALITY` | `1`/`0` for post-run quality evaluation. |
+| `SORA_STREAMING` | `1`/`0` for live streaming updates. |
+| `SORA_CLOCK` | `1`/`0` for the current-time prompt section. |
+| `SORA_CALENDAR` | `1`/`0` for native calendar tools. |
+| `SORA_SESSIONS` | `1`/`0` for on-disk conversation history. |
+| `SORA_TOOLS` | `none` or `demo`. |
+| `SORA_PROVIDER_TIMEOUT` | Provider request timeout in seconds. |
+
+Command-line flags override all of these. The same precedence applies to
+`sora` and `sora-gateway`.
+
 ### Provider
 
 | Variable | Used by |
@@ -1102,6 +1263,10 @@ mutating the store, and `--today` includes today's daily file.
 | `SORA_SESSIONS_ROOT` | Chat sessions | `~/.sora_agent/sessions` |
 | `SORA_TELEGRAM_*` | Telegram channel | token required; deny-all allow list |
 
+The defaults in this table describe the library and a legacy environment-only
+gateway. Once a `sora setup` config exists, its feature switches supply the
+defaults and these variables override them.
+
 See the [Memory](#memory-cortexdb) and [Identity](#identity-usermd--soulmd)
 sections for the full tables.
 
@@ -1119,9 +1284,14 @@ SoraAgent/
 │   ├── po_workflow.py          # interactive PO exception demo
 │   ├── copilot_function.py     # Azure Function-style entry point
 │   └── _demo_memory.py         # offline memory stand-in used by the examples
-├── tests/                      # 371 pytest tests across 19 test files
+├── tests/                      # pytest suite (core, CLI, gateway)
 └── sora_agent/
     ├── agent.py                # Agent facade + AgentResult
+    ├── settings.py             # config schema, presets, secrets, precedence
+    ├── runtime_setup.py        # build runtime objects from saved settings
+    ├── model_catalog.py        # curated providers, models, context windows
+    ├── persona.py              # agent name/icon/personality prompt layer
+    ├── context.py              # deterministic context-window trimming
     ├── runtime.py              # per-run assembly (AgentRuntime, RunRequest)
     ├── runner.py               # pure model/tool loop (Runner, RunSpec, Step, events, metrics)
     ├── providers.py            # Message/ModelTurn/ToolCall, MockProvider, OpenAIChatProvider
@@ -1139,6 +1309,13 @@ SoraAgent/
     ├── identity.py             # USER.md/SOUL.md storage, validation, memory firewall
     ├── identity_provider.py    # identity prompt injection + edit handling
     ├── rag.py                  # minimal Retriever protocol + in-memory stub
+    ├── cli/                    # the sora command
+    │   ├── main.py             # Typer app: setup, chat, gateway, config, doctor
+    │   ├── setup.py            # Recommended and Advanced wizards
+    │   ├── chat.py             # local REPL, one-shot run, stream renderer
+    │   ├── doctor.py           # read-only health and safety check
+    │   ├── ui.py               # Rich palette, panels, and tables
+    │   └── prompts.py          # Questionary prompts with terminal fallback
     ├── channels/               # transports, bus, manager, chat handler, sessions, approvals
     │   ├── cli.py              # sora-gateway
     │   └── telegram/           # manifest + urllib transport + polling runtime
@@ -1150,18 +1327,18 @@ SoraAgent/
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[openai,memory,dev]"
+pip install -e ".[openai,memory,cli,dev]"
 
-pytest                          # 371 tests
+pytest                          # 469 tests
 pyright                         # static checks, standard mode (Python 3.9; install separately)
 ```
 
 Notes for contributors:
 
 - `tests/conftest.py` disables default memory and identity
-  (`SORA_MEMORY=0`, `SORA_IDENTITY=0`, `SORA_MEMORY_AUTO_DOWNLOAD=0`) and points
-  the calendar at a temp directory, so tests never touch the network or the
-  real home directory.
+  (`SORA_MEMORY=0`, `SORA_IDENTITY=0`, `SORA_MEMORY_AUTO_DOWNLOAD=0`), points
+  the calendar at a temp directory, and redirects `SORA_CONFIG` /
+  `SORA_SECRETS`, so tests never touch the network or the real home directory.
 - The codebase follows a strict philosophy: safety paths fail **closed**
   (approval, argument validation) while optional conveniences fail **open**
   (memory, identity, clock, calendar, observers, RAG).

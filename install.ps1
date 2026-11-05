@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Installs SoraAgent into an isolated virtual environment and puts the
-    sora-gateway and sora-memory commands on your PATH. Re-run the same
+    sora, sora-gateway, and sora-memory commands on your PATH. Re-run the same
     command to upgrade. Requires Python 3.9 or newer.
 
 .EXAMPLE
@@ -22,7 +22,7 @@
     $ErrorActionPreference = "Stop"
     $Repo = if ($env:SORA_REPO) { $env:SORA_REPO } else { "Mochi-Sora/SoraAgent" }
     $Package = "sora-agent"
-    $DefaultExtras = "openai,memory"
+    $DefaultExtras = "openai,memory,cli"
     $sourceState = @{ Temp = $null }
 
     # Arguments are parsed manually because `param()` is not valid when a
@@ -119,7 +119,7 @@ Usage:
 
 Options:
   -Version VERSION   Release tag to install, or "main" (default: latest)
-  -Extras EXTRAS     Comma-separated extras, e.g. "openai,memory",
+  -Extras EXTRAS     Comma-separated extras, e.g. "openai,memory,cli",
                      or "none" for the dependency-free core
                      (default: $DefaultExtras)
   -Source PATH       Install from a local checkout instead of GitHub
@@ -154,7 +154,7 @@ Examples:
     }
 
     function Uninstall-SoraAgent {
-        foreach ($name in @("sora-gateway", "sora-memory")) {
+        foreach ($name in @("sora", "sora-gateway", "sora-memory")) {
             foreach ($suffix in @(".cmd", ".ps1", ".bat")) {
                 $path = Join-Path $BinDir ($name + $suffix)
                 if (Test-Path $path) { Remove-Item -Force $path }
@@ -348,7 +348,7 @@ Examples:
 
     $defaultBin = Join-Path $InstallDir "bin"
     $useRelativePaths = $BinDir.TrimEnd("\") -eq $defaultBin.TrimEnd("\")
-    foreach ($name in @("sora-gateway", "sora-memory")) {
+    foreach ($name in @("sora", "sora-gateway", "sora-memory")) {
         $exe = Join-Path $venvDir "Scripts\$name.exe"
         if (-not (Test-Path $exe)) { throw "installation completed but $name.exe is missing" }
         $cmd = Join-Path $BinDir "$name.cmd"
@@ -373,6 +373,8 @@ Examples:
         }
     }
 
+    & $venvPython -m sora_agent.cli --version 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Warn "sora did not start correctly" }
     & $venvPython -m sora_agent.channels --help 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Warn "sora-gateway did not start correctly" }
     & $venvPython -m sora_agent.memory --help 2>$null | Out-Null
@@ -381,6 +383,8 @@ Examples:
     Write-Host ""
     Write-Host "SoraAgent installed."
     Write-Host ""
+    Write-Host "  sora setup"
+    Write-Host "  sora --help"
     Write-Host "  sora-gateway --help"
     Write-Host "  sora-memory doctor"
     Write-Host ""

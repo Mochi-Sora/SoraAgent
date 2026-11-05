@@ -21,9 +21,17 @@ Issues = "https://github.com/Mochi-Sora/SoraAgent/issues"
 [project.optional-dependencies]
 openai = ["openai>=1.0"]
 memory = ["zstandard>=0.22; python_version < '3.14'"]
-dev = ["pytest>=7", "zstandard>=0.22; python_version < '3.14'"]
+cli = ["typer>=0.12", "rich>=13", "questionary>=2"]
+dev = [
+  "pytest>=7",
+  "zstandard>=0.22; python_version < '3.14'",
+  "typer>=0.12",
+  "rich>=13",
+  "questionary>=2",
+]
 
 [project.scripts]
+sora = "sora_agent.cli:main"
 sora-memory = "sora_agent.memory.cli:main"
 sora-gateway = "sora_agent.channels.cli:main"
 
