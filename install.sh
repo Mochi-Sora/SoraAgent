@@ -325,6 +325,11 @@ VENV_PY="$VENV_DIR/bin/python"
 
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 
+if [ -x "$VENV_PY" ] && ! "$VENV_PY" -m pip --version >/dev/null 2>&1; then
+    info "Existing virtual environment has no pip; rebuilding it..."
+    rm -rf "$VENV_DIR"
+fi
+
 if [ ! -x "$VENV_PY" ]; then
     info "Creating virtual environment in $VENV_DIR..."
     if ! "$PYTHON_BIN" -m venv "$VENV_DIR" >"$PIP_LOG" 2>&1; then
