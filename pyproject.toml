@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,8 +9,14 @@ description = "A model-agnostic agent harness with human-approval and quality ga
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Tam Kuan Hou (譚君浩 / Marco Tam)" }]
-license = { text = "AGPL-3.0-only" }
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Mochi-Sora/SoraAgent"
+Repository = "https://github.com/Mochi-Sora/SoraAgent"
+Issues = "https://github.com/Mochi-Sora/SoraAgent/issues"
 
 [project.optional-dependencies]
 openai = ["openai>=1.0"]

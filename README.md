@@ -71,6 +71,62 @@ The core imports only the Python standard library; optional integrations
 
 ## Installation
 
+### One-line installer (recommended)
+
+**macOS / Linux**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.sh | bash
+```
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.ps1 | iex
+```
+
+The installer needs Python **3.9+** already available and downloads the latest
+release (falling back to `main` when no release exists). It installs SoraAgent
+into an isolated virtual environment, adds the command directory to your PATH,
+and verifies both console scripts. Re-running the same command upgrades in
+place; user data under `~/.sora_agent` is never touched.
+
+Common options:
+
+```bash
+# Core package only (no openai/memory extras)
+curl -fsSL .../install.sh | SORA_EXTRAS=none bash
+
+# Select a branch or release tag (the v prefix is optional)
+curl -fsSL .../install.sh | bash -s -- --version main
+
+# Install from a local checkout
+./install.sh --source .
+
+# Uninstall (add --purge to delete ~/.sora_agent data as well)
+curl -fsSL .../install.sh | bash -s -- --uninstall
+```
+
+On Windows, set options through environment variables before `irm ... | iex`
+(`$env:SORA_EXTRAS = "none"`), or invoke the downloaded script block with
+parameters:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.ps1))) -Version main
+```
+
+| Option | Environment variable | Default |
+| --- | --- | --- |
+| release tag or `main` | `SORA_VERSION` | latest release, else `main` |
+| extras (`openai,memory`, ...) or `none` | `SORA_EXTRAS` | `openai,memory` |
+| install root | `SORA_INSTALL_DIR` | `~/.local/share/sora-agent` (`%LOCALAPPDATA%\SoraAgent` on Windows) |
+| command directory | `SORA_BIN_DIR` | `~/.local/bin` (`<install root>\bin` on Windows) |
+| Python executable | `SORA_PYTHON` | first Python 3.9+ found |
+| local source checkout | `SORA_SOURCE` | — |
+| fork/repository | `SORA_REPO` | `Mochi-Sora/SoraAgent` |
+
+### From a checkout (contributors)
+
 ```bash
 git clone https://github.com/Mochi-Sora/SoraAgent.git
 cd SoraAgent
@@ -85,7 +141,7 @@ pip install -e .
 pip install -e ".[openai,memory,dev]"
 ```
 
-This installs two console scripts:
+Both install routes create two console scripts:
 
 | Command | Module | Purpose |
 | --- | --- | --- |
@@ -1051,6 +1107,8 @@ sections for the full tables.
 
 ```
 SoraAgent/
+├── install.sh                  # one-line installer for macOS/Linux
+├── install.ps1                 # one-line installer for Windows
 ├── pyproject.toml              # packaging, extras, console scripts
 ├── pyrightconfig.json          # pyright in standard mode, Python 3.9
 ├── LICENSE                     # AGPL-3.0-only
