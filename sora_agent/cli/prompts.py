@@ -7,7 +7,8 @@ drive it.  Every prompt returns a value or raises :class:`WizardCancelled`.
 from __future__ import annotations
 
 import sys
-from typing import Any, Callable, Sequence
+from collections.abc import Sequence
+from typing import Any, Callable
 
 from . import ui
 

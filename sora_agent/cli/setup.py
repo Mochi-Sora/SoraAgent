@@ -9,18 +9,17 @@ the safety implications.
 from __future__ import annotations
 
 import copy
+import json
 import os
 import urllib.error
 import urllib.request
-import json
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Callable
 
 from .. import __version__
 from ..model_catalog import (
     FALLBACK_CONTEXT_WINDOW,
     format_tokens,
-    key_env,
     provider_info,
     providers,
 )
@@ -1274,11 +1273,14 @@ def _finish(settings: Settings, secrets: dict[str, str]) -> None:
     secrets_file = save_secrets(secrets)
     ui.success(f"Configuration saved to {config_file}")
     ui.success(f"Secrets saved to {secrets_file} (mode 0600)")
-    if settings.features.memory.enabled and settings.features.memory.sidecar:
-        if prompts.confirm(
+    if (
+        settings.features.memory.enabled
+        and settings.features.memory.sidecar
+        and prompts.confirm(
             "Download and verify the CortexDB sidecar now?", default=True
-        ):
-            _prepare_sidecar(settings, secrets)
+        )
+    ):
+        _prepare_sidecar(settings, secrets)
     _next_steps(settings)
 
 

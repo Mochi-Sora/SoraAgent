@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from typing import Any
 
@@ -54,9 +55,7 @@ class ConsoleEmitter:
         current = message.content
         previous = self._sent.get(stream_id, "")
         chunk = (
-            current[len(previous):]
-            if current.startswith(previous)
-            else current
+            current.removeprefix(previous)
         )
         if chunk:
             self.out.write(chunk)
@@ -175,10 +174,8 @@ def interactive(settings: Settings, secrets: dict[str, str]) -> int:
             _print_reply(reply)
     finally:
         if memory is not None:
-            try:
+            with contextlib.suppress(Exception):
                 memory.close()
-            except Exception:  # noqa: BLE001 - shutdown is best-effort
-                pass
         ui.info("Bye.")
     return 0
 
@@ -197,10 +194,8 @@ def run_once(settings: Settings, secrets: dict[str, str], task: str) -> int:
         _print_reply(reply)
     finally:
         if memory is not None:
-            try:
+            with contextlib.suppress(Exception):
                 memory.close()
-            except Exception:  # noqa: BLE001 - shutdown is best-effort
-                pass
     return 0
 
 
@@ -222,8 +217,10 @@ def _print_help(settings: Settings) -> None:
             ("/exit", "Leave the chat"),
             (
                 "Agent",
-                f"{display_name(settings.agent)} · "
-                f"{provider_label(settings)} · {settings.provider.model}",
+                (
+                    f"{display_name(settings.agent)} · "
+                    f"{provider_label(settings)} · {settings.provider.model}"
+                ),
             ),
         ],
     )

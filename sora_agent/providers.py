@@ -428,7 +428,7 @@ class OpenAIChatProvider:
 
     def __init__(
         self,
-        model: str = "gpt-4o-mini",
+        model: str = "gpt-5.4-mini",
         api_key: str | None = None,
         base_url: str | None = None,
         timeout: float = 30.0,
@@ -672,7 +672,7 @@ def default_provider(
         return MockProvider()
     if kind in {"openai", "azure"}:
         return OpenAIChatProvider(
-            model=model or os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            model=model or os.getenv("OPENAI_MODEL", "gpt-5.4-mini"),
             api_key=api_key,
             base_url=base_url or os.getenv("OPENAI_BASE_URL"),
             timeout=timeout,
@@ -680,7 +680,7 @@ def default_provider(
         )
     if kind in {"deepseek", "ds"}:
         return OpenAIChatProvider(
-            model=model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+            model=model or os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
             api_key=api_key or os.getenv("DEEPSEEK_API_KEY"),
             base_url=(
                 base_url
@@ -692,7 +692,7 @@ def default_provider(
         )
     if kind in {"qwen", "dashscope"}:
         return OpenAIChatProvider(
-            model=model or os.getenv("QWEN_MODEL", "qwen-plus"),
+            model=model or os.getenv("QWEN_MODEL", "qwen3.7-plus"),
             api_key=api_key or os.getenv("DASHSCOPE_API_KEY"),
             base_url=(
                 base_url
@@ -709,7 +709,7 @@ def default_provider(
                 "chat completions endpoint)"
             )
         return OpenAIChatProvider(
-            model=model or os.getenv("SORA_CUSTOM_MODEL", "gpt-4o-mini"),
+            model=model or os.getenv("SORA_CUSTOM_MODEL", "gpt-5.4-mini"),
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,

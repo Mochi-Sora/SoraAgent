@@ -37,6 +37,12 @@ def _invoke(*args: str, input_text: str | None = None):
     return runner.invoke(app, list(args), input=input_text)
 
 
+def _loaded():
+    settings = load_settings()
+    assert settings is not None
+    return settings
+
+
 # ---------------------------------------------------------------------------
 # Root command
 # ---------------------------------------------------------------------------
@@ -67,19 +73,19 @@ def test_config_get_set_and_unset_round_trip():
 
     result = _invoke("config", "get", "provider.model")
     assert result.exit_code == 0
-    assert "gpt-4o-mini" in result.stdout
+    assert recommended_settings().provider.model in result.stdout
 
     result = _invoke("config", "set", "provider.temperature", "0.25")
     assert result.exit_code == 0
-    assert load_settings().provider.temperature == 0.25
+    assert _loaded().provider.temperature == 0.25
 
     result = _invoke("config", "set", "features.quality", "false")
     assert result.exit_code == 0
-    assert load_settings().features.quality is False
+    assert _loaded().features.quality is False
 
     result = _invoke("config", "unset", "provider.temperature")
     assert result.exit_code == 0
-    assert load_settings().provider.temperature == 0.7
+    assert _loaded().provider.temperature == 0.7
 
 
 def test_config_rejects_unknown_keys_and_bad_values():
@@ -90,7 +96,7 @@ def test_config_rejects_unknown_keys_and_bad_values():
 
     result = _invoke("config", "set", "provider.temperature", "not-a-number")
     assert result.exit_code == 1
-    assert load_settings().provider.temperature == 0.1
+    assert _loaded().provider.temperature == 0.1
 
     result = _invoke("config", "set", "features.quality", "maybe")
     assert result.exit_code == 1

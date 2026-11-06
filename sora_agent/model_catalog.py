@@ -59,6 +59,8 @@ MOCK_PROVIDER = ProviderInfo(
     models=(ModelInfo("mock", FALLBACK_CONTEXT_WINDOW, "Mock"),),
 )
 
+# Curated from provider documentation in November 2026.  Context windows are
+# input limits where the provider publishes a separate input budget.
 PROVIDERS: tuple[ProviderInfo, ...] = (
     ProviderInfo(
         id="openai",
@@ -66,17 +68,24 @@ PROVIDERS: tuple[ProviderInfo, ...] = (
         key_env="OPENAI_API_KEY",
         model_env="OPENAI_MODEL",
         base_env="OPENAI_BASE_URL",
-        default_model="gpt-4o-mini",
+        default_model="gpt-5.4-mini",
         default_base_url=None,
         models=(
-            ModelInfo("gpt-4o-mini", 128_000, "GPT-4o mini"),
-            ModelInfo("gpt-4o", 128_000, "GPT-4o"),
-            ModelInfo("gpt-4.1-mini", 1_047_576, "GPT-4.1 mini"),
+            ModelInfo("gpt-6.1-sol", 922_000, "GPT-6.1 Sol"),
+            ModelInfo("gpt-6.1-terra", 922_000, "GPT-6.1 Terra"),
+            ModelInfo("gpt-6-astra", 922_000, "GPT-6 Astra"),
+            ModelInfo("gpt-6-sol", 922_000, "GPT-6 Sol"),
+            ModelInfo("gpt-5.6", 922_000, "GPT-5.6"),
+            ModelInfo("gpt-5.5", 922_000, "GPT-5.5"),
+            ModelInfo("gpt-5.4", 922_000, "GPT-5.4"),
+            ModelInfo("gpt-5.4-mini", 272_000, "GPT-5.4 mini"),
+            ModelInfo("gpt-5.4-nano", 272_000, "GPT-5.4 nano"),
+            ModelInfo("gpt-5.2", 272_000, "GPT-5.2"),
             ModelInfo("gpt-4.1", 1_047_576, "GPT-4.1"),
-            ModelInfo("o4-mini", 200_000, "o4-mini"),
+            ModelInfo("gpt-4o", 128_000, "GPT-4o"),
+            ModelInfo("gpt-4o-mini", 128_000, "GPT-4o mini (legacy)"),
             ModelInfo("o3", 200_000, "o3"),
-            ModelInfo("gpt-5", 400_000, "GPT-5"),
-            ModelInfo("gpt-5-mini", 400_000, "GPT-5 mini"),
+            ModelInfo("o4-mini", 200_000, "o4-mini"),
         ),
     ),
     ProviderInfo(
@@ -85,11 +94,20 @@ PROVIDERS: tuple[ProviderInfo, ...] = (
         key_env="DEEPSEEK_API_KEY",
         model_env="DEEPSEEK_MODEL",
         base_env="DEEPSEEK_BASE_URL",
-        default_model="deepseek-chat",
+        default_model="deepseek-flash",
         default_base_url="https://api.deepseek.com",
         models=(
-            ModelInfo("deepseek-chat", 128_000, "DeepSeek Chat"),
-            ModelInfo("deepseek-reasoner", 128_000, "DeepSeek Reasoner"),
+            ModelInfo("deepseek-flash", 1_000_000, "DeepSeek Flash"),
+            ModelInfo("deepseek-v4-pro", 1_000_000, "DeepSeek V4 Pro"),
+            ModelInfo(
+                "deepseek-v4-flash",
+                1_000_000,
+                "DeepSeek V4 Flash (legacy alias)",
+            ),
+            ModelInfo("deepseek-chat", 131_072, "DeepSeek Chat (legacy)"),
+            ModelInfo(
+                "deepseek-reasoner", 131_072, "DeepSeek Reasoner (legacy)"
+            ),
         ),
     ),
     ProviderInfo(
@@ -98,13 +116,18 @@ PROVIDERS: tuple[ProviderInfo, ...] = (
         key_env="DASHSCOPE_API_KEY",
         model_env="QWEN_MODEL",
         base_env="QWEN_BASE_URL",
-        default_model="qwen-plus",
+        default_model="qwen3.7-plus",
         default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         models=(
-            ModelInfo("qwen-plus", 131_072, "Qwen Plus"),
-            ModelInfo("qwen-turbo", 131_072, "Qwen Turbo"),
-            ModelInfo("qwen-max", 32_768, "Qwen Max"),
-            ModelInfo("qwen3-max", 262_144, "Qwen3 Max"),
+            ModelInfo("qwen3.8-max", 991_808, "Qwen3.8 Max"),
+            ModelInfo("qwen3.7-plus", 991_808, "Qwen3.7 Plus"),
+            ModelInfo("qwen3.8-flash", 991_808, "Qwen3.8 Flash"),
+            ModelInfo("qwen3.8-omni-flash", 991_808, "Qwen3.8 Omni Flash"),
+            ModelInfo("qwen3-coder-plus", 997_952, "Qwen3 Coder Plus"),
+            ModelInfo("qwen3-vl-plus", 260_096, "Qwen3 VL Plus"),
+            ModelInfo("qwen3-max", 258_048, "Qwen3 Max"),
+            ModelInfo("qwen-plus", 129_024, "Qwen Plus (legacy)"),
+            ModelInfo("qwen-turbo", 129_024, "Qwen Turbo (legacy)"),
         ),
     ),
     ProviderInfo(

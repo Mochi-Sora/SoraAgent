@@ -289,9 +289,9 @@ provider = default_provider("openai")   # also: azure, deepseek, qwen, mock
 | Kind | Backend | Required env |
 | --- | --- | --- |
 | `mock` / `demo` | `MockProvider`, no network | — |
-| `openai` / `azure` | OpenAI-compatible chat completions | `OPENAI_API_KEY` (plus optional `OPENAI_MODEL`, `OPENAI_BASE_URL`) |
-| `deepseek` / `ds` | DeepSeek | `DEEPSEEK_API_KEY` (optional `DEEPSEEK_MODEL`, default `deepseek-chat`) |
-| `qwen` / `dashscope` | DashScope compatible mode | `DASHSCOPE_API_KEY` (optional `QWEN_MODEL`, default `qwen-plus`) |
+| `openai` / `azure` | OpenAI-compatible chat completions | `OPENAI_API_KEY` (plus optional `OPENAI_MODEL`, default `gpt-5.4-mini`, and `OPENAI_BASE_URL`) |
+| `deepseek` / `ds` | DeepSeek | `DEEPSEEK_API_KEY` (optional `DEEPSEEK_MODEL`, default `deepseek-flash`) |
+| `qwen` / `dashscope` | DashScope compatible mode | `DASHSCOPE_API_KEY` (optional `QWEN_MODEL`, default `qwen3.7-plus`) |
 
 `azure` is an alias for the same OpenAI-compatible provider; set
 `OPENAI_BASE_URL` to your deployment endpoint (and `OPENAI_MODEL` to the
@@ -1127,9 +1127,9 @@ The config file is deliberately plain JSON:
   },
   "provider": {
     "kind": "openai",
-    "model": "gpt-4o-mini",
+    "model": "gpt-5.4-mini",
     "temperature": 0.7,
-    "context_window": 128000,
+    "context_window": 272000,
     "base_url": null
   },
   "channel": {"kind": "telegram", "allow_from": ["123456789"], "parse_mode": null},

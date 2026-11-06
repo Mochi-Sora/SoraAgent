@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .model_catalog import (
+    FALLBACK_CONTEXT_WINDOW,
     base_env,
     default_base_url,
     default_model,
@@ -135,7 +136,7 @@ def build_provider(
 def context_window(settings: Settings) -> int:
     override = env_int("SORA_CONTEXT_WINDOW")
     value = override if override is not None else settings.provider.context_window
-    return max(1_000, int(value or 128_000))
+    return max(1_000, int(value or FALLBACK_CONTEXT_WINDOW))
 
 
 def provider_label(settings: Settings) -> str:

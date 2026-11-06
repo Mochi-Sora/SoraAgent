@@ -38,7 +38,6 @@ from sora_agent.settings import (
     update_secrets,
 )
 
-
 # ---------------------------------------------------------------------------
 # Presets
 # ---------------------------------------------------------------------------
@@ -356,14 +355,23 @@ def test_environment_helpers(monkeypatch):
 
 
 def test_model_catalog_knows_context_windows_and_aliases():
+    assert context_window_for("openai", "gpt-5.4-mini") == 272_000
+    assert context_window_for("openai", "gpt-6.1-sol") == 922_000
     assert context_window_for("openai", "gpt-4o-mini") == 128_000
     assert context_window_for("openai", "gpt-4.1") == 1_047_576
-    assert context_window_for("deepseek", "deepseek-chat") == 128_000
-    assert context_window_for("ds", "deepseek-reasoner") == 128_000
+    assert context_window_for("deepseek", "deepseek-flash") == 1_000_000
+    assert context_window_for("deepseek", "deepseek-chat") == 131_072
+    assert context_window_for("ds", "deepseek-reasoner") == 131_072
+    assert context_window_for("qwen", "qwen3.7-plus") == 991_808
+    assert context_window_for("dashscope", "qwen3.8-max") == 991_808
     assert context_window_for("openai", "some-future-model") is None
-    assert provider_info("dashscope").id == "qwen"
-    assert provider_info("mock").label == "Mock (offline)"
-    assert provider_info("mock").key_env == ""
+    dashscope = provider_info("dashscope")
+    assert dashscope is not None
+    assert dashscope.id == "qwen"
+    mock = provider_info("mock")
+    assert mock is not None
+    assert mock.label == "Mock (offline)"
+    assert mock.key_env == ""
     assert context_window_for("mock", "mock") == FALLBACK_CONTEXT_WINDOW
 
 

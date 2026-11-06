@@ -187,9 +187,9 @@ class AgentSettings:
 @dataclass
 class ProviderSettings:
     kind: str = "openai"
-    model: str = "gpt-4o-mini"
+    model: str = "gpt-5.4-mini"
     temperature: float = 0.7
-    context_window: int = 128_000
+    context_window: int = 272_000
     base_url: str | None = None
 
     def __post_init__(self) -> None:
@@ -198,7 +198,7 @@ class ProviderSettings:
             self.temperature, 0.7, minimum=0.0, maximum=2.0
         )
         self.context_window = _as_int(
-            self.context_window, 128_000, minimum=1_000
+            self.context_window, 272_000, minimum=1_000
         )
         self.base_url = _as_optional_str(self.base_url)
 
@@ -207,9 +207,9 @@ class ProviderSettings:
         raw = _mapping(data, "provider")
         return cls(
             kind=_as_str(raw.get("kind"), "openai"),
-            model=_as_str(raw.get("model"), "gpt-4o-mini"),
+            model=_as_str(raw.get("model"), "gpt-5.4-mini"),
             temperature=_as_float(raw.get("temperature"), 0.7),
-            context_window=_as_int(raw.get("context_window"), 128_000),
+            context_window=_as_int(raw.get("context_window"), 272_000),
             base_url=_as_optional_str(raw.get("base_url")),
         )
 
@@ -551,9 +551,9 @@ def recommended_settings() -> Settings:
         ),
         provider=ProviderSettings(
             kind="openai",
-            model="gpt-4o-mini",
+            model="gpt-5.4-mini",
             temperature=0.7,
-            context_window=128_000,
+            context_window=272_000,
         ),
         channel=ChannelSettings(),
         features=FeatureSettings(
@@ -598,9 +598,9 @@ def advanced_settings() -> Settings:
         ),
         provider=ProviderSettings(
             kind="openai",
-            model="gpt-4o-mini",
+            model="gpt-5.4-mini",
             temperature=0.1,
-            context_window=128_000,
+            context_window=272_000,
         ),
         channel=ChannelSettings(),
         features=FeatureSettings(

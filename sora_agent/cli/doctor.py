@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from ..model_catalog import format_tokens, key_env, provider_info
+from ..model_catalog import format_tokens, provider_info
 from ..runtime_setup import (
     approval_mode,
     memory_enabled,
@@ -13,7 +13,7 @@ from ..runtime_setup import (
     quality_enabled,
     streaming_enabled,
 )
-from ..settings import Settings, config_path, load_secrets, secrets_path
+from ..settings import Settings, config_path, secrets_path
 from . import ui
 
 
@@ -118,11 +118,12 @@ def _warnings(settings: Settings, secrets: dict[str, str]) -> None:
     kind = provider_kind(settings)
     if kind not in {"mock", "demo"}:
         info = provider_info(kind)
-        if info is not None:
-            if not os.getenv(info.key_env, "").strip() and not secrets.get(
-                info.key_env, ""
-            ).strip():
-                problems.append(f"{info.key_env} is not configured.")
+        if (
+            info is not None
+            and not os.getenv(info.key_env, "").strip()
+            and not secrets.get(info.key_env, "").strip()
+        ):
+            problems.append(f"{info.key_env} is not configured.")
     if (
         not os.getenv("SORA_TELEGRAM_TOKEN", "").strip()
         and not secrets.get("SORA_TELEGRAM_TOKEN", "").strip()
