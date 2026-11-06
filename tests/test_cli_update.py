@@ -83,6 +83,17 @@ def test_parse_extras_none_detected_and_deduplicated(monkeypatch):
     assert update._parse_extras(None) == ("openai", "cli")
 
 
+def test_detected_extras_always_include_files_and_cli(monkeypatch):
+    # A legacy install has no pypdf yet, so detection must not depend on it.
+    monkeypatch.setattr(update, "_module_available", lambda name: False)
+
+    extras = update._detected_extras()
+
+    assert "files" in extras
+    assert "cli" in extras
+    assert "openai" not in extras
+
+
 def test_resolve_target_latest_falls_back_to_main(monkeypatch):
     monkeypatch.setattr(update, "_latest_release", lambda repo, timeout: None)
 

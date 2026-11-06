@@ -146,8 +146,11 @@ def _detected_extras() -> tuple[str, ...]:
         extras.append("openai")
     if _module_available("zstandard") or sys.version_info >= (3, 14):
         extras.append("memory")
-    if _module_available("pypdf"):
-        extras.append("files")
+    # ``files`` cannot be detected by import: an install created before the
+    # extra existed has no ``pypdf``, yet it should gain PDF support. Keep it
+    # in the baseline so ``sora update`` upgrades old installs; ``--extras``
+    # remains the opt-out.
+    extras.append("files")
     # The running ``sora`` command itself requires the CLI extra.
     extras.append("cli")
     return tuple(extras)

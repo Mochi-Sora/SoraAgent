@@ -175,12 +175,18 @@ sora update --extras openai,memory,cli,files   # add PDF support to an old insta
 `sora update` detects how SoraAgent was installed:
 
 - **Installer-managed environment:** downloads the selected GitHub archive and
-  reinstalls it into the current virtual environment. Installed optional extras
-  (`openai`, `memory`, `cli`) are detected automatically.
+  reinstalls it into the current virtual environment. `cli` and `files` are
+  always kept; `openai` and `memory` are detected from the installed packages.
 - **Editable or source checkout:** pulls the current branch with `--ff-only`,
   then reinstalls in place. A checkout with uncommitted changes is never
   modified; commit or stash first. `--version TAG` checks out an explicit tag
   and leaves the checkout in detached-HEAD state.
+
+Installs created before the `files` extra existed (`pypdf`) gain PDF support on
+`update`. Because the update runs the updater that is already installed, such an
+install may need `sora update` twice: the first run installs the new code, the
+second applies the current defaults. Passing
+`--extras openai,memory,cli,files` does it in one go.
 
 `--check` exits with `0` when the install is current, `1` when an update is
 available, and `2` when the check cannot run. User data and configuration under
@@ -1458,7 +1464,7 @@ SoraAgent/
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[openai,memory,cli,files,dev]"
 
-pytest                          # 531 tests
+pytest                          # 532 tests
 pyright                         # static checks, standard mode (Python 3.9; install separately)
 ```
 
