@@ -6,24 +6,40 @@ until the model discovers it through ``find_tools``.  The hidden-tool catalog
 lives in the ``find_tools`` schema rather than the system prompt, so the prompt
 prefix stays small and stable.
 
-Search is deliberately lexical and stdlib-only: token overlap plus
-``difflib.SequenceMatcher`` handles exact words and small typos without adding a
-dependency or a vector store.
+Discovery has two tiers::
+
+* ``find_tools(need="...")`` previews the closest matches without loading them.
+  A single clearly dominant match loads automatically so the common case stays
+  one step; ambiguous searches return a shortlist.
+* ``find_tools(load=["name", ...])`` loads exact names, at most ``LOAD_LIMIT``
+  per call.  ``ToolGate`` also caps how many hidden tools one run may expose.
+
+Search is deliberately lexical and stdlib-only: token overlap with IDF weights,
+name boosts, optional tool aliases, and ``difflib.SequenceMatcher`` handle exact
+words and small typos without adding a dependency or a vector store.  The
+``ToolRanker`` protocol keeps the ranking strategy swappable for a future
+embedding backend.
 """
 
 from __future__ import annotations
 
+import math
 import re
-from collections.abc import Iterable
-from difflib import SequenceMatcher
-from typing import Any
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
+from difflib import SequenceMatcher, get_close_matches
+from typing import Any, Protocol
 
 from .tools import Tool, ToolRegistry
 
 FIND_TOOLS_NAME = "find_tools"
-MATCH_LIMIT = 5
+PREVIEW_LIMIT = 8
+LOAD_LIMIT = 3
 MIN_SCORE = 2.0
-MAX_CATALOG_ENTRIES = 60
+AUTO_LOAD_SCORE = 8.0
+AUTO_LOAD_MARGIN = 2.5
+MAX_VISIBLE_TOOLS = 12
+MAX_CATALOG_ENTRIES = 40
 MAX_CATALOG_DESCRIPTION = 50
 MAX_RESULT_DESCRIPTION = 160
 
@@ -37,6 +53,23 @@ _STOPWORDS = frozenset({
 })
 
 
+@dataclass(frozen=True)
+class Candidate:
+    """One ranked tool and its lexical score."""
+
+    tool: Tool
+    score: float
+
+
+class ToolRanker(Protocol):
+    """Rank registered tools against a plain-language need."""
+
+    def rank(
+        self, need: str, tools: Sequence[Tool], limit: int
+    ) -> list[Candidate]:
+        ...
+
+
 class ToolGate:
     """What one run may see, and what it has discovered so far."""
 
@@ -44,9 +77,13 @@ class ToolGate:
         self,
         registry: ToolRegistry,
         always_visible: Iterable[str] = (),
+        max_visible: int | None = MAX_VISIBLE_TOOLS,
     ) -> None:
         self.registry = registry
         self.always_visible = frozenset(always_visible)
+        self.max_visible = (
+            None if max_visible is None else max(0, int(max_visible))
+        )
         self._unlocked: set[str] = set()
         self._catalog: str | None = None
 
@@ -76,10 +113,19 @@ class ToolGate:
         visible = set(self.visible_names())
         return [tool for tool in self.registry.all() if tool.name not in visible]
 
+    def remaining_slots(self) -> int | None:
+        """How many more hidden tools this run may expose, if capped."""
+        if self.max_visible is None:
+            return None
+        return max(0, self.max_visible - len(self.visible_names()))
+
     def unlock(self, names: Iterable[str]) -> list[str]:
         """Make registered tools visible for the rest of the run."""
         added: list[str] = []
+        remaining = self.remaining_slots()
         for name in names:
+            if remaining is not None and remaining <= 0:
+                break
             if (
                 name in self._unlocked
                 or name in self.always_visible
@@ -88,6 +134,8 @@ class ToolGate:
                 continue
             self._unlocked.add(name)
             added.append(name)
+            if remaining is not None:
+                remaining -= 1
         if added:
             self._catalog = None
         return added
@@ -99,23 +147,69 @@ class ToolGate:
         return self._catalog
 
 
+class LexicalRanker:
+    """Deterministic lexical ranking with IDF weights and tool aliases."""
+
+    def rank(
+        self, need: str, tools: Sequence[Tool], limit: int
+    ) -> list[Candidate]:
+        query = _normalize(need)
+        tokens = _tokens(query)
+        if not tokens or limit <= 0:
+            return []
+
+        documents = [_document(tool) for tool in tools]
+        if not documents:
+            return []
+
+        counts: dict[str, int] = {}
+        for document in documents:
+            for token in document.all_tokens & tokens:
+                counts[token] = counts.get(token, 0) + 1
+        total = len(documents)
+
+        def idf(token: str) -> float:
+            return math.log((total + 1) / (counts.get(token, 0) + 1)) + 1.0
+
+        scored = [
+            (_score(query, tokens, document, idf), document.tool)
+            for document in documents
+        ]
+        ranked = sorted(
+            (
+                (score, tool)
+                for score, tool in scored
+                if score >= MIN_SCORE
+            ),
+            key=lambda item: (-item[0], item[1].name),
+        )
+        return [
+            Candidate(tool=tool, score=score)
+            for score, tool in ranked[:limit]
+        ]
+
+
 class FindToolsTool(Tool):
-    """Search the hidden tool library and load the best matches."""
+    """Preview the hidden tool library and load the tools a task needs."""
 
     name = FIND_TOOLS_NAME
     needs_approval = False
     description = (
-        "Find and load tools for the current task. The tool list is partial; call "
-        "this before assuming a capability is missing. Describe the need in plain "
-        "language; matches become callable next step."
+        "Discover tools. Call with `need` in plain language to preview the "
+        "closest matches; the preview does not load them. Then call with "
+        "`load=[name, ...]` to make up to "
+        f"{LOAD_LIMIT} tools callable, or use a precise need when one match is "
+        "clearly dominant and it will load automatically. The tool list is "
+        "partial; call this before assuming a capability is missing."
     )
 
     # This synthetic tool has no callable ``fn`` to pass to ``Tool.__init__``;
     # it overrides ``schema`` and ``call`` directly.
     def __init__(  # pyright: ignore[reportMissingSuperCall]
-        self, gate: ToolGate
+        self, gate: ToolGate, ranker: ToolRanker | None = None
     ) -> None:
         self.gate = gate
+        self.ranker: ToolRanker = ranker or LexicalRanker()
 
     @property
     def schema(self) -> dict[str, Any]:
@@ -131,39 +225,212 @@ class FindToolsTool(Tool):
                 "properties": {
                     "need": {
                         "type": "string",
-                        "description": "What you need, in plain language.",
-                    }
+                        "description": (
+                            "What you need, in plain language. A search only "
+                            "previews matches."
+                        ),
+                    },
+                    "load": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Exact tool names to load now "
+                            f"(max {LOAD_LIMIT} per call)."
+                        ),
+                    },
                 },
-                "required": ["need"],
+                "required": [],
             },
         }
 
-    def call(self, need: str = "", **_: Any) -> str:
-        query = " ".join(str(need or "").split())
-        if not query:
+    def call(
+        self, need: str = "", load: Any = None, **_: Any
+    ) -> str:
+        names = _parse_load(load)
+        query = _normalize(need)
+        if not names and not query:
             raise ValueError(
-                "find_tools requires a non-empty need, e.g. "
-                'find_tools(need="look up a purchase order")'
+                "find_tools requires `need` or `load`, e.g. "
+                'find_tools(need="look up a purchase order") or '
+                'find_tools(load=["lookup_order"])'
             )
+        if names:
+            return self._load(names)
+        return self._search(query)
 
-        matches = self._rank(query)
-        if not matches:
+    # ------------------------------------------------------------------
+    # Tier 1: preview
+    # ------------------------------------------------------------------
+
+    def _search(self, query: str) -> str:
+        candidates = self._rank(query)
+        if not candidates:
             return self._no_match(query)
 
-        loaded = set(self.gate.unlock([candidate.name for _, candidate in matches]))
-        return self._render(query, matches, loaded)
+        top = candidates[0]
+        if not self.gate.is_visible(top.tool.name) and _dominant(candidates):
+            loaded = self.gate.unlock([top.tool.name])
+            if loaded:
+                return self._render_loaded(
+                    query=query,
+                    loaded=loaded,
+                    already=[],
+                    unknown=[],
+                    overflow=[],
+                    budget=[],
+                )
+        return self._render_preview(query, candidates)
 
-    def _rank(self, query: str) -> list[tuple[float, Tool]]:
-        scored = [
-            (score_need(query, tool.name, tool.description), tool)
+    def _rank(self, query: str) -> list[Candidate]:
+        tools = [
+            tool
             for tool in self.gate.registry.all()
             if tool.name != self.name
         ]
-        ranked = [
-            (score, tool) for score, tool in scored if score >= MIN_SCORE
-        ]
-        ranked.sort(key=lambda item: (-item[0], item[1].name))
-        return ranked[:MATCH_LIMIT]
+        return self.ranker.rank(query, tools, PREVIEW_LIMIT)
+
+    # ------------------------------------------------------------------
+    # Tier 2: explicit load
+    # ------------------------------------------------------------------
+
+    def _load(self, names: list[str]) -> str:
+        resolved, unknown = self._resolve(names)
+        already = [name for name in resolved if self.gate.is_visible(name)]
+        pending = [name for name in resolved if not self.gate.is_visible(name)]
+        requested = pending[:LOAD_LIMIT]
+        overflow = pending[LOAD_LIMIT:]
+        loaded = self.gate.unlock(requested)
+        budget = [name for name in requested if name not in loaded]
+        return self._render_loaded(
+            query="",
+            loaded=loaded,
+            already=already,
+            unknown=unknown,
+            overflow=overflow,
+            budget=budget,
+        )
+
+    def _resolve(self, names: list[str]) -> tuple[list[str], list[str]]:
+        """Resolve exact, case-insensitive, and flattened tool names."""
+        lookup: dict[str, str] = {}
+        for tool in self.gate.registry.all():
+            if tool.name == self.name:
+                continue
+            lookup[tool.name.lower()] = tool.name
+            lookup.setdefault(_normalize(_flatten(tool.name)), tool.name)
+
+        resolved: list[str] = []
+        unknown: list[str] = []
+        for raw in names:
+            key = raw.strip()
+            if not key:
+                continue
+            match = (
+                lookup.get(key.lower())
+                or lookup.get(_normalize(_flatten(key)))
+            )
+            if match is None:
+                unknown.append(key)
+                continue
+            if match not in resolved:
+                resolved.append(match)
+        return resolved, unknown
+
+    # ------------------------------------------------------------------
+    # Rendering
+    # ------------------------------------------------------------------
+
+    def _render_preview(
+        self, query: str, candidates: list[Candidate]
+    ) -> str:
+        lines = [f"Tools for {query!r} (preview only):"]
+        for candidate in candidates:
+            tool = candidate.tool
+            state = "already loaded" if self.gate.is_visible(tool.name) else "available"
+            description = _clip(
+                tool.description, MAX_RESULT_DESCRIPTION
+            ).strip()
+            lines.append(
+                f"- `{tool.name}` ({state}): "
+                f"{_signature(tool)} — {description}"
+            )
+        names = [
+            candidate.tool.name
+            for candidate in candidates
+            if not self.gate.is_visible(candidate.tool.name)
+        ][:LOAD_LIMIT]
+        remaining = self.gate.remaining_slots()
+        if names and remaining == 0:
+            lines.append("")
+            lines.append(
+                "Visible-tool budget reached "
+                f"({self.gate.max_visible} per run); use the tools already "
+                "loaded."
+            )
+        elif names:
+            quoted = ", ".join(f'"{name}"' for name in names)
+            lines.append("")
+            lines.append(
+                f"Nothing was loaded. To load up to {LOAD_LIMIT}, call "
+                f"find_tools(load=[{quoted}])."
+            )
+        elif candidates:
+            lines.append("")
+            lines.append("Every match is already loaded; call it directly.")
+        return "\n".join(lines)
+
+    def _render_loaded(
+        self,
+        *,
+        query: str,
+        loaded: list[str],
+        already: list[str],
+        unknown: list[str],
+        overflow: list[str],
+        budget: list[str],
+    ) -> str:
+        heading = (
+            f"Loaded tools for {query!r}:"
+            if query
+            else "Loaded tools:"
+        )
+        lines = [heading]
+        if loaded:
+            lines.append(
+                ", ".join(f"`{name}`" for name in loaded)
+                + " — callable next step."
+            )
+        else:
+            lines.append("No new tools were loaded.")
+        if already:
+            lines.append(
+                "Already loaded: "
+                + ", ".join(f"`{name}`" for name in already)
+                + "."
+            )
+        if unknown:
+            suggestions = [
+                _suggest(name, self.gate.registry.all()) for name in unknown
+            ]
+            detail = ", ".join(
+                f"`{name}`" + (f" (did you mean {hint}?)" if hint else "")
+                for name, hint in zip(unknown, suggestions)
+            )
+            lines.append(f"Unknown: {detail}.")
+        if overflow:
+            lines.append(
+                f"Not loaded (max {LOAD_LIMIT} per call): "
+                + ", ".join(f"`{name}`" for name in overflow)
+                + ". Call find_tools again for the rest."
+            )
+        if budget:
+            lines.append(
+                "Visible-tool budget reached "
+                f"({self.gate.max_visible} per run): "
+                + ", ".join(f"`{name}`" for name in budget)
+                + ". Finish this turn with the tools already loaded."
+            )
+        return "\n".join(lines)
 
     def _no_match(self, query: str) -> str:
         names = [tool.name for tool in self.gate.hidden()]
@@ -181,52 +448,125 @@ class FindToolsTool(Tool):
             lines.append("All tools are already loaded.")
         return "\n".join(lines)
 
-    def _render(
-        self,
-        query: str,
-        matches: list[tuple[float, Tool]],
-        loaded: set[str],
-    ) -> str:
-        lines = [f"Tools for {query!r}:"]
-        for _score, tool in matches:
-            if tool.name in loaded:
-                state = "now loaded"
-            elif self.gate.is_visible(tool.name):
-                state = "already loaded"
-            else:
-                state = "available"
-            description = _clip(
-                tool.description, MAX_RESULT_DESCRIPTION
-            ).strip()
-            lines.append(
-                f"- `{tool.name}` ({state}): "
-                f"{_signature(tool)} — {description}"
-            )
-        if loaded:
-            lines.append("")
-            lines.append("Loaded tools appear next step; call them directly.")
-        return "\n".join(lines)
+
+# ---------------------------------------------------------------------------
+# Scoring
+# ---------------------------------------------------------------------------
 
 
-def score_need(need: str, name: str, description: str) -> float:
-    """Rank one registered tool against a plain-language need."""
+@dataclass(frozen=True)
+class _Document:
+    tool: Tool
+    name_text: str
+    description_text: str
+    alias_texts: tuple[str, ...]
+    name_tokens: frozenset[str]
+    description_tokens: frozenset[str]
+    alias_tokens: frozenset[str]
 
-    need_lower = " ".join(str(need).lower().split())
-    name_text = _flatten(name).lower()
-    description_lower = " ".join(str(description).lower().split())
-    need_tokens = _tokens(need_lower)
-    if not need_tokens:
-        return 0.0
+    @property
+    def all_tokens(self) -> frozenset[str]:
+        return self.name_tokens | self.description_tokens | self.alias_tokens
 
-    name_tokens = _tokens(name_text)
-    description_tokens = _tokens(description_lower[:800])
-    score = 3.0 * len(need_tokens & name_tokens)
-    score += 1.0 * len(need_tokens & (description_tokens - name_tokens))
-    score += 4.0 * _ratio(need_lower, name_text)
-    score += 1.5 * _ratio(need_lower, description_lower[:300])
-    if need_lower in name_text or name_text in need_lower:
+
+def _document(tool: Tool) -> _Document:
+    aliases = tuple(str(item) for item in getattr(tool, "aliases", ()))
+    name_text = _flatten(tool.name).lower()
+    description_text = _normalize(tool.description)
+    alias_texts = tuple(_normalize(alias) for alias in aliases)
+    return _Document(
+        tool=tool,
+        name_text=name_text,
+        description_text=description_text,
+        alias_texts=alias_texts,
+        name_tokens=frozenset(_tokens(name_text)),
+        description_tokens=frozenset(_tokens(description_text[:800])),
+        alias_tokens=frozenset(_tokens(" ".join(alias_texts))),
+    )
+
+
+def _score(
+    query: str,
+    tokens: frozenset[str],
+    document: _Document,
+    idf: Callable[[str], float],
+) -> float:
+    name_hits = tokens & document.name_tokens
+    description_hits = (tokens & document.description_tokens) - document.name_tokens
+    alias_hits = (tokens & document.alias_tokens) - document.name_tokens
+
+    score = 3.0 * sum(idf(token) for token in name_hits)
+    score += 1.0 * sum(idf(token) for token in description_hits)
+    score += 2.0 * sum(idf(token) for token in alias_hits)
+    score += 4.0 * _ratio(query, document.name_text)
+    score += 1.5 * _ratio(query, document.description_text[:300])
+    if len(query) >= 4 and (
+        query in document.name_text or document.name_text in query
+    ):
         score += 4.0
+    name_key = query.replace(" ", "_")
+    if name_key == document.tool.name.lower() or query in document.alias_texts:
+        score += 6.0
     return score
+
+
+def score_need(
+    need: str, name: str, description: str, aliases: Iterable[str] = ()
+) -> float:
+    """Score one tool against a need, without corpus-level IDF weights."""
+
+    query = _normalize(need)
+    tokens = _tokens(query)
+    if not tokens:
+        return 0.0
+    alias_texts = tuple(_normalize(alias) for alias in aliases)
+    document = _Document(
+        tool=Tool(lambda: None, name, description),
+        name_text=_flatten(name).lower(),
+        description_text=_normalize(description),
+        alias_texts=alias_texts,
+        name_tokens=frozenset(_tokens(_flatten(name).lower())),
+        description_tokens=frozenset(_tokens(_normalize(description)[:800])),
+        alias_tokens=frozenset(_tokens(" ".join(alias_texts))),
+    )
+    return _score(query, tokens, document, lambda _token: 1.0)
+
+
+def _dominant(candidates: list[Candidate]) -> bool:
+    """Whether the top match is strong and clearly ahead of the runner-up."""
+    top = candidates[0]
+    if top.score < AUTO_LOAD_SCORE:
+        return False
+    if len(candidates) == 1:
+        return True
+    return top.score - candidates[1].score >= AUTO_LOAD_MARGIN
+
+
+def _parse_load(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        items = raw.replace(",", " ").split()
+    elif isinstance(raw, (list, tuple, set)):
+        items = [str(item) for item in raw]
+    else:
+        raise TypeError("find_tools `load` must be a list of tool names")
+    names: list[str] = []
+    for item in items:
+        name = " ".join(str(item).split())
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _suggest(name: str, tools: Sequence[Tool]) -> str:
+    matches = get_close_matches(
+        name.lower(),
+        [tool.name.lower() for tool in tools if tool.name != FIND_TOOLS_NAME],
+        n=1,
+        cutoff=0.6,
+    )
+    return f"`{matches[0]}`" if matches else ""
 
 
 def _render_catalog(tools: list[Tool]) -> str:
@@ -284,6 +624,10 @@ def _flatten(name: str) -> str:
     return name.replace("_", " ").replace("-", " ").strip()
 
 
+def _normalize(text: Any) -> str:
+    return " ".join(str(text or "").lower().split())
+
+
 def _normalize_token(token: str) -> str:
     if len(token) > 3 and token.endswith("ies"):
         return token[:-3] + "y"
@@ -292,12 +636,12 @@ def _normalize_token(token: str) -> str:
     return token
 
 
-def _tokens(text: str) -> set[str]:
-    return {
+def _tokens(text: str) -> frozenset[str]:
+    return frozenset({
         _normalize_token(token)
         for token in _TOKEN_RE.findall(text.lower())
         if len(token) > 1 and token not in _STOPWORDS
-    }
+    })
 
 
 def _ratio(left: str, right: str) -> float:

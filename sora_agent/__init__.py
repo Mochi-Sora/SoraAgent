@@ -14,7 +14,14 @@ from .identity_provider import IdentityProvider
 from .providers import MockProvider, ModelTurn, ToolCall
 from .runner import Runner, RunResult, RunSpec, Step
 from .state_machine import POStateMachine
-from .tool_search import FIND_TOOLS_NAME, FindToolsTool, ToolGate
+from .tool_search import (
+    FIND_TOOLS_NAME,
+    Candidate,
+    FindToolsTool,
+    LexicalRanker,
+    ToolGate,
+    ToolRanker,
+)
 from .tools import ToolExecutor, ToolRegistry, ToolResult
 
 __all__ = [
@@ -25,11 +32,13 @@ __all__ = [
     "AgentResult",
     "CalendarItem",
     "CalendarStore",
+    "Candidate",
     "ClockProvider",
     "FindToolsTool",
     "IdentityConfig",
     "IdentityProvider",
     "IdentityStore",
+    "LexicalRanker",
     "MockProvider",
     "ModelTurn",
     "POStateMachine",
@@ -40,6 +49,7 @@ __all__ = [
     "ToolCall",
     "ToolExecutor",
     "ToolGate",
+    "ToolRanker",
     "ToolRegistry",
     "ToolResult",
     "clock_section",

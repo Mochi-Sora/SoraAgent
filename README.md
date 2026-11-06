@@ -12,8 +12,8 @@ deliberately tiny; the production concerns live in explicit gates around it:
 - **Quality gate** — the finished trajectory of every `Agent` or chat run is
   graded by a deterministic structural evaluator that *cannot* affect execution.
 - **Lazy tool discovery** — only `find_tools` (plus `memory_recall`) is visible
-  at the start of a run; other tools stay hidden until the model searches for
-  them, keeping the prompt small and stable.
+  at the start of a run; other tools stay hidden until the model previews and
+  loads what it needs, keeping the prompt small and the tool list bounded.
 - **Predictable failure modes** — safety paths (approval, tool validation) fail
   closed; optional conveniences (memory, identity, clock, calendar, observers)
   fail open and never break a run.
@@ -385,7 +385,7 @@ The layers are intentionally separable:
 | Providers | `sora_agent/providers.py` | `Message`, `ModelTurn`, `ToolCall`, `MockProvider`, `OpenAIChatProvider`, text-`ACTION:` parsing. |
 | Tools | `sora_agent/tools.py` | `Tool`, `ToolRegistry`, `ToolExecutor`, `ToolResult`, schema generation, the `@tool` decorator. |
 | Attachments | `sora_agent/files.py` | Convert files and images into untrusted markdown for the system prompt. |
-| Discovery | `sora_agent/tool_search.py` | `ToolGate`, `FindToolsTool`, lexical need-based ranking. |
+| Discovery | `sora_agent/tool_search.py` | `ToolGate`, `FindToolsTool`, two-tier lexical ranking with aliases and IDF weights. |
 | Approval | `sora_agent/approval.py` | `ApprovalGate`, `AuditEntry`; chat variant in `channels/approval.py`. |
 | Evaluation | `sora_agent/eval.py` | `Trajectory`, `EvalReport`, `QualityGate`, `structural_grader`, metrics. |
 | Judge | `sora_agent/judge.py` | Optional sampled, calibrated, advisory trajectory judge. |
@@ -595,6 +595,7 @@ registry.add(Tool(
 | `needs_approval=True` | Routed through the approval gate before execution; the schema description gets a `[approval required]` marker. |
 | `isolated=True` | Runs in a spawned child process so a hang can actually be killed (`tool_timeout`, default 30 s). Arguments and return value must be picklable. This is crash/hang isolation, **not** a security sandbox. |
 | `requires=("lookup_order",)` | Declares prerequisites; the structural grader checks they succeeded earlier. |
+| `aliases=("meeting", "appointment")` | Extra trigger words used by lexical tool search. |
 
 ### Schema generation
 
@@ -635,16 +636,26 @@ sees only:
 - `memory_recall` — when memory is enabled (and it must be the first action).
 
 Everything else stays registered but hidden. The hidden catalog is rendered
-*inside the `find_tools` schema* (name + one-line purpose, capped at 60 entries)
+*inside the `find_tools` schema* (name + one-line purpose, capped at 40 entries)
 so the prompt prefix stays small and stable.
 
-`find_tools(need="...")` ranks registered tools lexically — token overlap plus
-`difflib.SequenceMatcher`, with name matches weighted above description matches
-and small typos tolerated — and unlocks up to 5 matches (minimum score 2.0).
-Unlocked tools appear in the model's tool list on the next step. Discovery is
-per-run: `AgentRuntime` copies the registry and builds a fresh `ToolGate`, so one
-run's unlocks never leak into another. `find_tools` is a reserved name —
-registering a tool with it raises `ValueError`.
+`find_tools(need="...")` ranks registered tools lexically — token overlap with
+IDF weights, optional tool aliases, plus `difflib.SequenceMatcher` for typos —
+and returns a preview of up to 8 matches (minimum score 2.0) **without loading
+them**. When one match is clearly dominant, it loads automatically so the common
+case stays one step.
+
+`find_tools(load=["name", ...])` then loads exact names (case-insensitive and
+space/underscore tolerant), at most 3 per call. `ToolGate` also caps the run at
+12 visible tools, so repeated searches cannot balloon the prompt. Unlocked tools
+appear in the model's tool list on the next step. Discovery is per-run:
+`AgentRuntime` copies the registry and builds a fresh `ToolGate`, so one run's
+unlocks never leak into another. `find_tools` is a reserved name — registering a
+tool with it raises `ValueError`.
+
+The ranking strategy is behind a `ToolRanker` protocol (`LexicalRanker` today),
+so an embedding backend can replace it without changing the `find_tools`
+contract.
 
 ## Human approval
 
@@ -1431,7 +1442,7 @@ SoraAgent/
     ├── files.py                # attachment-to-markdown conversion (FileUnderstander)
     ├── net.py                  # shared HTTPS/CA-bundle helper
     ├── tools.py                # Tool, ToolRegistry, ToolExecutor, ToolResult, @tool
-    ├── tool_search.py          # ToolGate, FindToolsTool, lexical ranking
+    ├── tool_search.py          # ToolGate, FindToolsTool, two-tier lexical ranking
     ├── isolation.py            # spawned-process tool isolation with real timeouts
     ├── approval.py             # ApprovalGate + AuditEntry
     ├── eval.py                 # Trajectory, EvalReport, QualityGate, structural grader
@@ -1464,7 +1475,7 @@ SoraAgent/
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[openai,memory,cli,files,dev]"
 
-pytest                          # 532 tests
+pytest                          # 538 tests
 pyright                         # static checks, standard mode (Python 3.9; install separately)
 ```
 

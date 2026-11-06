@@ -688,6 +688,7 @@ def register_calendar_tools(
                 "find an item id. Dates accept ISO 8601 and relative days; "
                 "omit them for upcoming events and all open to-dos."
             ),
+            ("agenda", "schedule", "events", "meetings", "todos"),
         ),
         (
             calendar_add_event,
@@ -697,6 +698,7 @@ def register_calendar_tools(
                 "optional end, notes, and an importance level: important, "
                 "balanced, or not important."
             ),
+            ("meeting", "appointment", "schedule", "book"),
         ),
         (
             calendar_add_todo,
@@ -706,6 +708,7 @@ def register_calendar_tools(
                 "due date, notes, and an importance level: important, "
                 "balanced, or not important."
             ),
+            ("task", "reminder", "deadline", "follow up"),
         ),
         (
             calendar_complete_todo,
@@ -714,6 +717,7 @@ def register_calendar_tools(
                 "Mark a calendar to-do as done or completed. Get the to-do id "
                 "from calendar_list."
             ),
+            ("finish task", "done", "mark complete"),
         ),
         (
             calendar_set_importance,
@@ -722,13 +726,18 @@ def register_calendar_tools(
                 "Move an event or to-do's importance slider to important, "
                 "balanced, or not important."
             ),
+            ("priority", "prioritize", "important"),
         ),
     )
     added: list[Tool] = []
-    for function, name, description in definitions:
+    for function, name, description, aliases in definitions:
         if registry.has(name):
             continue
-        added.append(registry.add(Tool(function, name, description)))
+        added.append(
+            registry.add(
+                Tool(function, name, description, aliases=aliases)
+            )
+        )
     return added
 
 

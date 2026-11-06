@@ -23,7 +23,12 @@ from sora_agent.calendar import (
 from sora_agent.channels.chat import ChatHandler
 from sora_agent.channels.types import InboundMessage
 from sora_agent.providers import Message, ModelTurn, ToolCall
-from sora_agent.tool_search import FIND_TOOLS_NAME, FindToolsTool, ToolGate
+from sora_agent.tool_search import (
+    FIND_TOOLS_NAME,
+    FindToolsTool,
+    LexicalRanker,
+    ToolGate,
+)
 from sora_agent.tools import ToolExecutor, ToolRegistry
 
 NOW = datetime(2026, 11, 3, 9, 0, tzinfo=timezone.utc)
@@ -230,11 +235,14 @@ def test_calendar_tools_are_hidden_until_find_tools_loads_them(
         "calendar_add_todo",
     } <= {tool.name for tool in gate.hidden()}
 
-    result = find.call(need="calendar events and to-dos")
+    result = find.call(
+        need="calendar events and to-dos",
+        load=["calendar_list", "calendar_add_event", "calendar_add_todo"],
+    )
     assert "calendar_list" in gate.visible_names()
     assert "calendar_add_event" in gate.visible_names()
     assert "calendar_add_todo" in gate.visible_names()
-    assert "Loaded tools appear next step" in result
+    assert "callable next step" in result
 
     executor = ToolExecutor(registry)
     added = executor.execute(
@@ -253,6 +261,16 @@ def test_calendar_tools_are_hidden_until_find_tools_loads_them(
     assert store.list_items(kind="events")[0].title == "Planning"
 
 
+def test_calendar_aliases_improve_tool_search(tmp_path: Path) -> None:
+    store = store_at(tmp_path / "calendar.db")
+    registry = ToolRegistry()
+    register_calendar_tools(registry, store)
+
+    ranked = LexicalRanker().rank("book a meeting", registry.all(), 8)
+
+    assert ranked and ranked[0].tool.name == "calendar_add_event"
+
+
 def test_agent_registers_calendar_tools_hidden_by_default(
     tmp_path: Path,
 ) -> None:
@@ -264,7 +282,10 @@ def test_agent_registers_calendar_tools_hidden_by_default(
                     ToolCall(
                         id="find_1",
                         name=FIND_TOOLS_NAME,
-                        arguments={"need": "calendar events"},
+                        arguments={
+                            "need": "calendar events",
+                            "load": ["calendar_add_event"],
+                        },
                     )
                 ]
             ),

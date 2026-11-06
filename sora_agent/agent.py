@@ -35,9 +35,12 @@ TOOLS_POLICY = (
     "Your tool list is partial by design. Only the core tools are visible at the "
     "start; everything else stays hidden to keep the prompt small. Before "
     "concluding that a capability is unavailable, call `find_tools` with a "
-    "plain-language description of what you need. The tools it loads appear in "
-    "your tool list on the next step; call them directly. Do not guess hidden "
-    "tool names."
+    "plain-language description of what you need. A `need` search only previews "
+    "the closest matches. Load the ones you need with "
+    "`find_tools(load=[\"tool_name\", ...])` (a few per call); a precise need "
+    "whose best match is clearly dominant loads automatically. Loaded tools "
+    "appear in your tool list on the next step; call them directly. Do not "
+    "guess hidden tool names."
 )
 
 MEMORY_POLICY = (

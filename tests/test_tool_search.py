@@ -14,9 +14,12 @@ from sora_agent.runner import Runner, RunSpec
 from sora_agent.state_machine import POStateMachine, State
 from sora_agent.tool_search import (
     FIND_TOOLS_NAME,
-    MATCH_LIMIT,
+    LOAD_LIMIT,
+    MAX_VISIBLE_TOOLS,
     MIN_SCORE,
+    PREVIEW_LIMIT,
     FindToolsTool,
+    LexicalRanker,
     ToolGate,
     score_need,
 )
@@ -165,6 +168,29 @@ def test_catalog_shrinks_after_unlock() -> None:
     assert "`lookup_order`" in after
 
 
+def test_ranking_uses_tool_aliases() -> None:
+    registry = ToolRegistry()
+    registry.add(
+        Tool(
+            lambda: "",
+            "calendar_add_event",
+            "Add an event to the calendar.",
+            aliases=("meeting", "appointment"),
+        )
+    )
+    registry.add(Tool(lambda: "", "lookup_order", "Look up a purchase order."))
+
+    ranked = LexicalRanker().rank("book a meeting", registry.all(), 8)
+
+    assert ranked and ranked[0].tool.name == "calendar_add_event"
+    assert score_need(
+        "book a meeting",
+        "calendar_add_event",
+        "Add an event to the calendar.",
+        aliases=("meeting", "appointment"),
+    ) >= MIN_SCORE
+
+
 def test_catalog_is_capped() -> None:
     registry = ToolRegistry()
     for index in range(65):
@@ -174,8 +200,8 @@ def test_catalog_is_capped() -> None:
     gate = ToolGate(registry)
     catalog = gate.catalog()
 
-    assert catalog.count("- `tool_") == 60
-    assert "(5 more not listed" in catalog
+    assert catalog.count("- `tool_") == 40
+    assert "(25 more not listed" in catalog
 
 
 def test_ranking_prefers_name_over_description_noise() -> None:
@@ -210,16 +236,33 @@ def test_ranking_matches_description_words_and_typos() -> None:
     assert typo >= MIN_SCORE
 
 
-def test_find_tools_loads_matches_with_signatures() -> None:
+def test_find_tools_preview_then_loads_with_signatures() -> None:
+    registry = order_registry()
+    gate, find = discovery_gate(registry)
+
+    preview = find.call("purchase order")
+
+    assert "preview only" in preview
+    assert "`expedite_order` (available): " in preview
+    assert "expedite_order(order_id: string)" in preview
+    assert "Nothing was loaded" in preview
+    assert gate.visible_names() == [FIND_TOOLS_NAME]
+
+    result = find.call(load=["expedite_order"])
+
+    assert "Loaded tools:" in result
+    assert "`expedite_order` — callable next step." in result
+    assert "expedite_order" in gate.visible_names()
+
+
+def test_find_tools_auto_loads_a_dominant_match() -> None:
     registry = order_registry()
     gate, find = discovery_gate(registry)
 
     result = find.call("expedite a delayed purchase order")
 
-    assert "Tools for 'expedite a delayed purchase order':" in result
-    assert "`expedite_order` (now loaded" in result
-    assert "expedite_order(order_id: string)" in result
-    assert "Loaded tools appear next step" in result
+    assert "Loaded tools for 'expedite a delayed purchase order':" in result
+    assert "`expedite_order` — callable next step." in result
     assert "expedite_order" in gate.visible_names()
 
 
@@ -239,14 +282,25 @@ def test_find_tools_rejects_empty_need() -> None:
     registry = order_registry()
     _gate, find = discovery_gate(registry)
 
-    with pytest.raises(ValueError, match="non-empty need"):
+    with pytest.raises(ValueError, match="`need` or `load`"):
         find.call("   ")
 
     result = ToolExecutor(registry).execute(
         ToolCall(id="call_1", name=FIND_TOOLS_NAME, arguments={"need": ""})
     )
     assert result.is_error is True
-    assert "non-empty need" in result.content
+    assert "`need` or `load`" in result.content
+
+
+def test_find_tools_loads_exact_and_flattened_names() -> None:
+    registry = order_registry()
+    gate, find = discovery_gate(registry)
+
+    result = find.call(load=["EXPEDITE_ORDER", "expedite order", "nope"])
+
+    assert "`expedite_order` — callable next step." in result
+    assert "Unknown: `nope`" in result
+    assert gate.visible_names() == [FIND_TOOLS_NAME, "expedite_order"]
 
 
 def test_catalog_lives_only_in_find_tools_schema() -> None:
@@ -421,7 +475,10 @@ def test_agent_without_memory_has_no_recall_requirement_or_prompt() -> None:
                     ToolCall(
                         id="find_1",
                         name=FIND_TOOLS_NAME,
-                        arguments={"need": "look up an order"},
+                        arguments={
+                            "need": "look up an order",
+                            "load": ["lookup_order"],
+                        },
                     )
                 ]
             ),
@@ -448,7 +505,7 @@ def test_agent_without_memory_has_no_recall_requirement_or_prompt() -> None:
 
     assert provider.tools[0] == [FIND_TOOLS_NAME]
     assert "memory_recall" not in provider.calls[0][0].content
-    assert "`lookup_order` (now loaded" in result.steps[0].results[0].content
+    assert "`lookup_order` — callable next step." in result.steps[0].results[0].content
     assert result.action == "lookup_order"
     assert result.stop_reason == "completed"
 
@@ -708,7 +765,10 @@ def test_step_records_the_visible_tool_set_from_the_provider() -> None:
                     ToolCall(
                         id="find_1",
                         name=FIND_TOOLS_NAME,
-                        arguments={"need": "look up an order"},
+                        arguments={
+                            "need": "look up an order",
+                            "load": ["lookup_order"],
+                        },
                     )
                 ]
             ),
@@ -737,7 +797,10 @@ def test_discovery_resets_between_runs() -> None:
                     ToolCall(
                         id="find_1",
                         name=FIND_TOOLS_NAME,
-                        arguments={"need": "look up an order"},
+                        arguments={
+                            "need": "look up an order",
+                            "load": ["lookup_order"],
+                        },
                     )
                 ]
             ),
@@ -756,7 +819,10 @@ def test_discovery_resets_between_runs() -> None:
                     ToolCall(
                         id="find_2",
                         name=FIND_TOOLS_NAME,
-                        arguments={"need": "look up an order"},
+                        arguments={
+                            "need": "look up an order",
+                            "load": ["lookup_order"],
+                        },
                     )
                 ]
             ),
@@ -848,7 +914,7 @@ def test_discovery_flow_still_transitions_state_after_approval() -> None:
     assert any(entry.decision == "approved" for entry in approval.audit)
 
 
-def test_search_unlocks_at_most_the_match_limit() -> None:
+def test_ambiguous_search_previews_without_loading() -> None:
     registry = ToolRegistry()
     for index in range(10):
         registry.add(
@@ -860,9 +926,52 @@ def test_search_unlocks_at_most_the_match_limit() -> None:
         )
     gate, find = discovery_gate(registry)
 
-    find.call("manage a purchase order")
+    result = find.call("manage a purchase order")
 
-    assert len(gate.visible_names()) == MATCH_LIMIT + 1
+    assert "preview only" in result
+    assert "Nothing was loaded" in result
+    assert result.count("- `order_tool_") == PREVIEW_LIMIT
+    assert gate.visible_names() == [FIND_TOOLS_NAME]
+
+
+def test_explicit_load_is_capped_per_call() -> None:
+    registry = ToolRegistry()
+    for index in range(10):
+        registry.add(
+            Tool(
+                lambda: "",
+                f"order_tool_{index:02d}",
+                "Manage a purchase order.",
+            )
+        )
+    gate, find = discovery_gate(registry)
+
+    result = find.call(
+        load=[f"order_tool_{index:02d}" for index in range(5)]
+    )
+
+    assert len(gate.visible_names()) == LOAD_LIMIT + 1
+    assert f"Not loaded (max {LOAD_LIMIT} per call)" in result
+
+
+def test_visible_tool_budget_caps_the_run() -> None:
+    registry = ToolRegistry()
+    for index in range(20):
+        registry.add(
+            Tool(lambda: "", f"tool_{index:02d}", f"Tool number {index}.")
+        )
+    gate, find = discovery_gate(registry)
+
+    result = ""
+    for batch in range(5):
+        names = [
+            f"tool_{index:02d}"
+            for index in range(batch * LOAD_LIMIT, (batch + 1) * LOAD_LIMIT)
+        ]
+        result = find.call(load=names)
+
+    assert len(gate.visible_names()) == MAX_VISIBLE_TOOLS
+    assert "Visible-tool budget reached" in result
 
 
 def test_quality_report_does_not_block_business_actions_after_recall() -> None:

@@ -49,6 +49,7 @@ class Tool:
         needs_approval: bool = False,
         isolated: bool = False,
         requires: tuple[str, ...] = (),
+        aliases: tuple[str, ...] = (),
     ) -> None:
         self.fn = fn
         self.name = name
@@ -56,6 +57,9 @@ class Tool:
         self.needs_approval = needs_approval
         self.isolated = isolated
         self.requires = tuple(str(item) for item in requires)
+        #: Extra trigger words for lexical tool search (for example
+        #: ``("meeting", "appointment")`` for a calendar tool).
+        self.aliases = tuple(str(item) for item in aliases)
 
     @property
     def schema(self) -> dict[str, Any]:
@@ -372,10 +376,21 @@ registry = ToolRegistry()
 
 
 def tool(
-    name: str, description: str, needs_approval: bool = False
+    name: str,
+    description: str,
+    needs_approval: bool = False,
+    aliases: tuple[str, ...] = (),
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     def deco(fn: Callable[..., Any]) -> Callable[..., Any]:
-        registry.add(Tool(fn, name, description, needs_approval))
+        registry.add(
+            Tool(
+                fn,
+                name,
+                description,
+                needs_approval,
+                aliases=aliases,
+            )
+        )
         return fn
 
     return deco
@@ -384,21 +399,35 @@ def tool(
 # --- example tools -----------------------------------------------------------
 
 
-@tool("lookup_order", "Return a purchase order's status and details.")
+@tool(
+    "lookup_order",
+    "Return a purchase order's status and details.",
+    aliases=("status", "check order", "order details"),
+)
 def lookup_order(
     order_id: Annotated[str, "Purchase order id, e.g. PO-1234"],
 ) -> str:
     return f"PO {order_id}: status=open, supplier=ACME, ship_date=2026-09-01"
 
 
-@tool("expedite_order", "Expedite a purchase order.", needs_approval=True)
+@tool(
+    "expedite_order",
+    "Expedite a purchase order.",
+    needs_approval=True,
+    aliases=("rush", "speed up", "late order"),
+)
 def expedite_order(
     order_id: Annotated[str, "Purchase order id, e.g. PO-1234"],
 ) -> str:
     return f"PO {order_id}: marked expedited + rescheduled ship_date to 2026-08-25"
 
 
-@tool("cancel_order", "Cancel a purchase order.", needs_approval=True)
+@tool(
+    "cancel_order",
+    "Cancel a purchase order.",
+    needs_approval=True,
+    aliases=("void", "remove order"),
+)
 def cancel_order(
     order_id: Annotated[str, "Purchase order id, e.g. PO-1234"],
 ) -> str:
