@@ -23,6 +23,7 @@ from ..settings import (
     secrets_path,
     update_secrets,
 )
+from . import daemon as gateway_daemon
 from . import doctor as doctor_module
 from . import prompts, ui
 from . import update as update_module
@@ -85,16 +86,36 @@ def onboard(
 def gateway(
     action: str = typer.Argument(
         "",
-        help="Optional: `setup` to configure first, or `start`.",
+        help="run, start, stop, status, restart, logs, or setup.",
+    ),
+    lines: int = typer.Option(
+        50,
+        "--lines",
+        "-n",
+        help="Log lines shown by `sora gateway logs`.",
     ),
 ) -> None:
-    """Start the chat gateway, or run gateway-focused setup."""
+    """Run the gateway, manage it in the background, or configure it."""
     if action == "setup":
         if not run_wizard():
             raise typer.Exit(0)
         return
-    if action not in {"", "start", "run"}:
-        raise typer.BadParameter("use `sora gateway` or `sora gateway setup`")
+    if action in {"start", "stop", "status", "restart", "logs"}:
+        if action == "start":
+            code = gateway_daemon.start_gateway()
+        elif action == "stop":
+            code = gateway_daemon.stop_gateway()
+        elif action == "status":
+            code = gateway_daemon.status_gateway()
+        elif action == "restart":
+            code = gateway_daemon.restart_gateway()
+        else:
+            code = gateway_daemon.show_logs(lines)
+        raise typer.Exit(code)
+    if action not in {"", "run"}:
+        raise typer.BadParameter(
+            "use `sora gateway run|start|stop|status|restart|logs|setup`"
+        )
     try:
         load_settings()
     except SettingsError as exc:

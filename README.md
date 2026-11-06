@@ -216,7 +216,7 @@ After setup:
 ```bash
 sora chat                              # local terminal chat
 sora run "expedite PO-1234"            # one task, then exit
-sora gateway                           # Telegram gateway
+sora gateway start                     # Telegram gateway in the background
 sora doctor                            # configuration and safety check
 ```
 
@@ -1076,6 +1076,38 @@ export SORA_TELEGRAM_ALLOW_FROM=98765432   # your numeric user id
 sora-gateway --provider mock --tools demo --memory --identity
 ```
 
+### Running the gateway in the background
+
+`sora gateway start` launches the gateway in a new session, writes
+`~/.sora_agent/gateway.pid`, and redirects output to
+`~/.sora_agent/gateway.log`. Because it is detached from the terminal, it
+keeps running after the SSH connection closes:
+
+```bash
+sora gateway start
+sora gateway status
+sora gateway logs -n 100
+sora gateway restart
+sora gateway stop
+```
+
+| Command | Behavior |
+| --- | --- |
+| `sora gateway start` | Start detached in the background; idempotent if already running. |
+| `sora gateway run` / `sora gateway` | Stay in the foreground (the previous behavior). |
+| `sora gateway stop` | Send `SIGTERM`, wait up to 15 s, then force-stop if needed. |
+| `sora gateway status` | Exit `0` when running, `1` when stopped. |
+| `sora gateway restart` | Stop (if running) and start again. |
+| `sora gateway logs` | Print the last 50 lines; use `-n` for another count. |
+
+Save the Telegram token with `sora set-key telegram` (or `sora setup`) so the
+background process can find it on future starts. `SORA_GATEWAY_PID` and
+`SORA_GATEWAY_LOG` override the PID and log paths.
+
+Background mode survives SSH disconnects but not a reboot. For boot
+persistence, run `sora-gateway` under systemd, launchd, or another service
+manager; it stays in the foreground and handles `SIGTERM` gracefully.
+
 ### Adding a channel
 
 Discovery imports only a tiny manifest per package, so a channel whose platform
@@ -1115,7 +1147,7 @@ sora setup [--mode recommended|advanced]
 sora onboard [--mode recommended|advanced]     # alias for setup
 sora chat
 sora run TASK
-sora gateway [start|run]
+sora gateway [start|run|stop|status|restart|logs]
 sora gateway setup
 sora doctor
 sora update [--check] [--version REF] [--extras EXTRAS] [--repo OWNER/REPO]
@@ -1134,7 +1166,7 @@ exists, it offers the setup wizard first.
 | `setup` | Run Recommended or Advanced Setup and write `config.json` + `secrets.env`. |
 | `chat` | Local REPL with `/reset`, `/status`, `/eval`, `/help`, and `/exit`. |
 | `run` | Execute one task with the configured provider, tools, and policies, then exit. |
-| `gateway` | Start the chat gateway using the saved configuration. `gateway setup` runs the wizard first. |
+| `gateway` | Run in the foreground, or use `start`, `stop`, `status`, `restart`, and `logs` to manage a detached process. `gateway setup` runs the wizard first. |
 | `doctor` | Read-only check of paths, credentials, features, and safety warnings. |
 | `update` | Upgrade an installer-managed environment or git checkout in place. `--check` only reports availability. |
 | `set-key` | Store an API key or Telegram token in `secrets.env` without re-running setup. |
@@ -1227,8 +1259,9 @@ deployments behave exactly as before. Flags and `SORA_*` variables still win.
 | `--token` / `--allow` | env | Override Telegram token / allow list. |
 | `--list` | — | Print discovered channels and exit. |
 
-`sora gateway` is a shortcut for the same process when you want the saved
-configuration without retyping flags.
+`sora gateway` and `sora gateway run` are shortcuts for the same foreground
+process when you want the saved configuration without retyping flags. Use
+`sora gateway start` for the detached background process.
 
 ### `sora-memory`
 
