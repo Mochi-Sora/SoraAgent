@@ -4,8 +4,8 @@
 
 .DESCRIPTION
     Installs SoraAgent into an isolated virtual environment and puts the
-    sora, sora-gateway, and sora-memory commands on your PATH. Re-run the same
-    command to upgrade. Requires Python 3.9 or newer.
+    sora, sora-gateway, and sora-memory commands on your PATH. Run
+    `sora update` to upgrade. Requires Python 3.9 or newer.
 
 .EXAMPLE
     irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.ps1 | iex
@@ -391,6 +391,11 @@ Examples:
     Write-Host "Install root: $InstallDir"
     Write-Host "Commands:     $BinDir"
     Write-Host ""
-    Write-Host "To upgrade later, re-run this installer. To remove SoraAgent:"
+    if ($Extras -and $Extras -ne "none" -and (($Extras -split ",") -contains "cli")) {
+        Write-Host "To upgrade later, run: sora update"
+    } else {
+        Write-Host "To upgrade later, re-run this installer (the CLI extra is not installed)."
+    }
+    Write-Host "To remove SoraAgent:"
     Write-Host "  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/$Repo/main/install.ps1))) -Uninstall"
 } -argList $args

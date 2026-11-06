@@ -4,8 +4,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.sh | bash
 #
 # Installs SoraAgent into an isolated virtual environment and puts the
-# `sora`, `sora-gateway`, and `sora-memory` commands on your PATH. Re-run the
-# same command to upgrade. Requires Python 3.9 or newer.
+# `sora`, `sora-gateway`, and `sora-memory` commands on your PATH. Run
+# `sora update` to upgrade. Requires Python 3.9 or newer.
 set -euo pipefail
 
 REPO="${SORA_REPO:-Mochi-Sora/SoraAgent}"
@@ -442,4 +442,12 @@ case ":$PATH:" in
         ;;
 esac
 
-printf '\nTo upgrade later, re-run this installer. To remove SoraAgent: install.sh --uninstall\n'
+case ",$EXTRAS," in
+    *",cli,"*)
+        printf '\nTo upgrade later, run: sora update\n'
+        ;;
+    *)
+        printf '\nTo upgrade later, re-run this installer (the CLI extra is not installed).\n'
+        ;;
+esac
+printf 'To remove SoraAgent: install.sh --uninstall\n'

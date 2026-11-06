@@ -59,7 +59,7 @@ def test_help_lists_the_primary_commands():
     result = _invoke("--help")
 
     assert result.exit_code == 0
-    for name in ("setup", "chat", "run", "gateway", "doctor", "config"):
+    for name in ("setup", "chat", "run", "gateway", "doctor", "update", "config"):
         assert name in result.stdout
 
 

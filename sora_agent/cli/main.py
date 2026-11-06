@@ -25,6 +25,7 @@ from ..settings import (
 )
 from . import doctor as doctor_module
 from . import prompts, ui
+from . import update as update_module
 from .chat import interactive, run_once
 from .setup import run_wizard
 
@@ -124,6 +125,47 @@ def doctor() -> None:
     """Check configuration, credentials, paths, and safety posture."""
     settings, secrets = _load()
     raise typer.Exit(doctor_module.run_doctor(settings, secrets))
+
+
+@app.command()
+def update(
+    check: bool = typer.Option(
+        False,
+        "--check",
+        "--dry-run",
+        help="Check for an update without installing it.",
+    ),
+    version: str = typer.Option(
+        "latest",
+        "--version",
+        "--ref",
+        "-v",
+        help="Release tag or branch to install (latest, main, v0.2.0).",
+    ),
+    extras: str | None = typer.Option(
+        None,
+        "--extras",
+        "-e",
+        help="Comma-separated extras, or 'none' for the core only.",
+    ),
+    repo: str | None = typer.Option(
+        None,
+        "--repo",
+        help="GitHub repository to update from (owner/name).",
+    ),
+) -> None:
+    """Update SoraAgent to the latest release or main branch."""
+    try:
+        code = update_module.run_update(
+            check=check,
+            version=version,
+            extras=extras,
+            repo=repo,
+        )
+    except update_module.UpdateError as exc:
+        ui.error(str(exc))
+        raise typer.Exit(2) from exc
+    raise typer.Exit(code)
 
 
 @app.command("set-key")

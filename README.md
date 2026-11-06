@@ -92,8 +92,10 @@ release (falling back to `main` when no release exists). It installs SoraAgent
 into an isolated virtual environment, adds the command directory to your PATH,
 and verifies all console scripts. On Debian/Ubuntu systems without
 `python3-venv`, it creates the environment without pip and bootstraps pip
-inside it, so no `sudo` is required. Re-running the same command upgrades in
-place; user data under `~/.sora_agent` is never touched.
+inside it, so no `sudo` is required. After installation, run `sora update` to
+upgrade in place; user data under `~/.sora_agent` is never touched. Re-running
+the installer also works and is still required if the CLI extra was not
+installed.
 
 Common options:
 
@@ -155,6 +157,29 @@ Both install routes create three console scripts:
 
 All three also run as modules: `python -m sora_agent.cli`,
 `python -m sora_agent.channels`, and `python -m sora_agent.memory`.
+
+### Updating an existing install
+
+```bash
+sora update              # latest release, falling back to main
+sora update --check      # only report whether an update is available
+sora update --version main
+sora update --extras none
+```
+
+`sora update` detects how SoraAgent was installed:
+
+- **Installer-managed environment:** downloads the selected GitHub archive and
+  reinstalls it into the current virtual environment. Installed optional extras
+  (`openai`, `memory`, `cli`) are detected automatically.
+- **Editable or source checkout:** pulls the current branch with `--ff-only`,
+  then reinstalls in place. A checkout with uncommitted changes is never
+  modified; commit or stash first. `--version TAG` checks out an explicit tag
+  and leaves the checkout in detached-HEAD state.
+
+`--check` exits with `0` when the install is current, `1` when an update is
+available, and `2` when the check cannot run. User data and configuration under
+`~/.sora_agent` are not touched.
 
 ## Quick start
 
@@ -1093,6 +1118,7 @@ sora run TASK
 sora gateway [start|run]
 sora gateway setup
 sora doctor
+sora update [--check] [--version REF] [--extras EXTRAS] [--repo OWNER/REPO]
 sora set-key [provider|telegram]
 sora config list
 sora config get KEY
@@ -1110,6 +1136,7 @@ exists, it offers the setup wizard first.
 | `run` | Execute one task with the configured provider, tools, and policies, then exit. |
 | `gateway` | Start the chat gateway using the saved configuration. `gateway setup` runs the wizard first. |
 | `doctor` | Read-only check of paths, credentials, features, and safety warnings. |
+| `update` | Upgrade an installer-managed environment or git checkout in place. `--check` only reports availability. |
 | `set-key` | Store an API key or Telegram token in `secrets.env` without re-running setup. |
 | `config list/get` | Inspect the saved configuration. `config get` uses dotted keys such as `provider.model`. |
 | `config set/unset` | Change one value or remove it so the preset default applies again. Values are validated before saving. |
