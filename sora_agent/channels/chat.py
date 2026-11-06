@@ -169,7 +169,7 @@ class ChatHandler:
         approvals: ApprovalBroker | None = None,
         approval_gate: Any = None,
         sessions: SessionStore | None = None,
-        quality: QualityGate | None | bool = None,
+        quality: Any = None,
         emitter: Callable[[OutboundMessage], None] | None = None,
         max_steps: int = 8,
         max_turns: int = 40,
@@ -184,6 +184,7 @@ class ChatHandler:
         calendar_db: Any = None,
         context_window: int | None = None,
         streaming: bool = True,
+        file_understander: Any = None,
     ) -> None:
         self.provider = provider
         self.registry = registry or ToolRegistry()
@@ -205,6 +206,7 @@ class ChatHandler:
             self.quality = quality
         self.emitter = emitter
         self.streaming = bool(streaming)
+        self.file_understander = file_understander
         self.context_window = (
             max(1_000, int(context_window))
             if context_window is not None
@@ -236,6 +238,7 @@ class ChatHandler:
             except Exception as exc:  # noqa: BLE001 - memory is optional
                 log.warning("memory tool registration failed: %s", exc)
         self._history: dict[str, list[Message]] = {}
+        self._attachment_cache: dict[str, str] = {}
         self._active: dict[str, CancelToken] = {}
         self._last_metrics: dict[str, RunMetrics] = {}
         self._last_stop: dict[str, str] = {}
@@ -267,9 +270,13 @@ class ChatHandler:
             if writer is not None and not token.cancelled:
                 writer.delta(chunk, step)
 
+        system_prompt = self._prompt()
+        attachment_context = self._attachment_context(inbound)
+        if attachment_context:
+            system_prompt = f"{system_prompt}\n\n{attachment_context}"
         messages = [
-            Message("system", self._prompt()),
-            *self._fit_context(history, inbound.content),
+            Message("system", system_prompt),
+            *self._fit_context(history, inbound.content, system_prompt),
             Message("user", inbound.content),
         ]
         state = ChatState(session_id=key)
@@ -431,6 +438,7 @@ class ChatHandler:
         """Forget one conversation, on disk as well as in memory."""
         with self._lock:
             self._history.pop(session_key, None)
+            self._attachment_cache.pop(session_key, None)
             if self.sessions is not None:
                 self.sessions.clear(session_key)
 
@@ -452,7 +460,10 @@ class ChatHandler:
         return prompt
 
     def _fit_context(
-        self, history: list[Message], inbound_content: str
+        self,
+        history: list[Message],
+        inbound_content: str,
+        system_prompt: str | None = None,
     ) -> list[Message]:
         """Trim persisted history to the configured context window."""
         limit = self.max_turns * 2
@@ -460,10 +471,47 @@ class ChatHandler:
             history = history[-limit:]
         if self.context_window is None:
             return list(history)
+        fixed = self._prompt() if system_prompt is None else system_prompt
         return trim_messages(
             history,
             self.context_window,
-            fixed_texts=(self._prompt(), inbound_content),
+            fixed_texts=(fixed, inbound_content),
+        )
+
+    def _attachment_context(self, inbound: InboundMessage) -> str:
+        attachments = getattr(inbound, "attachments", ())
+        key = inbound.session_key
+        if not attachments:
+            with self._lock:
+                return self._attachment_cache.get(key, "")
+        if self.file_understander is None:
+            return (
+                "## Attached files (dynamic)\n\n"
+                "File understanding is disabled in this deployment, so the "
+                "attachments are not available."
+            )
+        try:
+            context = str(self.file_understander.understand(attachments))
+        except Exception as exc:  # noqa: BLE001 - never fail a chat turn
+            log.warning("attachment understanding failed: %s", exc)
+            context = (
+                "## Attached files (dynamic)\n\n"
+                f"The attachments could not be read: {exc}"
+            )
+        context = self._fit_attachment_context(context)
+        with self._lock:
+            self._attachment_cache[key] = context
+        return context
+
+    def _fit_attachment_context(self, context: str) -> str:
+        if self.context_window is None or not context:
+            return context
+        limit = max(1_000, int(self.context_window * 0.5 * 4))
+        if len(context) <= limit:
+            return context
+        return (
+            context[:limit]
+            + "\n\n[... attachment context truncated to fit the context window ...]"
         )
 
     @staticmethod

@@ -9,6 +9,7 @@ from sora_agent.providers import MockProvider
 from sora_agent.runtime_setup import (
     approval_mode,
     build_calendar,
+    build_file_understander,
     build_identity,
     build_memory,
     build_provider,
@@ -34,6 +35,74 @@ from sora_agent.settings import (
 # ---------------------------------------------------------------------------
 # Loading
 # ---------------------------------------------------------------------------
+
+
+def test_build_file_understander_respects_disabled_and_env(monkeypatch):
+    monkeypatch.delenv("SORA_FILES", raising=False)
+    settings = advanced_settings()
+
+    assert build_file_understander(settings) is None
+
+    monkeypatch.setenv("SORA_FILES", "1")
+    assert build_file_understander(settings) is not None
+
+
+def test_build_file_understander_auto_selects_a_vision_model():
+    understander = build_file_understander(
+        recommended_settings(), {"OPENAI_API_KEY": "sk-test"}
+    )
+
+    assert understander is not None
+    assert understander.vision is not None
+    assert understander.vision.config.model == "gpt-5.4-mini"
+
+
+def test_build_file_understander_uses_an_explicit_vision_model(monkeypatch):
+    monkeypatch.setenv("SORA_VISION_MODEL", "vision-x")
+
+    understander = build_file_understander(recommended_settings())
+
+    assert understander is not None
+    assert understander.vision is not None
+    assert understander.vision.config.model == "vision-x"
+
+
+def test_build_file_understander_reads_limits_from_environment(monkeypatch):
+    monkeypatch.setenv("SORA_FILES_MAX_BYTES", "1234")
+    monkeypatch.setenv("SORA_FILES_MAX_CHARS", "600")
+    monkeypatch.setenv("SORA_FILES_TOTAL_MAX_CHARS", "1200")
+
+    understander = build_file_understander(recommended_settings())
+
+    assert understander is not None
+    assert understander.max_file_bytes == 1234
+    assert understander.max_chars == 600
+    assert understander.total_max_chars == 1200
+
+
+def test_build_file_understander_skips_auto_vision_for_a_text_model():
+    settings = recommended_settings()
+    settings.provider.kind = "deepseek"
+    settings.provider.model = "deepseek-flash"
+
+    understander = build_file_understander(settings)
+
+    assert understander is not None
+    assert understander.vision is None
+
+
+def test_build_file_understander_honours_provider_overrides():
+    settings = recommended_settings()
+    settings.provider.kind = "mock"
+    settings.provider.model = "mock"
+
+    understander = build_file_understander(
+        settings, kind="openai", model="gpt-5.4-mini"
+    )
+
+    assert understander is not None
+    assert understander.vision is not None
+    assert understander.vision.config.base_url == "https://api.openai.com/v1"
 
 
 def test_load_runtime_without_a_config_uses_legacy_defaults(tmp_path):

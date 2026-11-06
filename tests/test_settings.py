@@ -17,6 +17,7 @@ from sora_agent.persona import apply_persona, display_name, persona_prompt
 from sora_agent.settings import (
     AgentSettings,
     ChannelSettings,
+    FileSettings,
     MemorySettings,
     PersonalitySettings,
     ProviderSettings,
@@ -60,6 +61,7 @@ def test_recommended_preset_turns_everything_on():
     assert features.memory.dream is True
     assert features.memory.backup is True
     assert features.memory.wake is True
+    assert features.files.enabled is True
     assert features.identity is True
     assert features.clock is True
     assert features.calendar is True
@@ -85,6 +87,7 @@ def test_advanced_preset_turns_optional_features_off():
 
     features = settings.features
     assert features.memory.enabled is False
+    assert features.files.enabled is False
     assert features.identity is False
     assert features.clock is False
     assert features.calendar is False
@@ -116,6 +119,19 @@ def test_legacy_preset_matches_the_environment_only_gateway():
 # ---------------------------------------------------------------------------
 # Parsing and round-tripping
 # ---------------------------------------------------------------------------
+
+
+def test_file_settings_validate_limits():
+    with pytest.raises(SettingsError):
+        FileSettings(max_file_bytes=0)
+    with pytest.raises(SettingsError):
+        FileSettings(max_chars=100)
+    with pytest.raises(SettingsError):
+        FileSettings(max_chars=1000, total_max_chars=500)
+
+    settings = FileSettings(max_chars=1000, total_max_chars=2000)
+    assert settings.max_chars == 1000
+    assert settings.total_max_chars == 2000
 
 
 def test_settings_round_trip_preserves_values():

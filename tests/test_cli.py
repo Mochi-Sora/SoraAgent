@@ -15,6 +15,7 @@ from sora_agent.channels.types import (
 from sora_agent.cli.chat import ConsoleEmitter
 from sora_agent.cli.main import app
 from sora_agent.cli.setup import (
+    _configure_files,
     _mask,
     _validate_allow,
     _validate_float,
@@ -66,6 +67,41 @@ def test_help_lists_the_primary_commands():
 # ---------------------------------------------------------------------------
 # config get/set/unset
 # ---------------------------------------------------------------------------
+
+
+def test_configure_files_reads_limits(monkeypatch):
+    settings = recommended_settings()
+    answers = iter([5, 1000, 2000])
+    monkeypatch.setattr(
+        "sora_agent.cli.setup.prompts.confirm", lambda *args, **kwargs: True
+    )
+    monkeypatch.setattr(
+        "sora_agent.cli.setup.prompts.text",
+        lambda *args, **kwargs: "vision-x",
+    )
+    monkeypatch.setattr(
+        "sora_agent.cli.setup._ask_int", lambda *args, **kwargs: next(answers)
+    )
+
+    _configure_files(settings)
+
+    files = settings.features.files
+    assert files.enabled is True
+    assert files.max_file_bytes == 5 * 1024 * 1024
+    assert files.max_chars == 1000
+    assert files.total_max_chars == 2000
+    assert files.vision_model == "vision-x"
+
+
+def test_configure_files_can_disable_understanding(monkeypatch):
+    settings = recommended_settings()
+    monkeypatch.setattr(
+        "sora_agent.cli.setup.prompts.confirm", lambda *args, **kwargs: False
+    )
+
+    _configure_files(settings)
+
+    assert settings.features.files.enabled is False
 
 
 def test_config_get_set_and_unset_round_trip():

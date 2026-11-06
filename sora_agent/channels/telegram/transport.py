@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Protocol
+
+from ...net import urlopen
 
 
 class TelegramError(RuntimeError):
@@ -47,6 +50,10 @@ class TelegramTransport(Protocol):
 
     def clear_reply_markup(self, chat_id: str, message_id: str) -> None:
         """Remove the inline keyboard from a message."""
+
+    def download_file(self, file_id: str, max_bytes: int) -> bytes:
+        """Download one attachment, raising when it exceeds ``max_bytes``."""
+        ...
 
 
 class UrllibTelegramTransport:
@@ -150,6 +157,47 @@ class UrllibTelegramTransport:
             },
         )
 
+    def download_file(self, file_id: str, max_bytes: int) -> bytes:
+        result = self._call("getFile", {"file_id": file_id})
+        if not isinstance(result, dict) or not result.get("file_path"):
+            raise TelegramError("telegram getFile returned no file path")
+        reported = _as_int(result.get("file_size"))
+        if reported is not None and reported > max_bytes:
+            raise TelegramError(
+                f"file is {reported} bytes, above the {max_bytes} byte limit"
+            )
+        path = urllib.parse.quote(str(result["file_path"]), safe="/")
+        url = f"{self._api_base}/file/bot{self._token}/{path}"
+        request = urllib.request.Request(url)
+        chunks: list[bytes] = []
+        total = 0
+        try:
+            with urlopen(request, self._request_timeout) as response:
+                while True:
+                    chunk = response.read(64 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise TelegramError(
+                            f"file is above the {max_bytes} byte limit"
+                        )
+                    chunks.append(chunk)
+        except TelegramError:
+            raise
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+            raise TelegramError(
+                f"telegram file download failed with HTTP {exc.code}: {detail}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise TelegramError(
+                f"telegram file download failed: {exc.reason}"
+            ) from exc
+        except TimeoutError as exc:
+            raise TelegramError("telegram file download timed out") from exc
+        return b"".join(chunks)
+
     def _call(
         self,
         method: str,
@@ -165,9 +213,7 @@ class UrllibTelegramTransport:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(
-                request, timeout=timeout or self._request_timeout
-            ) as response:
+            with urlopen(request, timeout or self._request_timeout) as response:
                 raw = response.read()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:300]
@@ -192,3 +238,10 @@ class UrllibTelegramTransport:
                 f"telegram {method} failed: {description or 'unknown error'}"
             )
         return body.get("result")
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

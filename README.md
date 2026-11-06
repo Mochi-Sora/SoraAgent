@@ -69,6 +69,10 @@ The core imports only the Python standard library; optional integrations
     `compression.zstd` module is used instead.
   - `typer`, `rich`, and `questionary` for the guided `sora` command
     (`pip install 'sora-agent[cli]'`). The core library never imports them.
+  - `pypdf>=4` for PDF attachment text extraction
+    (`pip install 'sora-agent[files]'`). Other attachment formats use the
+    standard library; image description can use an OpenAI-compatible vision
+    model or optional OCR (`pytesseract` + Pillow).
   - Telegram works over `urllib`; no `python-telegram-bot` dependency is needed.
 
 ## Installation
@@ -124,7 +128,7 @@ parameters:
 | Option | Environment variable | Default |
 | --- | --- | --- |
 | release tag or `main` | `SORA_VERSION` | latest release, else `main` |
-| extras (`openai,memory,cli`, ...) or `none` | `SORA_EXTRAS` | `openai,memory,cli` |
+| extras (`openai,memory,cli,files`, ...) or `none` | `SORA_EXTRAS` | `openai,memory,cli,files` |
 | install root | `SORA_INSTALL_DIR` | `~/.local/share/sora-agent` (`%LOCALAPPDATA%\SoraAgent` on Windows) |
 | command directory | `SORA_BIN_DIR` | `~/.local/bin` (`<install root>\bin` on Windows) |
 | Python executable | `SORA_PYTHON` | first Python 3.9+ found |
@@ -144,7 +148,7 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -e .
 
 # Optional extras
-pip install -e ".[openai,memory,cli,dev]"
+pip install -e ".[openai,memory,cli,files,dev]"
 ```
 
 Both install routes create three console scripts:
@@ -165,6 +169,7 @@ sora update              # latest release, falling back to main
 sora update --check      # only report whether an update is available
 sora update --version main
 sora update --extras none
+sora update --extras openai,memory,cli,files   # add PDF support to an old install
 ```
 
 `sora update` detects how SoraAgent was installed:
@@ -197,12 +202,12 @@ The first screen offers exactly two paths:
 | Mode | What it does |
 | --- | --- |
 | **Recommended Setup** | Everything on and tuned for daily use. Asks only for the channel, main model, agent name/icon, temperature, and personality, then shows a review you can edit. |
-| **Advanced Setup (tinker with caution)** | Every optional subsystem starts **off**, including memory, identity, clock, calendar, sessions, tools, streaming, approval prompts, and quality evaluation. Each section can be edited individually and ends with an explicit save confirmation. |
+| **Advanced Setup (tinker with caution)** | Every optional subsystem starts **off**, including memory, file understanding, identity, clock, calendar, sessions, tools, streaming, approval prompts, and quality evaluation. Each section can be edited individually and ends with an explicit save confirmation. |
 
 Recommended Setup writes full long-term memory (including the CortexDB
-sidecar), identity, clock, calendar, sessions, the demo tool pack, streaming,
-approval prompts, quality evaluation, and limits of 12 steps / 80 turns / 60 s
-timeouts / 3 retries.
+sidecar), file understanding, identity, clock, calendar, sessions, the demo
+tool pack, streaming, approval prompts, quality evaluation, and limits of 12
+steps / 80 turns / 60 s timeouts / 3 retries.
 
 Advanced Setup starts with temperature `0.1` and safety features disabled. It
 shows warning panels and requires typing `I understand` before continuing and
@@ -373,6 +378,7 @@ The layers are intentionally separable:
 | Pure loop | `sora_agent/runner.py` | Ask the provider, execute tool calls, feed observations back, stop on answer / budget / policy. Knows nothing about sessions, files, or the CLI. |
 | Providers | `sora_agent/providers.py` | `Message`, `ModelTurn`, `ToolCall`, `MockProvider`, `OpenAIChatProvider`, text-`ACTION:` parsing. |
 | Tools | `sora_agent/tools.py` | `Tool`, `ToolRegistry`, `ToolExecutor`, `ToolResult`, schema generation, the `@tool` decorator. |
+| Attachments | `sora_agent/files.py` | Convert files and images into untrusted markdown for the system prompt. |
 | Discovery | `sora_agent/tool_search.py` | `ToolGate`, `FindToolsTool`, lexical need-based ranking. |
 | Approval | `sora_agent/approval.py` | `ApprovalGate`, `AuditEntry`; chat variant in `channels/approval.py`. |
 | Evaluation | `sora_agent/eval.py` | `Trajectory`, `EvalReport`, `QualityGate`, `structural_grader`, metrics. |
@@ -1108,6 +1114,54 @@ Background mode survives SSH disconnects but not a reboot. For boot
 persistence, run `sora-gateway` under systemd, launchd, or another service
 manager; it stays in the foreground and handles `SIGTERM` gracefully.
 
+### Files and images
+
+The **file understander** (`sora_agent/files.py`) downloads and converts
+Telegram attachments (up to the Bot API limit) into detailed markdown, then
+appends that markdown to the **end of the system prompt**. The latest attachment
+context stays available in memory for follow-up turns and is cleared by
+`/reset`. With a vision model (auto-selected or configured) or OCR, the main
+model does not need to support images or file inputs.
+
+Supported conversions:
+
+| Input | Output |
+| --- | --- |
+| Text, Markdown, source code, JSON, XML, YAML, TOML, HTML | Fenced text or a cleaned text block; JSON is pretty-printed and HTML scripts/styles are dropped. |
+| CSV | Markdown table for small files, fenced CSV otherwise. |
+| PDF | Extracted text with the optional `files` extra (`pypdf`). |
+| DOCX, PPTX, XLSX | Paragraphs, slide text, and sheet tables using the standard library. |
+| ZIP, TAR | Entry listing with sizes; nested archives are not extracted. |
+| Images | A configured vision model, then OCR if available, then dimensions/hash metadata. |
+| Audio, video, voice notes | Duration/dimensions/title metadata; transcription is not enabled. |
+| Other binary | MIME type, size, SHA-256, and a short hex preview. |
+
+Configuration lives under `features.files`:
+
+```bash
+sora config set features.files.enabled true
+sora config set features.files.max_file_bytes 20971520
+sora config set features.files.max_chars 20000
+sora config set features.files.total_max_chars 40000
+sora config set features.files.vision_model gpt-5.4-mini
+```
+
+Environment overrides: `SORA_FILES`, `SORA_FILES_MAX_BYTES`,
+`SORA_FILES_MAX_CHARS`, and `SORA_FILES_TOTAL_MAX_CHARS`. Telegram download
+limits are controlled by `SORA_TELEGRAM_DOWNLOAD_FILES` and
+`SORA_TELEGRAM_MAX_ATTACHMENT_BYTES` (default 20 MB, the Bot API limit).
+
+For images, SoraAgent uses the main model automatically when it is known to
+accept image input (OpenAI GPT-4o/4.1/5/6 and o3/o4-mini; Qwen3.7 Plus,
+Qwen3.8 Max, and Qwen3.8 Omni Flash). Otherwise set `SORA_VISION_MODEL` and,
+when needed, `SORA_VISION_BASE_URL` / `SORA_VISION_API_KEY`. If no vision model
+or OCR engine is available, the image is represented by its metadata. Each
+image description makes one extra model request when a vision model is used.
+
+Attachment text is explicitly marked as untrusted data in the system prompt;
+instructions inside a file must not be followed. DOCX/PPTX/XLSX and archive
+parsing never executes content and never extracts nested archives.
+
 ### Adding a channel
 
 Discovery imports only a tiny manifest per package, so a channel whose platform
@@ -1194,6 +1248,13 @@ The config file is deliberately plain JSON:
   "channel": {"kind": "telegram", "allow_from": ["123456789"], "parse_mode": null},
   "features": {
     "memory": {"enabled": true, "sidecar": true, "auto_download": true},
+    "files": {
+      "enabled": true,
+      "max_file_bytes": 20971520,
+      "max_chars": 20000,
+      "total_max_chars": 40000,
+      "vision_model": null
+    },
     "identity": true,
     "clock": true,
     "calendar": true,
@@ -1301,6 +1362,10 @@ Every saved setting is a default. These variables override it:
 | `SORA_SESSIONS` | `1`/`0` for on-disk conversation history. |
 | `SORA_TOOLS` | `none` or `demo`. |
 | `SORA_PROVIDER_TIMEOUT` | Provider request timeout in seconds. |
+| `SORA_FILES` | `1`/`0` for attachment-to-markdown understanding. |
+| `SORA_FILES_MAX_BYTES` | Maximum attachment size in bytes. |
+| `SORA_FILES_MAX_CHARS` | Maximum markdown characters per attachment. |
+| `SORA_FILES_TOTAL_MAX_CHARS` | Maximum markdown characters for all attachments in one turn. |
 
 Command-line flags override all of these. The same precedence applies to
 `sora` and `sora-gateway`.
@@ -1312,6 +1377,7 @@ Command-line flags override all of these. The same precedence applies to
 | `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL` | `openai` / `azure` provider (and any OpenAI-compatible base URL). |
 | `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL` | `deepseek` provider. |
 | `DASHSCOPE_API_KEY`, `QWEN_MODEL` | `qwen` provider. |
+| `SORA_VISION_MODEL`, `SORA_VISION_BASE_URL`, `SORA_VISION_API_KEY` | Optional image-description model. Falls back to the main provider when it is known to accept images. |
 
 ### Subsystems
 
@@ -1322,6 +1388,7 @@ Command-line flags override all of these. The same precedence applies to
 | `SORA_CALENDAR_DB` | Calendar | `~/.sora_agent/calendar.db` |
 | `SORA_SESSIONS_ROOT` | Chat sessions | `~/.sora_agent/sessions` |
 | `SORA_TELEGRAM_*` | Telegram channel | token required; deny-all allow list |
+| `SORA_TELEGRAM_DOWNLOAD_FILES`, `SORA_TELEGRAM_MAX_ATTACHMENT_BYTES` | Telegram attachments | on, 20 MB |
 
 The defaults in this table describe the library and a legacy environment-only
 gateway. Once a `sora setup` config exists, its feature switches supply the
@@ -1355,6 +1422,8 @@ SoraAgent/
     ├── runtime.py              # per-run assembly (AgentRuntime, RunRequest)
     ├── runner.py               # pure model/tool loop (Runner, RunSpec, Step, events, metrics)
     ├── providers.py            # Message/ModelTurn/ToolCall, MockProvider, OpenAIChatProvider
+    ├── files.py                # attachment-to-markdown conversion (FileUnderstander)
+    ├── net.py                  # shared HTTPS/CA-bundle helper
     ├── tools.py                # Tool, ToolRegistry, ToolExecutor, ToolResult, @tool
     ├── tool_search.py          # ToolGate, FindToolsTool, lexical ranking
     ├── isolation.py            # spawned-process tool isolation with real timeouts
@@ -1387,9 +1456,9 @@ SoraAgent/
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[openai,memory,cli,dev]"
+pip install -e ".[openai,memory,cli,files,dev]"
 
-pytest                          # 469 tests
+pytest                          # 531 tests
 pyright                         # static checks, standard mode (Python 3.9; install separately)
 ```
 

@@ -251,6 +251,7 @@ def _show_recommended_settings(
         "Applied automatically",
         [
             ("Memory", "Full architecture, including CortexDB sidecar"),
+            ("Files", "On — attachments become markdown (20 MB max)"),
             ("Identity", "On"),
             ("Clock", "On"),
             ("Calendar", "On"),
@@ -281,6 +282,7 @@ def _advanced_flow(settings: Settings, secrets: dict[str, str]) -> None:
     _configure_provider(settings, secrets, advanced=True)
     _configure_agent(settings, minimal=False)
     _configure_memory(settings)
+    _configure_files(settings)
     _configure_identity(settings)
     _configure_clock_calendar(settings)
     _configure_sessions(settings)
@@ -302,7 +304,7 @@ def _advanced_warning() -> None:
             "This path turns off every optional subsystem by default:",
             "  • memory (including the CortexDB sidecar)",
             "  • identity (USER.md / SOUL.md)",
-            "  • clock, calendar, and session persistence",
+            "  • file understanding, clock, calendar, and session persistence",
             "  • tools, streaming, approval prompts, and quality evaluation",
             "",
             "Consequential tools can execute without confirmation.",
@@ -355,6 +357,7 @@ def _advanced_review(settings: Settings, secrets: dict[str, str]) -> None:
                 ("Provider and credentials", "provider"),
                 ("Agent name, icon, personality, temperature", "agent"),
                 ("Memory", "memory"),
+                ("Files and images", "files"),
                 ("Identity", "identity"),
                 ("Clock and calendar", "clock"),
                 ("Sessions", "sessions"),
@@ -377,6 +380,7 @@ def _advanced_review(settings: Settings, secrets: dict[str, str]) -> None:
             ),
             "agent": lambda: _configure_agent(settings, minimal=False),
             "memory": lambda: _configure_memory(settings),
+            "files": lambda: _configure_files(settings),
             "identity": lambda: _configure_identity(settings),
             "clock": lambda: _configure_clock_calendar(settings),
             "sessions": lambda: _configure_sessions(settings),
@@ -396,6 +400,7 @@ def _advanced_final_confirmation(settings: Settings) -> None:
             f"Approval: {'OFF' if settings.features.approval == 'off' else 'ASK'}",
             f"Quality:  {'OFF' if not settings.features.quality else 'ON'}",
             f"Memory:   {'ON' if settings.features.memory.enabled else 'OFF'}",
+            f"Files:    {'ON' if settings.features.files.enabled else 'OFF'}",
             f"Identity: {'ON' if settings.features.identity else 'OFF'}",
             "",
             "This is the configuration that will be written to disk.",
@@ -859,6 +864,43 @@ def _configure_memory(settings: Settings) -> None:
         )
 
 
+def _configure_files(settings: Settings) -> None:
+    files = settings.features.files
+    ui.section(
+        "Files and images",
+        "Download attachments and turn them into markdown appended to the "
+        "system prompt. This works even when the main model cannot see images.",
+    )
+    files.enabled = prompts.confirm(
+        "Understand incoming files and images?", default=files.enabled
+    )
+    if not files.enabled:
+        ui.info(
+            "Attachments are ignored and the model only receives a note that "
+            "they were sent."
+        )
+        return
+    max_mb = _ask_int(
+        "Maximum attachment size (MB)",
+        max(1, files.max_file_bytes // (1024 * 1024)),
+        1,
+    )
+    files.max_file_bytes = max_mb * 1024 * 1024
+    files.max_chars = _ask_int(
+        "Maximum characters per attachment", files.max_chars, 500
+    )
+    files.total_max_chars = _ask_int(
+        "Maximum characters for all attachments",
+        files.total_max_chars,
+        files.max_chars,
+    )
+    model = prompts.text(
+        "Vision model (blank = auto-select or use OCR/metadata)",
+        files.vision_model or "",
+    )
+    files.vision_model = model.strip() or None
+
+
 def _configure_identity(settings: Settings) -> None:
     ui.section(
         "Identity",
@@ -1089,6 +1131,23 @@ def _show_advanced_settings(
                 _APPROVAL_LABELS.get(settings.features.approval, settings.features.approval),
             ),
             ("Quality gate", "On" if settings.features.quality else "Off"),
+        ],
+    )
+    file_settings = settings.features.files
+    ui.kv_table(
+        "Files and images",
+        [
+            ("Enabled", "On" if file_settings.enabled else "Off"),
+            (
+                "Max size",
+                f"{max(1, file_settings.max_file_bytes // (1024 * 1024))} MB",
+            ),
+            ("Per-file chars", str(file_settings.max_chars)),
+            ("Total chars", str(file_settings.total_max_chars)),
+            (
+                "Vision model",
+                file_settings.vision_model or "auto / OCR fallback",
+            ),
         ],
     )
     ui.kv_table(

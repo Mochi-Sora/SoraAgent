@@ -22,12 +22,14 @@ Issues = "https://github.com/Mochi-Sora/SoraAgent/issues"
 openai = ["openai>=1.0"]
 memory = ["zstandard>=0.22; python_version < '3.14'"]
 cli = ["typer>=0.12", "rich>=13", "questionary>=2"]
+files = ["pypdf>=4"]
 dev = [
   "pytest>=7",
   "zstandard>=0.22; python_version < '3.14'",
   "typer>=0.12",
   "rich>=13",
   "questionary>=2",
+  "pypdf>=4",
 ]
 
 [project.scripts]

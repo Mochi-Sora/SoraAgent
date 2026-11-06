@@ -22,7 +22,7 @@
     $ErrorActionPreference = "Stop"
     $Repo = if ($env:SORA_REPO) { $env:SORA_REPO } else { "Mochi-Sora/SoraAgent" }
     $Package = "sora-agent"
-    $DefaultExtras = "openai,memory,cli"
+    $DefaultExtras = "openai,memory,cli,files"
     $sourceState = @{ Temp = $null }
 
     # Arguments are parsed manually because `param()` is not valid when a
@@ -119,7 +119,7 @@ Usage:
 
 Options:
   -Version VERSION   Release tag to install, or "main" (default: latest)
-  -Extras EXTRAS     Comma-separated extras, e.g. "openai,memory,cli",
+  -Extras EXTRAS     Comma-separated extras, e.g. "openai,memory,cli,files",
                      or "none" for the dependency-free core
                      (default: $DefaultExtras)
   -Source PATH       Install from a local checkout instead of GitHub

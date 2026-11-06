@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 from dataclasses import dataclass, field
 from typing import Any
 
+from ...files import Attachment
 from ..approval import APPROVAL_CALLBACK_KIND, APPROVAL_KIND
 from ..base import BaseChannel
 from ..bus import MessageBus
@@ -30,6 +32,7 @@ class ParsedUpdate:
     chat_id: str
     content: str
     media: list[str] = field(default_factory=list)
+    attachments: list[Attachment] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     session_key: str | None = None
     callback_query_id: str | None = None
@@ -162,11 +165,19 @@ class TelegramChannel(BaseChannel):
         parsed = parse_update(update)
         if parsed is None:
             return
+        if parsed.attachments and not self.is_allowed(parsed.sender_id):
+            self.log.debug(
+                "ignored attachments from unauthorized sender %s",
+                parsed.sender_id,
+            )
+            return
+        attachments = await self._download_attachments(parsed.attachments)
         accepted = await self._handle_message(
             sender_id=parsed.sender_id,
             chat_id=parsed.chat_id,
             content=parsed.content,
             media=parsed.media,
+            attachments=attachments,
             metadata=parsed.metadata,
             session_key=parsed.session_key,
         )
@@ -174,6 +185,38 @@ class TelegramChannel(BaseChannel):
             await self._acknowledge_callback(parsed)
         if accepted:
             self.log.debug("queued telegram message from %s", parsed.sender_id)
+
+    async def _download_attachments(
+        self, attachments: list[Attachment]
+    ) -> list[Attachment]:
+        if not attachments:
+            return attachments
+        limit = self.config.max_attachment_bytes
+        if not self.config.download_attachments:
+            for attachment in attachments:
+                attachment.error = "attachment downloads are disabled"
+            return attachments
+        for attachment in attachments:
+            if not attachment.file_id:
+                continue
+            if attachment.size and attachment.size > limit:
+                attachment.error = (
+                    f"file is {attachment.size} bytes, above the {limit} "
+                    "byte Telegram limit"
+                )
+                continue
+            try:
+                data = await asyncio.to_thread(
+                    self.transport.download_file,
+                    attachment.file_id,
+                    limit,
+                )
+            except Exception as exc:  # noqa: BLE001 - keep the turn alive
+                attachment.error = f"download failed: {exc}"
+                continue
+            attachment.data = data
+            attachment.size = len(data)
+        return attachments
 
     async def _acknowledge_callback(self, parsed: ParsedUpdate) -> None:
         """Stop the button spinner and drop the keyboard.  Best effort."""
@@ -223,7 +266,14 @@ def parse_update(update: dict[str, Any]) -> ParsedUpdate | None:
         sender_id = chat_id
 
     content = message.get("text") or message.get("caption") or ""
-    media = _media_references(message)
+    attachments = _attachments(message)
+    media = [
+        f"file_id:{attachment.file_id}"
+        for attachment in attachments
+        if attachment.file_id
+    ]
+    if not content and attachments:
+        content = "The user sent attachments without any text."
     if not content and not media:
         return None
 
@@ -242,6 +292,7 @@ def parse_update(update: dict[str, Any]) -> ParsedUpdate | None:
         chat_id=chat_id,
         content=str(content),
         media=media,
+        attachments=attachments,
         metadata=metadata,
         session_key=session_key,
     )
@@ -357,23 +408,117 @@ def _break_point(window: str, limit: int) -> int:
     return limit
 
 
-def _media_references(message: dict[str, Any]) -> list[str]:
-    """Record file ids for attachments without downloading them."""
-    refs: list[str] = []
+def _attachments(message: dict[str, Any]) -> list[Attachment]:
+    """Describe every attachment in a Telegram message."""
+    attachments: list[Attachment] = []
     photos = message.get("photo")
     if isinstance(photos, list):
         candidates = [item for item in photos if isinstance(item, dict)]
         if candidates:
             largest = max(
-                candidates, key=lambda item: item.get("file_size") or 0
+                candidates, key=lambda item: _int_value(item.get("file_size"))
             )
             if largest.get("file_id"):
-                refs.append(f"file_id:{largest['file_id']}")
-    for key in ("document", "voice", "audio", "video", "video_note"):
+                attachments.append(
+                    Attachment(
+                        filename="photo.jpg",
+                        mime_type="image/jpeg",
+                        kind="image",
+                        file_id=str(largest["file_id"]),
+                        size=_int_value(largest.get("file_size")),
+                        metadata={
+                            "width": _int_value(largest.get("width")),
+                            "height": _int_value(largest.get("height")),
+                        },
+                    )
+                )
+
+    document = message.get("document")
+    if isinstance(document, dict) and document.get("file_id"):
+        filename = str(document.get("file_name") or "document.bin")
+        mime = str(document.get("mime_type") or "")
+        attachments.append(
+            Attachment(
+                filename=filename,
+                mime_type=mime,
+                kind=_kind_from_mime(mime, filename),
+                file_id=str(document["file_id"]),
+                size=_int_value(document.get("file_size")),
+            )
+        )
+
+    specs = (
+        ("voice", "voice.ogg", "audio", "audio/ogg"),
+        ("audio", "audio.mp3", "audio", "audio/mpeg"),
+        ("video", "video.mp4", "video", "video/mp4"),
+        ("video_note", "video_note.mp4", "video", "video/mp4"),
+        ("animation", "animation.mp4", "video", "video/mp4"),
+    )
+    for key, fallback_name, kind, fallback_mime in specs:
         item = message.get(key)
-        if isinstance(item, dict) and item.get("file_id"):
-            refs.append(f"file_id:{item['file_id']}")
-    return refs
+        if not isinstance(item, dict) or not item.get("file_id"):
+            continue
+        mime = str(item.get("mime_type") or fallback_mime)
+        filename = str(item.get("file_name") or fallback_name)
+        metadata = {
+            "duration": item.get("duration"),
+            "width": item.get("width"),
+            "height": item.get("height"),
+            "title": item.get("title"),
+            "performer": item.get("performer"),
+        }
+        metadata = {
+            name: value
+            for name, value in metadata.items()
+            if value not in (None, "")
+        }
+        attachments.append(
+            Attachment(
+                filename=filename,
+                mime_type=mime,
+                kind=kind,
+                file_id=str(item["file_id"]),
+                size=_int_value(item.get("file_size")),
+                metadata=metadata,
+            )
+        )
+
+    sticker = message.get("sticker")
+    if isinstance(sticker, dict) and sticker.get("file_id"):
+        video = bool(sticker.get("is_video"))
+        attachments.append(
+            Attachment(
+                filename="sticker.webm" if video else "sticker.webp",
+                mime_type="video/webm" if video else "image/webp",
+                kind="video" if video else "image",
+                file_id=str(sticker["file_id"]),
+                size=_int_value(sticker.get("file_size")),
+                metadata={
+                    "width": sticker.get("width"),
+                    "height": sticker.get("height"),
+                    "emoji": sticker.get("emoji"),
+                },
+            )
+        )
+    return attachments
+
+
+def _kind_from_mime(mime: str, filename: str) -> str:
+    value = (mime or mimetypes.guess_type(filename)[0] or "").lower()
+    if value.startswith("image/"):
+        return "image"
+    if value.startswith("audio/"):
+        return "audio"
+    if value.startswith("video/"):
+        return "video"
+    return "document"
+
+
+def _int_value(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _advance_offset(offset: int, update: dict[str, Any]) -> int:

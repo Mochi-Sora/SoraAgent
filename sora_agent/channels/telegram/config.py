@@ -24,6 +24,8 @@ class TelegramConfig:
     request_timeout: float = 40.0
     parse_mode: str | None = None
     max_message_chars: int = 4096
+    download_attachments: bool = True
+    max_attachment_bytes: int = 20 * 1024 * 1024
 
     def __post_init__(self) -> None:
         if not self.token.strip():
@@ -34,6 +36,8 @@ class TelegramConfig:
             raise ValueError("telegram request_timeout must be > 0")
         if self.max_message_chars <= 0:
             raise ValueError("telegram max_message_chars must be > 0")
+        if self.max_attachment_bytes <= 0:
+            raise ValueError("telegram max_attachment_bytes must be > 0")
         if self.parse_mode is not None and self.parse_mode not in _PARSE_MODES:
             raise ValueError(
                 "telegram parse_mode must be one of HTML, Markdown, MarkdownV2"
@@ -64,6 +68,13 @@ class TelegramConfig:
             max_message_chars=_as_int(
                 source.get("SORA_TELEGRAM_MAX_CHARS"), 4096
             ),
+            download_attachments=_as_bool(
+                source.get("SORA_TELEGRAM_DOWNLOAD_FILES"), True
+            ),
+            max_attachment_bytes=_as_int(
+                source.get("SORA_TELEGRAM_MAX_ATTACHMENT_BYTES"),
+                20 * 1024 * 1024,
+            ),
         )
 
 
@@ -88,3 +99,9 @@ def _as_float(raw: str | None, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+def _as_bool(raw: str | None, default: bool) -> bool:
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}

@@ -10,7 +10,7 @@ set -euo pipefail
 
 REPO="${SORA_REPO:-Mochi-Sora/SoraAgent}"
 PACKAGE="sora-agent"
-DEFAULT_EXTRAS="openai,memory,cli"
+DEFAULT_EXTRAS="openai,memory,cli,files"
 
 VERSION="${SORA_VERSION:-latest}"
 EXTRAS="${SORA_EXTRAS-$DEFAULT_EXTRAS}"
@@ -32,7 +32,7 @@ Usage:
 
 Options:
   -v, --version VERSION   Release tag to install, or "main" (default: latest)
-  -e, --extras EXTRAS     Comma-separated extras, e.g. "openai,memory,cli",
+  -e, --extras EXTRAS     Comma-separated extras, e.g. "openai,memory,cli,files",
                           or "none" for the dependency-free core
                           (default: $DEFAULT_EXTRAS)
       --source PATH       Install from a local checkout instead of GitHub

@@ -290,8 +290,46 @@ class MemorySettings:
 
 
 @dataclass
+class FileSettings:
+    enabled: bool = True
+    max_file_bytes: int = 20 * 1024 * 1024
+    max_chars: int = 20_000
+    total_max_chars: int = 40_000
+    vision_model: str | None = None
+
+    def __post_init__(self) -> None:
+        self.max_file_bytes = _as_int(
+            self.max_file_bytes, 20 * 1024 * 1024, minimum=1
+        )
+        self.max_chars = _as_int(self.max_chars, 20_000, minimum=500)
+        self.total_max_chars = _as_int(
+            self.total_max_chars, 40_000, minimum=self.max_chars
+        )
+        self.vision_model = _as_optional_str(self.vision_model)
+
+    @classmethod
+    def from_dict(cls, data: Any) -> FileSettings:
+        raw = _mapping(data, "features.files")
+        base = cls()
+        return cls(
+            enabled=_as_bool(raw.get("enabled"), base.enabled),
+            max_file_bytes=_as_int(
+                raw.get("max_file_bytes"), base.max_file_bytes, minimum=1
+            ),
+            max_chars=_as_int(
+                raw.get("max_chars"), base.max_chars, minimum=500
+            ),
+            total_max_chars=_as_int(
+                raw.get("total_max_chars"), base.total_max_chars, minimum=500
+            ),
+            vision_model=_as_optional_str(raw.get("vision_model")),
+        )
+
+
+@dataclass
 class FeatureSettings:
     memory: MemorySettings = field(default_factory=MemorySettings)
+    files: FileSettings = field(default_factory=FileSettings)
     identity: bool = True
     clock: bool = True
     calendar: bool = True
@@ -319,6 +357,7 @@ class FeatureSettings:
         base = cls()
         return cls(
             memory=MemorySettings.from_dict(raw.get("memory")),
+            files=FileSettings.from_dict(raw.get("files")),
             identity=_as_bool(raw.get("identity"), base.identity),
             clock=_as_bool(raw.get("clock"), base.clock),
             calendar=_as_bool(raw.get("calendar"), base.calendar),
@@ -605,6 +644,7 @@ def advanced_settings() -> Settings:
         channel=ChannelSettings(),
         features=FeatureSettings(
             memory=MemorySettings(enabled=False),
+            files=FileSettings(enabled=False),
             identity=False,
             clock=False,
             calendar=False,

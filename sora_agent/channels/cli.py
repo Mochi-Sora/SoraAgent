@@ -15,6 +15,7 @@ import os
 import signal
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 from ..approval import AutoApprovalGate
@@ -23,6 +24,7 @@ from ..runner import RunEvent
 from ..runtime_setup import (
     approval_mode,
     build_calendar,
+    build_file_understander,
     build_identity,
     build_memory,
     build_provider,
@@ -113,6 +115,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"sora-gateway: memory disabled: {exc}", file=sys.stderr)
 
     sessions = None if args.no_sessions else build_sessions(settings)
+    try:
+        file_understander = build_file_understander(
+            settings, secrets, kind=args.provider, model=args.model
+        )
+    except Exception as exc:  # noqa: BLE001 - file understanding is optional
+        print(f"sora-gateway: file understanding disabled: {exc}", file=sys.stderr)
+        file_understander = None
+    if file_understander is None:
+        config = replace(config, download_attachments=False)
 
     try:
         calendar = False if args.no_calendar else build_calendar(settings)
@@ -213,6 +224,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 calendar=calendar,
                 calendar_db=args.calendar_db,
+                file_understander=file_understander,
                 context_window=context_window(settings),
                 quality=quality,
                 streaming=streaming,
@@ -250,6 +262,7 @@ async def _serve(
     calendar: Any = None,
     calendar_db: Any = None,
     context_window: int | None = None,
+    file_understander: Any = None,
     quality: bool = True,
     streaming: bool = True,
     system_prompt: str = CHAT_SYSTEM_PROMPT,
@@ -294,6 +307,7 @@ async def _serve(
         calendar=calendar,
         calendar_db=calendar_db,
         context_window=context_window,
+        file_understander=file_understander,
         quality=None if quality else False,
         streaming=streaming,
         system_prompt=system_prompt,

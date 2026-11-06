@@ -30,6 +30,7 @@ from sora_agent.channels.types import (
     STREAM_END_KIND,
     OutboundMessage,
 )
+from sora_agent.files import FileUnderstander
 from sora_agent.providers import ModelTurn, ToolCall
 from sora_agent.tools import Tool, ToolRegistry
 
@@ -62,6 +63,8 @@ class FakeTransport:
         self.answered: list[tuple] = []
         self.cleared: list[tuple] = []
         self.edits: list[tuple] = []
+        self.downloads: list[tuple] = []
+        self.files: dict[str, bytes] = {}
 
     def get_updates(self, offset, timeout):
         self.offsets.append(offset)
@@ -86,6 +89,10 @@ class FakeTransport:
 
     def clear_reply_markup(self, chat_id, message_id):
         self.cleared.append((chat_id, message_id))
+
+    def download_file(self, file_id, max_bytes):
+        self.downloads.append((file_id, max_bytes))
+        return self.files.get(file_id, b"attachment")
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +165,30 @@ def test_parse_update_uses_the_largest_photo():
     assert parsed is not None
     assert parsed.content == "look"
     assert parsed.media == ["file_id:large"]
+    assert parsed.attachments[0].file_id == "large"
+    assert parsed.attachments[0].kind == "image"
+    assert parsed.attachments[0].mime_type == "image/jpeg"
+
+
+def test_parse_update_describes_a_document_attachment():
+    parsed = parse_update(
+        _update(
+            text=None,
+            document={
+                "file_id": "doc1",
+                "file_name": "diagram.png",
+                "mime_type": "image/png",
+                "file_size": 1234,
+            },
+        )
+    )
+
+    assert parsed is not None
+    attachment = parsed.attachments[0]
+    assert attachment.filename == "diagram.png"
+    assert attachment.kind == "image"
+    assert attachment.size == 1234
+    assert parsed.content.startswith("The user sent attachments")
 
 
 def test_parse_update_ignores_edits_and_empty_messages():
@@ -210,6 +241,93 @@ def test_channel_publishes_allowed_updates():
     assert transport.offsets[0] == 0
 
 
+def test_channel_downloads_photo_attachments():
+    async def scenario():
+        bus = MessageBus()
+        transport = FakeTransport(
+            [
+                _update(
+                    text=None,
+                    caption="look",
+                    photo=[{"file_id": "large", "file_size": 7}],
+                )
+            ]
+        )
+        transport.files["large"] = b"jpeg"
+        channel = TelegramChannel(_config(), bus, transport=transport)
+        task = asyncio.create_task(channel.start())
+        try:
+            message = await asyncio.wait_for(bus.next_inbound(), 2)
+        finally:
+            await channel.stop()
+            await asyncio.wait_for(task, 2)
+        return message, transport
+
+    message, transport = asyncio.run(scenario())
+    assert message.content == "look"
+    assert message.media == ["file_id:large"]
+    assert len(message.attachments) == 1
+    attachment = message.attachments[0]
+    assert attachment.data == b"jpeg"
+    assert attachment.filename == "photo.jpg"
+    assert attachment.kind == "image"
+    assert attachment.size == 4
+    assert transport.downloads == [("large", 20 * 1024 * 1024)]
+
+
+def test_channel_marks_oversized_attachments_without_downloading():
+    async def scenario():
+        bus = MessageBus()
+        transport = FakeTransport(
+            [
+                _update(
+                    text=None,
+                    document={
+                        "file_id": "big",
+                        "file_name": "big.pdf",
+                        "mime_type": "application/pdf",
+                        "file_size": 100,
+                    },
+                )
+            ]
+        )
+        channel = TelegramChannel(
+            _config(max_attachment_bytes=10), bus, transport=transport
+        )
+        task = asyncio.create_task(channel.start())
+        try:
+            message = await asyncio.wait_for(bus.next_inbound(), 2)
+        finally:
+            await channel.stop()
+            await asyncio.wait_for(task, 2)
+        return message, transport
+
+    message, transport = asyncio.run(scenario())
+    assert "above the 10 byte Telegram limit" in message.attachments[0].error
+    assert transport.downloads == []
+
+
+def test_channel_records_download_failures():
+    class FailingTransport(FakeTransport):
+        def download_file(self, file_id, max_bytes):
+            raise TelegramError("nope")
+
+    async def scenario():
+        bus = MessageBus()
+        transport = FailingTransport([_update(text="see file", document={"file_id": "f"})])
+        channel = TelegramChannel(_config(), bus, transport=transport)
+        task = asyncio.create_task(channel.start())
+        try:
+            message = await asyncio.wait_for(bus.next_inbound(), 2)
+        finally:
+            await channel.stop()
+            await asyncio.wait_for(task, 2)
+        return message
+
+    message = asyncio.run(scenario())
+    assert "download failed: nope" in message.attachments[0].error
+
+
 def test_channel_drops_unlisted_senders():
     async def scenario():
         bus = MessageBus()
@@ -226,6 +344,35 @@ def test_channel_drops_unlisted_senders():
         return bus.inbound.qsize()
 
     assert asyncio.run(scenario()) == 0
+
+
+def test_channel_does_not_download_from_unlisted_senders():
+    async def scenario():
+        bus = MessageBus()
+        transport = FakeTransport(
+            [
+                _update(
+                    text=None,
+                    caption="look",
+                    sender=9,
+                    photo=[{"file_id": "secret", "file_size": 10}],
+                )
+            ]
+        )
+        channel = TelegramChannel(
+            _config(allow_from=("7",)), bus, transport=transport
+        )
+        task = asyncio.create_task(channel.start())
+        try:
+            await asyncio.sleep(0.15)
+        finally:
+            await channel.stop()
+            await asyncio.wait_for(task, 2)
+        return transport, bus.inbound.qsize()
+
+    transport, queued = asyncio.run(scenario())
+    assert transport.downloads == []
+    assert queued == 0
 
 
 def test_channel_advances_the_offset():
@@ -324,8 +471,9 @@ def test_transport_raises_on_api_error(monkeypatch):
 def test_transport_sends_reply_and_parse_mode(monkeypatch):
     captured = {}
 
-    def fake_urlopen(request, timeout=None):
+    def fake_urlopen(request, timeout=None, **kwargs):
         captured["request"] = request
+        captured["context"] = kwargs.get("context")
         return _FakeResponse({"ok": True, "result": {}})
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
@@ -345,10 +493,25 @@ def test_transport_sends_reply_and_parse_mode(monkeypatch):
     assert body["reply_markup"] == {"inline_keyboard": []}
 
 
+def test_transport_rejects_oversized_files(monkeypatch):
+    transport = UrllibTelegramTransport(TOKEN)
+    monkeypatch.setattr(
+        transport,
+        "_call",
+        lambda method, payload: {
+            "file_path": "documents/big.bin",
+            "file_size": 100,
+        },
+    )
+
+    with pytest.raises(TelegramError, match="above the 10 byte limit"):
+        transport.download_file("f1", 10)
+
+
 def test_transport_answers_callback_queries(monkeypatch):
     captured = {}
 
-    def fake_urlopen(request, timeout=None):
+    def fake_urlopen(request, timeout=None, **kwargs):
         captured["request"] = request
         return _FakeResponse({"ok": True, "result": True})
 
@@ -364,6 +527,7 @@ def test_transport_answers_callback_queries(monkeypatch):
 class _BotApiHandler(BaseHTTPRequestHandler):
     captured: ClassVar[list] = []
     queued: ClassVar[list] = []
+    downloads: ClassVar[dict[str, bytes]] = {}
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
@@ -377,6 +541,15 @@ class _BotApiHandler(BaseHTTPRequestHandler):
         raw = json.dumps(response).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        type(self).captured.append((self.path, None))
+        raw = type(self).downloads.get(self.path, b"file-bytes")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
@@ -426,6 +599,39 @@ def test_transport_round_trips_over_real_http():
         "callback_query",
     ]
     assert _BotApiHandler.captured[1][1]["reply_parameters"] == {"message_id": 2}
+
+
+def test_transport_downloads_files_over_real_http():
+    _BotApiHandler.captured = []
+    _BotApiHandler.downloads = {"/file/bottok/documents/a.txt": b"file bytes"}
+    _BotApiHandler.queued = [
+        {
+            "ok": True,
+            "result": {
+                "file_id": "f1",
+                "file_path": "documents/a.txt",
+                "file_size": 10,
+            },
+        }
+    ]
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _BotApiHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address[:2]
+        transport = UrllibTelegramTransport(
+            "tok", f"http://{host}:{port}", request_timeout=2.0
+        )
+        data = transport.download_file("f1", 100)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert data == b"file bytes"
+    assert [path for path, _ in _BotApiHandler.captured] == [
+        "/bottok/getFile",
+        "/file/bottok/documents/a.txt",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -577,6 +783,59 @@ class CallbackTransport(FakeTransport):
         data = reply_markup["inline_keyboard"][0][0]["callback_data"]
         self.updates.append(_callback_update(data))
         return message_id
+
+
+def test_attachment_reaches_the_system_prompt_through_the_manager():
+    class RecordingProvider:
+        def __init__(self):
+            self.calls = []
+
+        def complete_turn(self, messages, tools):
+            self.calls.append(list(messages))
+            return ModelTurn(text="done")
+
+    provider = RecordingProvider()
+
+    async def scenario():
+        bus = MessageBus()
+        handler = ChatHandler(
+            provider,
+            max_steps=1,
+            clock=False,
+            quality=False,
+            file_understander=FileUnderstander(),
+        )
+        transport = FakeTransport(
+            [
+                _update(
+                    text="read this",
+                    document={
+                        "file_id": "doc",
+                        "file_name": "notes.txt",
+                        "mime_type": "text/plain",
+                        "file_size": 13,
+                    },
+                )
+            ]
+        )
+        transport.files["doc"] = b"file contents"
+        channel = TelegramChannel(_config(), bus, transport=transport)
+        manager = ChannelManager([channel], bus, handler.handle)
+        task = asyncio.create_task(manager.serve())
+        try:
+            await _wait_for(
+                lambda: any(sent[1] == "done" for sent in transport.sent)
+            )
+        finally:
+            manager.request_stop()
+            await asyncio.wait_for(task, 3)
+        return transport
+
+    transport = asyncio.run(scenario())
+    system = provider.calls[-1][0].content
+    assert "## Attached files (dynamic)" in system
+    assert "file contents" in system
+    assert any(sent[1] == "done" for sent in transport.sent)
 
 
 def test_button_press_completes_an_approval():

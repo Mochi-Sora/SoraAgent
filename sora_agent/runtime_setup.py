@@ -260,6 +260,107 @@ def build_memory(
     )
 
 
+def build_file_understander(
+    settings: Settings,
+    secrets: Mapping[str, str] | None = None,
+    *,
+    kind: str | None = None,
+    model: str | None = None,
+) -> Any:
+    """Build the attachment-to-markdown converter, or return ``None``."""
+    from .files import FileUnderstander, VisionConfig, VisionDescriber
+
+    secrets = secrets or {}
+    files = settings.features.files
+    if not files_enabled(settings):
+        return None
+
+    effective_kind = (kind or provider_kind(settings)).lower()
+    effective_model = (model or settings.provider.model).strip()
+    max_bytes = env_int("SORA_FILES_MAX_BYTES")
+    max_chars = env_int("SORA_FILES_MAX_CHARS")
+    total_max_chars = env_int("SORA_FILES_TOTAL_MAX_CHARS")
+
+    vision_model = (
+        os.getenv("SORA_VISION_MODEL", "").strip()
+        or files.vision_model
+        or _default_vision_model(effective_kind, effective_model)
+    )
+    vision = None
+    if vision_model:
+        base_url = _vision_base_url(settings, effective_kind)
+        if base_url:
+            vision = VisionDescriber(
+                VisionConfig(
+                    model=vision_model,
+                    base_url=base_url,
+                    api_key=_vision_api_key(settings, secrets, effective_kind),
+                )
+            )
+
+    return FileUnderstander(
+        enabled=True,
+        max_file_bytes=(
+            files.max_file_bytes if max_bytes is None else max_bytes
+        ),
+        max_chars=files.max_chars if max_chars is None else max_chars,
+        total_max_chars=(
+            files.total_max_chars
+            if total_max_chars is None
+            else total_max_chars
+        ),
+        vision=vision,
+    )
+
+
+def _default_vision_model(kind: str, model: str) -> str | None:
+    """Use the selected model when it is known to accept image input."""
+    folded = model.lower()
+    if kind in {"openai", "azure"}:
+        if folded.startswith(("gpt-4o", "gpt-4.1", "gpt-5", "gpt-6")):
+            return model
+        if folded in {"o3", "o4-mini"}:
+            return model
+    if kind in {"qwen", "dashscope"} and folded in {
+        "qwen3.8-max",
+        "qwen3.7-plus",
+        "qwen3.8-omni-flash",
+    }:
+        return model
+    return None
+
+
+def _vision_base_url(settings: Settings, kind: str) -> str | None:
+    explicit = os.getenv("SORA_VISION_BASE_URL", "").strip()
+    if explicit:
+        return explicit
+    env_name = base_env(kind)
+    if env_name:
+        configured = os.getenv(env_name, "").strip()
+        if configured:
+            return configured
+    if kind == (settings.provider.kind or "").lower() and settings.provider.base_url:
+        return settings.provider.base_url
+    base = default_base_url(kind)
+    if base:
+        return base
+    if kind in {"openai", "azure"}:
+        return "https://api.openai.com/v1"
+    return None
+
+
+def _vision_api_key(
+    settings: Settings, secrets: Mapping[str, str], kind: str
+) -> str:
+    explicit = os.getenv("SORA_VISION_API_KEY", "").strip()
+    if explicit:
+        return explicit
+    env_name = key_env(kind)
+    if not env_name:
+        return ""
+    return os.getenv(env_name, "").strip() or secrets.get(env_name, "").strip()
+
+
 def approval_mode(settings: Settings) -> str:
     override = os.getenv("SORA_APPROVAL", "").strip().lower()
     if override in {"off", "ask"}:
@@ -278,6 +379,13 @@ def streaming_enabled(settings: Settings) -> bool:
 
 def clock_enabled(settings: Settings) -> bool:
     return feature_enabled(settings, "clock", "SORA_CLOCK")
+
+
+def files_enabled(settings: Settings) -> bool:
+    override = env_flag("SORA_FILES")
+    if override is not None:
+        return override
+    return bool(settings.features.files.enabled)
 
 
 def feature_enabled(settings: Settings, name: str, env_name: str) -> bool:

@@ -6,6 +6,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
+from ..files import Attachment
 from .bus import MessageBus
 from .types import InboundMessage, OutboundMessage
 
@@ -63,6 +64,7 @@ class BaseChannel(ABC):
         chat_id: str,
         content: str,
         media: list[str] | None = None,
+        attachments: list[Attachment] | None = None,
         metadata: dict[str, Any] | None = None,
         session_key: str | None = None,
     ) -> bool:
@@ -77,6 +79,7 @@ class BaseChannel(ABC):
                 chat_id=str(chat_id),
                 content=content,
                 media=list(media or []),
+                attachments=list(attachments or []),
                 metadata=dict(metadata or {}),
                 session_key_override=session_key,
             )

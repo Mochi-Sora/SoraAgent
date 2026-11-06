@@ -17,7 +17,6 @@ import importlib.metadata
 import importlib.util
 import json
 import os
-import ssl
 import stat
 import subprocess
 import sys
@@ -29,10 +28,10 @@ import urllib.request
 import zipfile
 from collections.abc import Sequence
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 
 from .. import __version__
+from ..net import urlopen as _urlopen
 from . import ui
 
 DEFAULT_REPO = "Mochi-Sora/SoraAgent"
@@ -147,6 +146,8 @@ def _detected_extras() -> tuple[str, ...]:
         extras.append("openai")
     if _module_available("zstandard") or sys.version_info >= (3, 14):
         extras.append("memory")
+    if _module_available("pypdf"):
+        extras.append("files")
     # The running ``sora`` command itself requires the CLI extra.
     extras.append("cli")
     return tuple(extras)
@@ -169,49 +170,6 @@ def _parse_extras(raw: str | None) -> tuple[str, ...]:
 # ---------------------------------------------------------------------------
 # GitHub targets
 # ---------------------------------------------------------------------------
-
-
-@lru_cache(maxsize=1)
-def _ssl_context() -> ssl.SSLContext:
-    """Return a CA bundle that works on python.org, Homebrew, and Linux."""
-    certifi = None
-    if _module_available("certifi"):
-        try:
-            certifi = importlib.import_module("certifi")
-        except ImportError:
-            certifi = None
-    if certifi is not None:
-        try:
-            return ssl.create_default_context(cafile=certifi.where())
-        except (OSError, ssl.SSLError):
-            pass
-
-    context = ssl.create_default_context()
-    if context.get_ca_certs():
-        return context
-
-    for candidate in (
-        "/etc/ssl/cert.pem",
-        "/etc/ssl/certs/ca-certificates.crt",
-        "/etc/pki/tls/certs/ca-bundle.crt",
-        "/usr/local/etc/openssl/cert.pem",
-        "/opt/homebrew/etc/openssl@3/cert.pem",
-    ):
-        if not os.path.isfile(candidate):
-            continue
-        try:
-            bundle = ssl.create_default_context(cafile=candidate)
-        except (OSError, ssl.SSLError):
-            continue
-        if bundle.get_ca_certs():
-            return bundle
-    return context
-
-
-def _urlopen(request: urllib.request.Request, timeout: float):
-    return urllib.request.urlopen(
-        request, timeout=timeout, context=_ssl_context()
-    )
 
 
 def _fetch(url: str, timeout: float) -> bytes:

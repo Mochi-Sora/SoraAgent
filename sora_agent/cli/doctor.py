@@ -7,6 +7,7 @@ import os
 from ..model_catalog import format_tokens, provider_info
 from ..runtime_setup import (
     approval_mode,
+    files_enabled,
     memory_enabled,
     provider_kind,
     provider_label,
@@ -88,6 +89,11 @@ def run_doctor(settings: Settings | None, secrets: dict[str, str]) -> int:
         "Features",
         [
             ("Memory", "On" if memory_enabled(settings) else "Off"),
+            ("Files", "On" if files_enabled(settings) else "Off"),
+            (
+                "Vision",
+                settings.features.files.vision_model or "auto / OCR fallback",
+            ),
             (
                 "CortexDB sidecar",
                 (

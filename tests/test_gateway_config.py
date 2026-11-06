@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from sora_agent import channels
 from sora_agent.channels import cli as gateway
+from sora_agent.channels.cli import main as gateway_main
 from sora_agent.settings import (
     advanced_settings,
     legacy_settings,
@@ -160,6 +160,8 @@ def test_gateway_uses_the_saved_configuration(monkeypatch, tmp_path):
     assert kwargs["clock"] is False
     assert kwargs["max_steps"] == 8
     assert kwargs["gateway_label"] == "☁️ sora-gateway"
+    assert kwargs["file_understander"] is None
+    assert captured["config"].download_attachments is False
     assert "Your name is Nimbus." in kwargs["system_prompt"]
 
 
@@ -189,6 +191,8 @@ def test_gateway_environment_still_overrides_saved_configuration(
     assert kwargs["quality"] is False
     assert kwargs["streaming"] is False
     assert kwargs["clock"] is False
+    assert kwargs["file_understander"] is not None
+    assert captured["config"].download_attachments is True
 
 
 def test_gateway_without_a_config_keeps_legacy_defaults(monkeypatch, tmp_path):
@@ -207,6 +211,7 @@ def test_gateway_without_a_config_keeps_legacy_defaults(monkeypatch, tmp_path):
     assert kwargs["clock"] is True
     assert kwargs["max_steps"] == 8
     assert kwargs["gateway_label"] == "sora-gateway"
+    assert kwargs["file_understander"] is not None
     assert kwargs["context_window"] == legacy_settings().provider.context_window
     assert kwargs["system_prompt"].startswith(
         "You are a careful assistant talking with a user over a chat channel."
@@ -227,4 +232,4 @@ def test_gateway_refuses_unwired_channels_before_building_runtime(
 
 
 def test_gateway_is_still_exported_as_a_console_entry_point():
-    assert channels.cli.main is gateway.main
+    assert gateway_main is gateway.main
