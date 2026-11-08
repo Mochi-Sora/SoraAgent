@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from sora_agent.audit import append_event
-from sora_agent.channels.chat import CHAT_SYSTEM_PROMPT, ChatHandler
+from sora_agent.channels.chat import ChatHandler
 from sora_agent.channels.types import InboundMessage
 from sora_agent.files import Attachment, FileUnderstander
 from sora_agent.providers import Message, ModelTurn

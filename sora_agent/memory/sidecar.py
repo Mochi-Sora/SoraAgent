@@ -431,7 +431,7 @@ class SidecarManager:
             return
         path = self.config.memory_dir / "sidecar.lock"
         path.parent.mkdir(parents=True, exist_ok=True)
-        handle = open(path, "a+")
+        handle = open(path, "a+")  # noqa: SIM115 - held while the child runs
         try:
             if os.name == "nt":
                 import msvcrt

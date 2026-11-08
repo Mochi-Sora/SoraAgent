@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from sora_agent.providers import (
@@ -34,7 +36,7 @@ def test_custom_provider_does_not_implicitly_use_the_openai_key(
         "custom", base_url="https://example.test/v1"
     )
 
-    assert getattr(provider, "api_key") == ""
+    assert cast(OpenAIChatProvider, provider).api_key == ""
 
 
 def test_missing_openai_key_is_a_sentinel_error(monkeypatch) -> None:
@@ -49,7 +51,7 @@ def test_explicit_keys_are_used_and_preserved(monkeypatch) -> None:
 
     provider = default_provider("deepseek", api_key="explicit-key")
 
-    assert getattr(provider, "api_key") == "explicit-key"
+    assert cast(OpenAIChatProvider, provider).api_key == "explicit-key"
 
 
 def test_direct_construction_requires_a_key_by_default() -> None:

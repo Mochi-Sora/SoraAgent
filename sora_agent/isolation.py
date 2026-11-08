@@ -13,6 +13,7 @@ finished.
 
 from __future__ import annotations
 
+import contextlib
 import multiprocessing
 import pickle
 import time
@@ -49,15 +50,11 @@ def _child_entry(
         payload = pickle.loads(pickle.dumps(payload))
         result.send(("ok", payload))
     except BaseException as exc:  # noqa: BLE001 - report failures to the parent
-        try:
+        with contextlib.suppress(Exception):
             result.send(("error", f"{type(exc).__name__}: {exc}"))
-        except Exception:  # noqa: BLE001 - the parent may already be gone
-            pass
     finally:
-        try:
+        with contextlib.suppress(OSError):
             result.close()
-        except OSError:
-            pass
 
 
 def _terminate(process: Any) -> None:

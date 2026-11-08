@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from sora_agent.agent import Agent, AgentResult
-from sora_agent.identity import IdentityConfig, IdentityStore, SECRET_MARKER
+from sora_agent.identity import SECRET_MARKER, IdentityConfig, IdentityStore
 from sora_agent.memory.config import MemoryConfig
 from sora_agent.memory.daily import DailyStore
 from sora_agent.memory.hook import MemoryHook
@@ -403,8 +403,10 @@ def test_redactor_removes_common_credentials(tmp_path: Path) -> None:
             ".abcdefghijklmnop"
         ),
         "xoxb-1234567890-abcdefghij",
-        "-----BEGIN RSA PRIVATE KEY-----\nMIIEexample\n"
-        "-----END RSA PRIVATE KEY-----",
+        (
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIEexample\n"
+            "-----END RSA PRIVATE KEY-----"
+        ),
         "password: hunter2",
     ]
 

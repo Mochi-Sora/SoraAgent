@@ -214,37 +214,35 @@ def start_gateway() -> int:
 def _start_lock() -> Iterator[bool]:
     path = pid_path().with_name(pid_path().name + ".lock")
     path.parent.mkdir(parents=True, exist_ok=True)
-    handle = open(path, "a+")
-    try:
-        if os.name == "nt":
-            import msvcrt
-
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        handle.close()
-        yield False
-        return
-    try:
-        yield True
-    finally:
+    with open(path, "a+") as handle:
         try:
             if os.name == "nt":
                 import msvcrt
 
                 handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
             else:
                 import fcntl
 
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            pass
-        handle.close()
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
 
 
 def _start_gateway_locked() -> int:
