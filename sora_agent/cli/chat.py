@@ -104,16 +104,16 @@ def interactive(settings: Settings, secrets: dict[str, str]) -> int:
             if text == "/help":
                 _print_help(settings)
                 continue
-            if text == "/reset":
-                handler.reset(session)
-                ui.success("Conversation reset.")
-                continue
             inbound = InboundMessage(
                 channel="cli",
                 sender_id="local",
                 chat_id=session,
                 content=text,
             )
+            if text == "/reset":
+                handler.reset(inbound.session_key)
+                ui.success("Conversation reset.")
+                continue
             if text.startswith("/"):
                 command_reply = handler.handle_command(inbound)
                 if command_reply is not None:

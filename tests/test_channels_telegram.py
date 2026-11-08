@@ -761,7 +761,7 @@ def test_send_without_approval_metadata_has_no_buttons():
     assert asyncio.run(scenario())[0][4] is None
 
 
-def test_channel_acknowledges_button_presses():
+def test_channel_defers_button_acknowledgement_until_consumed():
     async def scenario():
         bus = MessageBus()
         transport = FakeTransport([_callback_update()])
@@ -769,7 +769,9 @@ def test_channel_acknowledges_button_presses():
         task = asyncio.create_task(channel.start())
         try:
             message = await asyncio.wait_for(bus.next_inbound(), 2)
-            await _wait_for(lambda: bool(transport.answered))
+            assert transport.answered == []
+            assert transport.cleared == []
+            await channel.acknowledge_callback(message, False)
         finally:
             await channel.stop()
             await asyncio.wait_for(task, 2)
@@ -777,8 +779,55 @@ def test_channel_acknowledges_button_presses():
 
     message, transport = asyncio.run(scenario())
     assert message.content == "yes"
+    assert transport.answered == [
+        ("cq1", "This approval is no longer active.")
+    ]
+    assert transport.cleared == []
+
+
+def test_channel_acknowledges_a_consumed_button_press():
+    async def scenario():
+        bus = MessageBus()
+        transport = FakeTransport([_callback_update()])
+        channel = TelegramChannel(_config(), bus, transport=transport)
+        task = asyncio.create_task(channel.start())
+        try:
+            message = await asyncio.wait_for(bus.next_inbound(), 2)
+            await channel.acknowledge_callback(message, True)
+        finally:
+            await channel.stop()
+            await asyncio.wait_for(task, 2)
+        return transport
+
+    transport = asyncio.run(scenario())
     assert transport.answered == [("cq1", "Approved")]
     assert transport.cleared == [("42", "10")]
+
+
+def test_stale_callback_is_not_reported_as_approved():
+    async def scenario():
+        bus = MessageBus()
+        broker = ApprovalBroker(bus, timeout=1.0)
+        transport = FakeTransport(
+            [_callback_update("approval:yes:missing")]
+        )
+        channel = TelegramChannel(_config(), bus, transport=transport)
+        manager = ChannelManager(
+            [channel], bus, lambda inbound: "unused", approvals=broker
+        )
+        task = asyncio.create_task(manager.serve())
+        try:
+            await _wait_for(lambda: bool(transport.answered))
+        finally:
+            manager.request_stop()
+            await asyncio.wait_for(task, 2)
+        return transport
+
+    transport = asyncio.run(scenario())
+    assert transport.answered == [
+        ("cq1", "This approval is no longer active.")
+    ]
+    assert transport.cleared == []
 
 
 class CallbackTransport(FakeTransport):

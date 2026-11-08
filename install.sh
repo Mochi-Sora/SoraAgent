@@ -68,6 +68,30 @@ die() {
     exit 1
 }
 
+is_dangerous_dir() {
+    dir=${1%/}
+    [ -n "$dir" ] || return 0
+    case "$dir" in
+        /*) ;;
+        *) return 0 ;;
+    esac
+    case "/$dir/" in
+        */../*|*/./*) return 0 ;;
+    esac
+    # Refuse a drive or filesystem root and any directory directly below it.
+    if [ "$(dirname "$dir")" = "/" ]; then
+        return 0
+    fi
+    if [ -n "${HOME:-}" ]; then
+        home=${HOME%/}
+        [ "$dir" = "$home" ] && return 0
+        case "$home/" in
+            "$dir/"*) return 0 ;;
+        esac
+    fi
+    return 1
+}
+
 strip_path_block() {
     file=$1
     [ -f "$file" ] || return 0
@@ -84,15 +108,27 @@ strip_path_block() {
 
 remove_wrappers() {
     for name in sora sora-gateway sora-memory; do
-        rm -f "$BIN_DIR/$name"
+        target="$BIN_DIR/$name"
+        [ -f "$target" ] || continue
+        if grep -qF '# managed by sora-agent installer' "$target" 2>/dev/null \
+            || grep -qF "$INSTALL_DIR/venv/bin/$name" "$target" 2>/dev/null; then
+            rm -f "$target"
+        else
+            warn "leaving $target; it was not created by this installer"
+        fi
     done
 }
 
 uninstall() {
     remove_wrappers
     if [ -d "$INSTALL_DIR" ]; then
-        info "Removing $INSTALL_DIR"
-        rm -rf "$INSTALL_DIR"
+        if [ -f "$INSTALL_DIR/venv/pyvenv.cfg" ] \
+            || [ -x "$INSTALL_DIR/venv/bin/sora" ]; then
+            info "Removing $INSTALL_DIR"
+            rm -rf "$INSTALL_DIR"
+        else
+            warn "refusing to remove $INSTALL_DIR: it does not look like a SoraAgent install"
+        fi
     fi
 
     for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
@@ -181,12 +217,27 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+if [ -z "${HOME:-}" ] || [ "$HOME" = "/" ]; then
+    die "HOME is not set safely"
+fi
+if is_dangerous_dir "$INSTALL_DIR"; then
+    die "refusing to use $INSTALL_DIR as the install root"
+fi
+if is_dangerous_dir "$BIN_DIR"; then
+    die "refusing to use $BIN_DIR as the command directory"
+fi
+
 if [ "$UNINSTALL" -eq 1 ]; then
     uninstall
 fi
 
 if [ "$PURGE" -eq 1 ]; then
     die "--purge is only valid with --uninstall"
+fi
+
+if [ -d "$INSTALL_DIR" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null || true)" ] \
+    && [ ! -f "$INSTALL_DIR/venv/pyvenv.cfg" ]; then
+    die "$INSTALL_DIR is not empty and does not look like a SoraAgent install"
 fi
 
 command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 \
@@ -380,7 +431,8 @@ for name in sora sora-gateway sora-memory; do
     target="$VENV_DIR/bin/$name"
     [ -x "$target" ] || die "installation completed but $name is missing"
     wrapper_tmp="$BIN_DIR/.sora-agent-$name.$$"
-    printf '#!/usr/bin/env sh\nexec "%s" "$@"\n' "$target" > "$wrapper_tmp"
+    quoted_target="$(printf '%q' "$target")"
+    printf '#!/usr/bin/env sh\n# managed by sora-agent installer\nexec %s "$@"\n' "$quoted_target" > "$wrapper_tmp"
     chmod +x "$wrapper_tmp"
     mv -f "$wrapper_tmp" "$BIN_DIR/$name"
 done
@@ -403,9 +455,10 @@ case ":$PATH:" in
             esac
             [ -f "$RC_FILE" ] || : > "$RC_FILE"
             if ! grep -qF '# >>> sora-agent >>>' "$RC_FILE" 2>/dev/null; then
+                quoted_bin="$(printf '%q' "$BIN_DIR")"
                 {
                     printf '\n# >>> sora-agent >>>\n'
-                    printf 'export PATH="%s:$PATH"\n' "$BIN_DIR"
+                    printf 'export PATH=%s:"$PATH"\n' "$quoted_bin"
                     printf '# <<< sora-agent <<<\n'
                 } >> "$RC_FILE"
                 PATH_UPDATED=1

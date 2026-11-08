@@ -48,6 +48,16 @@ class BaseChannel(ABC):
         """Best-effort typing indicator.  Channels may ignore this."""
         return
 
+    async def acknowledge_callback(
+        self, inbound: InboundMessage, consumed: bool
+    ) -> None:
+        """Best-effort acknowledgement for a platform callback/button press.
+
+        ``consumed`` is true only when the manager accepted the callback as an
+        approval decision.  Channels may ignore this hook.
+        """
+        return
+
     def is_allowed(self, sender_id: str) -> bool:
         """Check ``config.allow_from``.
 

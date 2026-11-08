@@ -141,6 +141,7 @@ class ChatHandler:
         self._history: dict[str, list[Message]] = {}
         self._attachment_cache: dict[str, str] = {}
         self._active: dict[str, CancelToken] = {}
+        self._generations: dict[str, int] = {}
         self._last_metrics: dict[str, RunMetrics] = {}
         self._last_stop: dict[str, str] = {}
         self._last_report: dict[str, Any] = {}
@@ -154,6 +155,7 @@ class ChatHandler:
         with self._lock:
             history = self._load_history(key)
             self._active[key] = token
+            generation = self._generations.get(key, 0)
 
         if self.approval_gate is not None:
             approval = self.approval_gate
@@ -211,6 +213,12 @@ class ChatHandler:
                 if self._active.get(key) is token:
                     del self._active[key]
         self._notify("after_run", run, state)
+
+        with self._lock:
+            if self._generations.get(key, 0) != generation:
+                # A /reset happened while this turn was running.  Keep the
+                # fresh conversation instead of resurrecting old history.
+                return ""
 
         reply = _reply_text(run)
         report = None
@@ -340,6 +348,11 @@ class ChatHandler:
 
     def reset(self, session_key: str) -> None:
         """Forget one conversation, on disk as well as in memory."""
+        with self._lock:
+            self._generations[session_key] = (
+                self._generations.get(session_key, 0) + 1
+            )
+        self.cancel(session_key)
         with self._lock:
             self._history.pop(session_key, None)
             self._attachment_cache.pop(session_key, None)

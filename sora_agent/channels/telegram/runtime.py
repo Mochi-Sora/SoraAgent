@@ -144,8 +144,6 @@ class TelegramChannel(BaseChannel):
             metadata=parsed.metadata,
             session_key=parsed.session_key,
         )
-        if parsed.callback_query_id:
-            await self._acknowledge_callback(parsed)
         if accepted:
             self.log.debug("queued telegram message from %s", parsed.sender_id)
 
@@ -181,25 +179,35 @@ class TelegramChannel(BaseChannel):
             attachment.size = len(data)
         return attachments
 
-    async def _acknowledge_callback(self, parsed: ParsedUpdate) -> None:
-        """Stop the button spinner and drop the keyboard.  Best effort."""
-        query_id = parsed.callback_query_id
+    async def acknowledge_callback(
+        self, inbound: InboundMessage, consumed: bool
+    ) -> None:
+        """Stop the button spinner after the broker has decided the callback."""
+        query_id = str(inbound.metadata.get("callback_query_id") or "")
         if not query_id:
             return
-        text = "Approved" if parsed.content == "yes" else "Rejected"
+        if consumed:
+            text = "Approved" if inbound.content == "yes" else "Rejected"
+        else:
+            text = "This approval is no longer active."
         try:
             await asyncio.to_thread(
                 self.transport.answer_callback_query, query_id, text
             )
         except Exception as exc:  # noqa: BLE001 - ack is cosmetic
-            self.log.debug("telegram callback acknowledgement failed: %s", exc)
-        if not parsed.callback_message_id:
+            self.log.debug(
+                "telegram callback acknowledgement failed: %s", exc
+            )
+        if not consumed:
+            return
+        message_id = inbound.metadata.get("message_id")
+        if message_id is None:
             return
         try:
             await asyncio.to_thread(
                 self.transport.clear_reply_markup,
-                parsed.chat_id,
-                parsed.callback_message_id,
+                inbound.chat_id,
+                str(message_id),
             )
         except Exception as exc:  # noqa: BLE001 - cleanup is cosmetic
             self.log.debug("telegram markup cleanup failed: %s", exc)

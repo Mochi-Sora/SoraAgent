@@ -102,6 +102,80 @@ def test_request_is_resolved_by_a_chat_reply():
     assert approved == [True]
 
 
+def test_consume_refuses_a_reply_from_another_person():
+    async def scenario():
+        bus = MessageBus()
+        broker = ApprovalBroker(bus, timeout=5.0)
+        broker.bind(asyncio.get_running_loop())
+        approved: list[bool] = []
+        worker = threading.Thread(
+            target=lambda: approved.append(broker.request(_pending()))
+        )
+        worker.start()
+        await asyncio.wait_for(bus.next_outbound(), 2)
+        consumed = broker.consume(_inbound("yes", sender_id="8"))
+        broker.cancel_all()
+        await _join(worker)
+        return consumed, approved
+
+    consumed, approved = asyncio.run(scenario())
+    assert consumed is False
+    assert approved == [False]
+
+
+def test_approval_prompt_keeps_the_forum_topic():
+    async def scenario():
+        bus = MessageBus()
+        broker = ApprovalBroker(bus, timeout=5.0)
+        broker.bind(asyncio.get_running_loop())
+        gate = broker.gate(
+            _inbound(
+                "cancel it",
+                metadata={"message_id": 11, "message_thread_id": 9},
+            )
+        )
+        worker = threading.Thread(
+            target=lambda: gate.request("cancel_order", "PO-1")
+        )
+        worker.start()
+        prompt = await asyncio.wait_for(bus.next_outbound(), 2)
+        broker.cancel_all()
+        await _join(worker)
+        return prompt
+
+    prompt = asyncio.run(scenario())
+    assert prompt.metadata["message_thread_id"] == 9
+
+
+def test_callback_from_a_topic_without_a_session_key_still_resolves():
+    async def scenario():
+        bus = MessageBus()
+        broker = ApprovalBroker(bus, timeout=5.0)
+        broker.bind(asyncio.get_running_loop())
+        approved: list[bool] = []
+        worker = threading.Thread(
+            target=lambda: approved.append(
+                broker.request(_pending(session_key="telegram:42:9"))
+            )
+        )
+        worker.start()
+        prompt = await asyncio.wait_for(bus.next_outbound(), 2)
+        token = prompt.metadata["approval_id"]
+        consumed = broker.consume(
+            _inbound(
+                "yes",
+                chat_id="42",
+                metadata={"approval_id": token},
+            )
+        )
+        await _join(worker)
+        return consumed, approved
+
+    consumed, approved = asyncio.run(scenario())
+    assert consumed is True
+    assert approved == [True]
+
+
 def test_consume_leaves_a_follow_up_question_for_the_agent():
     async def scenario():
         bus = MessageBus()

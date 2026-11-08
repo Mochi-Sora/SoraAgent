@@ -277,8 +277,87 @@ def test_manager_rejects_duplicate_channel_names():
     bus = MessageBus()
     one = FakeChannel(SimpleNamespace(allow_from=("*",)), bus)
     two = FakeChannel(SimpleNamespace(allow_from=("*",)), bus)
+
     with pytest.raises(ValueError, match="duplicate"):
         ChannelManager([one, two], bus, lambda inbound: "")
+
+
+# ---------------------------------------------------------------------------
+# turn queue and rate limits
+# ---------------------------------------------------------------------------
+
+
+def test_manager_rate_limits_one_session():
+    bus = MessageBus()
+    channel = FakeChannel(SimpleNamespace(allow_from=("*",)), bus)
+    manager = ChannelManager(
+        [channel], bus, lambda inbound: "ok", max_turns_per_minute=2
+    )
+
+    assert manager._allow_turn("fake:42") is True
+    assert manager._allow_turn("fake:42") is True
+    assert manager._allow_turn("fake:42") is False
+    assert manager._allow_turn("fake:43") is True
+
+
+def test_manager_warns_once_when_a_session_sends_too_fast():
+    async def scenario():
+        bus = MessageBus()
+        channel = FakeChannel(SimpleNamespace(allow_from=("*",)), bus)
+        manager = ChannelManager(
+            [channel], bus, lambda inbound: "ok", max_turns_per_minute=1
+        )
+        task = asyncio.create_task(manager.serve())
+        try:
+            await _wait_for(lambda: channel.is_running)
+            await bus.publish_inbound(_inbound("one"))
+            await _wait_for(lambda: len(channel.sent) >= 1)
+            await bus.publish_inbound(_inbound("two"))
+            await _wait_for(
+                lambda: any("too quickly" in item.content for item in channel.sent)
+            )
+        finally:
+            manager.request_stop()
+            await asyncio.wait_for(task, 2)
+        return channel
+
+    channel = asyncio.run(scenario())
+    assert sum("too quickly" in item.content for item in channel.sent) == 1
+
+
+def test_manager_drops_messages_when_the_turn_queue_is_full():
+    async def scenario():
+        bus = MessageBus()
+        channel = FakeChannel(SimpleNamespace(allow_from=("*",)), bus)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def handler(inbound):
+            started.set()
+            await release.wait()
+            return "done"
+
+        manager = ChannelManager(
+            [channel], bus, handler, max_pending_turns=1
+        )
+        task = asyncio.create_task(manager.serve())
+        try:
+            await _wait_for(lambda: channel.is_running)
+            await bus.publish_inbound(_inbound("one"))
+            await asyncio.wait_for(started.wait(), 2)
+            await bus.publish_inbound(
+                InboundMessage("fake", "9", "43", "dropped")
+            )
+            await asyncio.sleep(0.1)
+            release.set()
+            await _wait_for(lambda: any(item.content == "done" for item in channel.sent))
+        finally:
+            manager.request_stop()
+            await asyncio.wait_for(task, 2)
+        return channel
+
+    channel = asyncio.run(scenario())
+    assert sum(item.content == "done" for item in channel.sent) == 1
 
 
 # ---------------------------------------------------------------------------

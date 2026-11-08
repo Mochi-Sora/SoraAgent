@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 from ..approval import ApprovalGate, AuditEntry
 from .bus import MessageBus
@@ -60,6 +61,7 @@ class PendingApproval:
     chat_id: str
     actor: str
     reply_to: str | None = None
+    thread_id: Any = None
     approval_id: str = ""
     event: threading.Event = field(default_factory=threading.Event)
     decision: bool | None = None
@@ -96,20 +98,42 @@ class ApprovalBroker:
         """
         with self._lock:
             pending = self._pending.get(inbound.session_key)
-        if pending is None:
-            return False
-        supplied = str(inbound.metadata.get("approval_id") or "")
-        if supplied and supplied != pending.approval_id:
-            # A button from an older prompt must not decide this request.
-            return False
-        decision = parse_decision(inbound.content)
-        if decision is None:
-            return False
-        with self._lock:
-            if self._pending.get(inbound.session_key) is not pending:
+            supplied = str(inbound.metadata.get("approval_id") or "")
+            if supplied:
+                # Buttons may arrive without a topic session key; the token is
+                # global to the pending prompt, so find it by id.
+                pending = next(
+                    (
+                        item
+                        for item in self._pending.values()
+                        if item.approval_id == supplied
+                    ),
+                    None,
+                )
+            if pending is None:
+                return False
+            if inbound.sender_id != pending.actor:
+                self.log.warning(
+                    "ignored approval reply from %s; request belongs to %s",
+                    inbound.sender_id,
+                    pending.actor,
+                )
+                return False
+            if (
+                inbound.channel != pending.channel
+                or str(inbound.chat_id) != str(pending.chat_id)
+            ):
+                return False
+            if supplied and supplied != pending.approval_id:
+                # A button from an older prompt must not decide this request.
+                return False
+            decision = parse_decision(inbound.content)
+            if decision is None:
+                return False
+            if self._pending.get(pending.session_key) is not pending:
                 return False
             pending.decision = decision
-            del self._pending[inbound.session_key]
+            del self._pending[pending.session_key]
         pending.event.set()
         return True
 
@@ -139,6 +163,7 @@ class ApprovalBroker:
     def gate(self, inbound: InboundMessage) -> ChannelApprovalGate:
         """Build the gate for one conversation turn."""
         message_id = inbound.metadata.get("message_id")
+        thread_id = inbound.metadata.get("message_thread_id")
         return ChannelApprovalGate(
             self,
             session_key=inbound.session_key,
@@ -146,6 +171,7 @@ class ApprovalBroker:
             chat_id=inbound.chat_id,
             actor=inbound.sender_id,
             reply_to=None if message_id is None else str(message_id),
+            thread_id=thread_id,
         )
 
     def request(self, pending: PendingApproval) -> bool:
@@ -184,6 +210,11 @@ class ApprovalBroker:
                 "kind": APPROVAL_KIND,
                 "action": pending.action,
                 "approval_id": pending.approval_id,
+                **(
+                    {"message_thread_id": pending.thread_id}
+                    if pending.thread_id is not None
+                    else {}
+                ),
             },
             buttons=[["Approve", "Reject"]],
         )
@@ -205,6 +236,7 @@ class ChannelApprovalGate(ApprovalGate):
         chat_id: str,
         actor: str,
         reply_to: str | None = None,
+        thread_id: Any = None,
     ) -> None:
         super().__init__()
         self.broker = broker
@@ -213,6 +245,7 @@ class ChannelApprovalGate(ApprovalGate):
         self.chat_id = chat_id
         self.actor = actor
         self.reply_to = reply_to
+        self.thread_id = thread_id
 
     def request(self, action: str, detail: str) -> bool:
         approved = self.broker.request(
@@ -224,6 +257,7 @@ class ChannelApprovalGate(ApprovalGate):
                 chat_id=self.chat_id,
                 actor=self.actor,
                 reply_to=self.reply_to,
+                thread_id=self.thread_id,
             )
         )
         self.audit.append(

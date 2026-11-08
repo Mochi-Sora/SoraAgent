@@ -14,6 +14,8 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -201,6 +203,51 @@ def _print_log_tail(lines: int = 20) -> None:
 
 
 def start_gateway() -> int:
+    with _start_lock() as acquired:
+        if not acquired:
+            ui.error("Another `sora gateway start` is already in progress.")
+            return 2
+        return _start_gateway_locked()
+
+
+@contextmanager
+def _start_lock() -> Iterator[bool]:
+    path = pid_path().with_name(pid_path().name + ".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a+")
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        handle.close()
+
+
+def _start_gateway_locked() -> int:
     record = _read_process()
     if record is not None and _pid_alive(record.pid):
         if _looks_like_gateway(record.pid):

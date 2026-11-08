@@ -70,6 +70,16 @@ def test_start_refuses_to_spawn_a_second_gateway(monkeypatch):
     assert daemon.start_gateway() == 0
 
 
+def test_start_lock_prevents_concurrent_starts():
+    with daemon._start_lock() as first:
+        assert first is True
+        with daemon._start_lock() as second:
+            assert second is False
+
+    with daemon._start_lock() as third:
+        assert third is True
+
+
 def test_start_spawns_a_detached_gateway(monkeypatch):
     captured: dict[str, Any] = {}
 

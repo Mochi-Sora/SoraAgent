@@ -181,7 +181,7 @@ def update(
         help="GitHub repository to update from (owner/name).",
     ),
 ) -> None:
-    """Update SoraAgent to the latest release or main branch."""
+    """Update SoraAgent to the latest release or an explicit branch/tag."""
     try:
         code = update_module.run_update(
             check=check,

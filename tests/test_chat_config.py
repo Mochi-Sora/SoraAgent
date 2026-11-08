@@ -208,6 +208,33 @@ def test_attachment_context_survives_follow_up_turns_until_reset():
     )
 
 
+def test_reset_during_a_turn_discards_the_late_reply_and_history():
+    provider = PlainProvider("late answer")
+    handler = ChatHandler(provider, max_steps=1, clock=False, quality=False)
+
+    class ResettingProvider(PlainProvider):
+        def complete_turn(self, messages, tools) -> ModelTurn:
+            handler.reset("cli:42")
+            return super().complete_turn(messages, tools)
+
+    handler.provider = ResettingProvider("late answer")
+
+    reply = handler.handle(_inbound("hello"))
+
+    assert reply == ""
+    assert handler._load_history("cli:42") == []
+    assert handler._attachment_cache == {}
+
+
+def test_reset_increments_the_generation_counter():
+    handler = ChatHandler(PlainProvider(), clock=False, quality=False)
+
+    handler.reset("cli:42")
+    handler.reset("cli:42")
+
+    assert handler._generations["cli:42"] == 2
+
+
 # ---------------------------------------------------------------------------
 # Approval off
 # ---------------------------------------------------------------------------

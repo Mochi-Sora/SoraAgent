@@ -208,7 +208,10 @@ def _resolve_target(
         tag = _latest_release(repo, timeout)
         if tag:
             return Target(f"refs/tags/{tag}", tag, release=True)
-        return Target("refs/heads/main", "main (no release found)")
+        raise UpdateError(
+            "could not determine the latest release; retry or pass "
+            "--version main explicitly to follow the main branch"
+        )
     if folded in {"main", "master"}:
         return Target(f"refs/heads/{folded}", folded)
     tag = value if value.lower().startswith("v") else f"v{value}"

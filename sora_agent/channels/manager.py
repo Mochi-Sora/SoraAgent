@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Union
 
@@ -17,6 +18,9 @@ Handler = Callable[[InboundMessage], Union[str, Awaitable[str]]]
 
 _MAX_SEND_ATTEMPTS = 3
 _DEFAULT_TYPING_INTERVAL = 4.0
+_DEFAULT_MAX_PENDING_TURNS = 32
+_DEFAULT_MAX_TURNS_PER_MINUTE = 20
+_RATE_WINDOW_SECONDS = 60.0
 
 
 class ChannelManager:
@@ -37,6 +41,8 @@ class ChannelManager:
         commands: Callable[[InboundMessage], str | None] | None = None,
         on_shutdown: Callable[[], object] | None = None,
         typing_interval: float = _DEFAULT_TYPING_INTERVAL,
+        max_pending_turns: int = _DEFAULT_MAX_PENDING_TURNS,
+        max_turns_per_minute: int = _DEFAULT_MAX_TURNS_PER_MINUTE,
         logger: logging.Logger | None = None,
     ) -> None:
         if not channels:
@@ -48,6 +54,8 @@ class ChannelManager:
         self.commands = commands
         self.on_shutdown = on_shutdown
         self.typing_interval = max(0.01, float(typing_interval))
+        self.max_pending_turns = max(1, int(max_pending_turns))
+        self.max_turns_per_minute = max(1, int(max_turns_per_minute))
         self.log = logger or logging.getLogger(__name__)
         self._by_name: dict[str, BaseChannel] = {}
         for channel in self.channels:
@@ -58,6 +66,8 @@ class ChannelManager:
         self._tasks: list[asyncio.Task[Any]] = []
         self._turns: set[asyncio.Task[Any]] = set()
         self._session_locks: dict[str, asyncio.Lock] = {}
+        self._turn_times: dict[str, list[float]] = {}
+        self._rate_warned: dict[str, float] = {}
         self._shutdown = False
 
     @property
@@ -131,8 +141,19 @@ class ChannelManager:
             inbound = await self.bus.next_inbound()
             if inbound.metadata.get("kind") == APPROVAL_CALLBACK_KIND:
                 # A button press is never chat input, even when it is stale.
+                consumed = False
                 if self.approvals is not None:
-                    self.approvals.consume(inbound)
+                    consumed = self.approvals.consume(inbound)
+                channel = self._by_name.get(inbound.channel)
+                if channel is not None:
+                    try:
+                        await channel.acknowledge_callback(
+                            inbound, consumed
+                        )
+                    except Exception:
+                        self.log.debug(
+                            "callback acknowledgement failed", exc_info=True
+                        )
                 continue
             if self.approvals is not None and self.approvals.consume(inbound):
                 self.log.debug(
@@ -144,6 +165,25 @@ class ChannelManager:
                 if command is not None:
                     await self._publish_reply(inbound, command)
                     continue
+            if len(self._turns) >= self.max_pending_turns:
+                self.log.warning(
+                    "turn queue full (%d); dropping message from %s",
+                    self.max_pending_turns,
+                    inbound.session_key,
+                )
+                continue
+            if not self._allow_turn(inbound.session_key):
+                now = time.monotonic()
+                if now - self._rate_warned.get(inbound.session_key, 0.0) >= (
+                    _RATE_WINDOW_SECONDS
+                ):
+                    self._rate_warned[inbound.session_key] = now
+                    await self._publish_reply(
+                        inbound,
+                        "I'm receiving messages too quickly. Please wait a "
+                        "moment and try again.",
+                    )
+                continue
             # Turns run as separate tasks: a turn blocked on a human approval
             # must not stop the dispatcher from reading the reply.
             task = asyncio.create_task(
@@ -151,6 +191,28 @@ class ChannelManager:
             )
             self._turns.add(task)
             task.add_done_callback(self._turns.discard)
+
+    def _allow_turn(self, session_key: str) -> bool:
+        now = time.monotonic()
+        times = self._turn_times.setdefault(session_key, [])
+        times[:] = [
+            value
+            for value in times
+            if now - value < _RATE_WINDOW_SECONDS
+        ]
+        if len(times) >= self.max_turns_per_minute:
+            return False
+        times.append(now)
+        if len(self._turn_times) > 1024:
+            stale = [
+                key
+                for key, values in self._turn_times.items()
+                if not values or now - values[-1] >= _RATE_WINDOW_SECONDS
+            ]
+            for key in stale:
+                self._turn_times.pop(key, None)
+                self._rate_warned.pop(key, None)
+        return True
 
     async def _run_turn(self, inbound: InboundMessage) -> None:
         lock = self._session_locks.setdefault(inbound.session_key, asyncio.Lock())

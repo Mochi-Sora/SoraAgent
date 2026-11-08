@@ -101,6 +101,11 @@ upgrade in place; user data under `~/.sora_agent` is never touched. Re-running
 the installer also works and is still required if the CLI extra was not
 installed.
 
+Uninstall removes only files the installer created: command wrappers must carry
+its marker, and the install root must contain `venv/pyvenv.cfg`. Drive roots,
+`$HOME`, ancestors of `$HOME`, and unrelated non-empty directories are refused.
+Use `--purge` to remove `~/.sora_agent` data as well.
+
 Common options:
 
 ```bash
@@ -165,7 +170,7 @@ All three also run as modules: `python -m sora_agent.cli`,
 ### Updating an existing install
 
 ```bash
-sora update              # latest release, falling back to main
+sora update              # latest release (fails closed if the release lookup fails)
 sora update --check      # only report whether an update is available
 sora update --version main
 sora update --extras none
@@ -690,9 +695,19 @@ Behavior details:
 - Clear replies (`yes`, `y`, `ok`, `approve`, ... / `no`, `n`, `reject`, ...)
   decide the request; anything else is left for the agent, so a user can ask a
   follow-up question while an approval is pending.
+- Only the sender who triggered the turn can decide it. Replies and button
+  presses from another participant in the same chat are ignored.
 - A timeout (default 300 s in the gateway) **denies** the request.
 - Button presses carry an `approval_id`; a button from an older prompt cannot
-  decide a newer request.
+  decide a newer request. The token also resolves topic prompts whose callback
+  arrives without a session key.
+- Approval prompts keep the Telegram forum topic (`message_thread_id`). The
+  button spinner is acknowledged only after the broker consumes the callback;
+  stale buttons answer "This approval is no longer active" and keep their
+  keyboard instead of claiming approval.
+- `/reset` cancels a turn that is still running and bumps the session
+  generation, so a late reply cannot resurrect the old history. `/cancel`
+  releases a worker blocked on an approval immediately.
 - `/cancel` and gateway shutdown release blocked approvals immediately.
 
 ## Quality gate and evaluation
@@ -1093,7 +1108,7 @@ firewall always redacts against the updated profile.
 | `InboundMessage` / `OutboundMessage` | Channel-agnostic payloads (channel, sender, chat, content, media `file_id`s, metadata). |
 | `MessageBus` | Two asyncio queues (inbound/outbound) so a slow platform never blocks the model loop. |
 | `BaseChannel` | Transport ABC: `start()` (blocks), `stop()` (idempotent), `send()`, an optional typing indicator, plus the shared `allow_from` authorization rule (`"*"` allows everyone; an empty list denies everyone — a token is not an access policy). |
-| `ChannelManager` | Supervises channels, dispatches commands, runs turns in tasks with per-session locks, answers control commands, delivers outbound with retries. If a channel dies, the gateway shuts down rather than half-serving. |
+| `ChannelManager` | Supervises channels, dispatches commands, runs turns in tasks with per-session locks, bounds the pending-turn queue (default 32) and rate-limits each session (default 20 turns/minute), answers control commands, delivers outbound with retries. If a channel dies, the gateway shuts down rather than half-serving. |
 | `ChatHandler` | Per-session history, run assembly, cancellation, `/status`, `/eval`, `/reset`, `/cancel`. |
 | `SessionStore` | Durable JSON conversation history, one hashed file per session under `~/.sora_agent/sessions` (override `SORA_SESSIONS_ROOT`). History is trimmed to `max_turns * 2` messages (default 40 turns). |
 | `ApprovalBroker` / `ChannelApprovalGate` | Chat-based approvals (see [Human approval](#human-approval)). |

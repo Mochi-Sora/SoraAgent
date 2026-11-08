@@ -110,6 +110,22 @@
         Write-Host "warning: $Message" -ForegroundColor Yellow
     }
 
+    function Assert-SafeDirectory([string]$Directory, [string]$Label) {
+        if (-not $Directory) { throw "$Label is empty" }
+        $full = [IO.Path]::GetFullPath($Directory).TrimEnd('\')
+        $root = [IO.Path]::GetPathRoot($full).TrimEnd('\')
+        if (-not $full -or $full -eq $root) {
+            throw "$Label must not be a drive root"
+        }
+        if ($HOME) {
+            $homeDir = [IO.Path]::GetFullPath($HOME).TrimEnd('\')
+            if ($full -eq $homeDir) { throw "$Label must not be HOME" }
+            if ($homeDir.StartsWith($full + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                throw "$Label must not be an ancestor of HOME"
+            }
+        }
+    }
+
     function Show-Usage {
         @"
 SoraAgent installer
@@ -157,18 +173,35 @@ Examples:
         foreach ($name in @("sora", "sora-gateway", "sora-memory")) {
             foreach ($suffix in @(".cmd", ".ps1", ".bat")) {
                 $path = Join-Path $BinDir ($name + $suffix)
-                if (Test-Path $path) { Remove-Item -Force $path }
+                if (-not (Test-Path $path)) { continue }
+                $content = Get-Content -Raw $path -ErrorAction SilentlyContinue
+                $managed = $content -and (
+                    $content -match 'managed by sora-agent installer' -or
+                    $content -match [regex]::Escape($InstallDir) -or
+                    $content -match [regex]::Escape("venv\Scripts\$name.exe")
+                )
+                if ($managed) {
+                    Remove-Item -Force $path
+                } else {
+                    Write-Warn "leaving $path; it was not created by this installer"
+                }
             }
         }
 
         if (Test-Path $InstallDir) {
-            Write-Info "Removing $InstallDir"
-            Remove-Item -Recurse -Force $InstallDir
+            $venvConfig = Join-Path $InstallDir "venv\pyvenv.cfg"
+            if (Test-Path $venvConfig) {
+                Write-Info "Removing $InstallDir"
+                Remove-Item -Recurse -Force $InstallDir
+            } else {
+                Write-Warn "refusing to remove $InstallDir: it does not look like a SoraAgent install"
+            }
         }
 
         Remove-FromUserPath $BinDir
 
         if ($Purge) {
+            if (-not $HOME) { throw "HOME is not set; refusing to purge user data" }
             $dataDir = Join-Path $HOME ".sora_agent"
             if (Test-Path $dataDir) {
                 Write-Info "Removing $dataDir (memory, identity, sessions, calendar)"
@@ -277,6 +310,9 @@ Examples:
         return
     }
 
+    Assert-SafeDirectory $InstallDir "InstallDir"
+    Assert-SafeDirectory $BinDir "BinDir"
+
     if ($Uninstall) {
         Uninstall-SoraAgent
         return
@@ -284,6 +320,13 @@ Examples:
 
     if ($Purge) {
         throw "-Purge is only valid with -Uninstall"
+    }
+
+    if ((Test-Path $InstallDir) -and -not (Test-Path (Join-Path $InstallDir "venv\pyvenv.cfg"))) {
+        $existing = Get-ChildItem -Force $InstallDir -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($existing) {
+            throw "$InstallDir is not empty and does not look like a SoraAgent install"
+        }
     }
 
     # GitHub requires TLS 1.2; Windows PowerShell 5.1 does not always enable it.
@@ -355,9 +398,9 @@ Examples:
         if (Test-Path $cmd) { Remove-Item -Force $cmd }
         if ($useRelativePaths) {
             $target = "%~dp0..\venv\Scripts\$name.exe"
-            Set-Content -Path $cmd -Value @("@echo off", "`"$target`" %*") -Encoding ASCII
+            Set-Content -Path $cmd -Value @("@echo off", "rem managed by sora-agent installer", "`"$target`" %*") -Encoding ASCII
         } else {
-            Set-Content -Path $cmd -Value @("@echo off", "`"$exe`" %*") -Encoding Default
+            Set-Content -Path $cmd -Value @("@echo off", "rem managed by sora-agent installer", "`"$exe`" %*") -Encoding Default
         }
     }
 
