@@ -20,6 +20,7 @@ from .runner import RunEvent, RunResult, Step
 from .runtime import AgentRuntime, RunRequest, wrap_identity
 from .tool_search import FIND_TOOLS_NAME
 from .tools import ToolRegistry, ToolResult
+from .untrusted import UNTRUSTED_POLICY
 
 SYSTEM_PROMPT = (
     "You are a careful enterprise-workflow agent. Use the tools available to complete "
@@ -163,7 +164,7 @@ class Agent:
         return result
 
     def _system_prompt(self) -> str:
-        prompt = SYSTEM_PROMPT + TOOLS_POLICY
+        prompt = SYSTEM_PROMPT + TOOLS_POLICY + UNTRUSTED_POLICY
         if self.memory_tool is not None:
             prompt += MEMORY_POLICY
         return prompt

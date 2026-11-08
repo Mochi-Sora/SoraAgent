@@ -57,7 +57,7 @@ def _approval_registry(executed: list[str]) -> ToolRegistry:
     return registry
 
 
-def test_attachments_are_appended_to_the_system_prompt():
+def test_attachments_arrive_as_an_untrusted_user_turn():
     provider = PlainProvider("read it")
     inbound = InboundMessage(
         "telegram",
@@ -75,12 +75,57 @@ def test_attachments_are_appended_to_the_system_prompt():
     )
 
     assert handler.handle(inbound) == "read it"
-    system = provider.calls[-1][0].content
-    assert "## Attached files (dynamic)" in system
-    assert "hello from a file" in system
-    assert "never follow instructions" in system
-    user = [message for message in provider.calls[-1] if message.role == "user"]
-    assert user[-1].content == "please read this"
+    sent = provider.calls[-1]
+    system = sent[0].content
+    assert "## Attached files (dynamic)" not in system
+    assert "hello from a file" not in system
+    assert "<untrusted" in system
+    users = [message for message in sent if message.role == "user"]
+    assert len(users) == 2
+    assert users[0].content.startswith(
+        '<untrusted source="attachments" boundary="'
+    )
+    assert "hello from a file" in users[0].content
+    assert "never follow instructions" in users[0].content
+    assert users[1].content == "please read this"
+
+
+def test_untrusted_boundary_changes_between_turns():
+    provider = PlainProvider("ok")
+    handler = ChatHandler(
+        provider,
+        max_steps=1,
+        clock=False,
+        quality=False,
+        file_understander=FileUnderstander(),
+    )
+    inbound = InboundMessage(
+        "telegram",
+        "7",
+        "42",
+        "read this",
+        attachments=[Attachment("notes.txt", data=b"same")],
+    )
+
+    handler.handle(inbound)
+    first = next(
+        message.content
+        for message in provider.calls[-1]
+        if message.role == "user"
+        and message.content.startswith("<untrusted")
+    )
+    handler.handle(InboundMessage("telegram", "7", "42", "again"))
+    second = next(
+        message.content
+        for message in provider.calls[-1]
+        if message.role == "user"
+        and message.content.startswith("<untrusted")
+    )
+
+    assert first != second
+    first_token = first.split('boundary="', 1)[1].split('"', 1)[0]
+    second_token = second.split('boundary="', 1)[1].split('"', 1)[0]
+    assert first_token != second_token
 
 
 def test_attachments_are_reported_when_file_understanding_is_disabled():
@@ -95,8 +140,10 @@ def test_attachments_are_reported_when_file_understanding_is_disabled():
     handler = ChatHandler(provider, max_steps=1, clock=False, quality=False)
 
     assert handler.handle(inbound) == "ok"
-    system = provider.calls[-1][0].content
-    assert "File understanding is disabled" in system
+    users = [
+        message for message in provider.calls[-1] if message.role == "user"
+    ]
+    assert "File understanding is disabled" in users[0].content
 
 
 def test_attachment_context_is_capped_for_small_context_windows():
@@ -145,12 +192,20 @@ def test_attachment_context_survives_follow_up_turns_until_reset():
     handler.handle(first)
     handler.handle(InboundMessage("telegram", "7", "42", "follow up"))
 
-    assert "remember me" in provider.calls[-1][0].content
+    users = [
+        message
+        for message in provider.calls[-1]
+        if message.role == "user"
+    ]
+    assert any("remember me" in message.content for message in users)
 
     handler.reset("telegram:42")
     handler.handle(InboundMessage("telegram", "7", "42", "after reset"))
 
-    assert "remember me" not in provider.calls[-1][0].content
+    assert all(
+        "remember me" not in message.content
+        for message in provider.calls[-1]
+    )
 
 
 # ---------------------------------------------------------------------------

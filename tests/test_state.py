@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -99,6 +100,26 @@ def test_apply_writes_and_backs_up_previous(config: StateConfig) -> None:
     assert result.status == "accepted"
     assert manager.path.read_text(encoding="utf-8") == second
     assert manager.backup_path.read_text(encoding="utf-8") == first
+
+
+def test_applied_state_edits_are_audited(config: StateConfig) -> None:
+    manager = StateManager("s", config)
+    first = manager.ensure("Original goal")
+    second = valid_state(current="Expedite approved.")
+
+    assert manager.apply(second).status == "accepted"
+    assert manager.apply(second).status == "unchanged"
+
+    lines = manager.audit_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    records = [json.loads(line) for line in lines]
+    assert all(record["event"] == "state_edit" for record in records)
+    assert all(record["session"] == "s" for record in records)
+    assert records[0]["new_sha256"] == records[1]["previous_sha256"]
+    assert records[1]["chars"] == len(second)
+    assert records[0]["previous_sha256"] != records[0]["new_sha256"]
+    assert "at" in records[1]
+    assert first != second
 
 
 def test_rejected_edit_never_changes_file(config: StateConfig) -> None:

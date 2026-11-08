@@ -1,7 +1,8 @@
 """Turn chat attachments into untrusted, model-readable markdown.
 
-The gateway appends the result to the end of the system prompt for the turn, so
-a text-only model can reason about files and images.  The core stays
+The gateway sends the result as a user turn wrapped in an untrusted boundary
+before the user's actual request, so a text-only model can reason about files
+and images without treating their contents as instructions.  The core stays
 standard-library-only:
 
 * text, JSON, CSV, HTML, DOCX, PPTX, XLSX, archives, and binary metadata are
@@ -246,7 +247,7 @@ class _HTMLText(HTMLParser):
 
 
 class FileUnderstander:
-    """Convert attachments into a markdown block for the system prompt."""
+    """Convert attachments into an untrusted markdown block for one turn."""
 
     def __init__(
         self,

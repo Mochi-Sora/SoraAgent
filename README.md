@@ -384,7 +384,8 @@ The layers are intentionally separable:
 | Pure loop | `sora_agent/runner.py` | Ask the provider, execute tool calls, feed observations back, stop on answer / budget / policy. Knows nothing about sessions, files, or the CLI. |
 | Providers | `sora_agent/providers.py` | `Message`, `ModelTurn`, `ToolCall`, `MockProvider`, `OpenAIChatProvider`, text-`ACTION:` parsing. |
 | Tools | `sora_agent/tools.py` | `Tool`, `ToolRegistry`, `ToolExecutor`, `ToolResult`, schema generation, the `@tool` decorator. |
-| Attachments | `sora_agent/files.py` | Convert files and images into untrusted markdown for the system prompt. |
+| Attachments | `sora_agent/files.py` | Convert files and images into untrusted markdown carried in a user turn. |
+| Untrusted framing | `sora_agent/untrusted.py` | Random per-turn boundaries for attachment and vision text. |
 | Discovery | `sora_agent/tool_search.py` | `ToolGate`, `FindToolsTool`, two-tier lexical ranking with aliases and IDF weights. |
 | Approval | `sora_agent/approval.py` | `ApprovalGate`, `AuditEntry`; chat variant in `channels/approval.py`. |
 | Evaluation | `sora_agent/eval.py` | `Trajectory`, `EvalReport`, `QualityGate`, `structural_grader`, metrics. |
@@ -1131,7 +1132,8 @@ manager; it stays in the foreground and handles `SIGTERM` gracefully.
 
 The **file understander** (`sora_agent/files.py`) downloads and converts
 Telegram attachments (up to the Bot API limit) into detailed markdown, then
-appends that markdown to the **end of the system prompt**. The latest attachment
+sends that markdown as a **user turn wrapped in an untrusted boundary** before
+the actual request. It never enters the system prompt. The latest attachment
 context stays available in memory for follow-up turns and is cleared by
 `/reset`. With a vision model (auto-selected or configured) or OCR, the main
 model does not need to support images or file inputs.
@@ -1171,9 +1173,11 @@ when needed, `SORA_VISION_BASE_URL` / `SORA_VISION_API_KEY`. If no vision model
 or OCR engine is available, the image is represented by its metadata. Each
 image description makes one extra model request when a vision model is used.
 
-Attachment text is explicitly marked as untrusted data in the system prompt;
-instructions inside a file must not be followed. DOCX/PPTX/XLSX and archive
-parsing never executes content and never extracts nested archives.
+Attachment and vision text is wrapped in an `<untrusted>` element with a random
+per-turn boundary token. The system prompt tells the model that this content is
+data, never instructions, and that identity/state edits may never be triggered
+by it. DOCX/PPTX/XLSX and archive parsing never executes content and never
+extracts nested archives.
 
 ### Adding a channel
 

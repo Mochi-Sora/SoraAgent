@@ -22,6 +22,7 @@ from ..runner import RunEvent, RunMetrics, RunResult
 from ..runtime import AgentRuntime, RunRequest, wrap_identity
 from ..tool_search import FIND_TOOLS_NAME
 from ..tools import ToolRegistry
+from ..untrusted import UNTRUSTED_POLICY, wrap_untrusted
 from .approval import ApprovalBroker
 from .sessions import SessionStore
 from .types import InboundMessage
@@ -162,13 +163,30 @@ class ChatHandler:
             approval = None
         system_prompt = self._prompt()
         attachment_context = self._attachment_context(inbound)
-        if attachment_context:
-            system_prompt = f"{system_prompt}\n\n{attachment_context}"
-        messages = [
-            Message("system", system_prompt),
-            *self._fit_context(history, inbound.content, system_prompt),
-            Message("user", inbound.content),
-        ]
+        attachment_message = (
+            Message(
+                "user",
+                wrap_untrusted("attachments", attachment_context),
+            )
+            if attachment_context
+            else None
+        )
+        messages = [Message("system", system_prompt)]
+        messages.extend(
+            self._fit_context(
+                history,
+                inbound.content,
+                system_prompt,
+                extra_fixed=(
+                    (attachment_message.content,) if attachment_message else ()
+                ),
+            )
+        )
+        if attachment_message is not None:
+            # Untrusted attachment data travels as a user turn before the
+            # actual request, never inside the system prompt.
+            messages.append(attachment_message)
+        messages.append(Message("user", inbound.content))
         state = ChatState(session_id=key)
         self._notify("before_run", inbound.content, state)
         try:
@@ -340,7 +358,7 @@ class ChatHandler:
             self._history[key] = messages
 
     def _prompt(self) -> str:
-        prompt = self.system_prompt + TOOLS_POLICY
+        prompt = self.system_prompt + TOOLS_POLICY + UNTRUSTED_POLICY
         if self.memory_tool is not None:
             prompt += MEMORY_POLICY
         return prompt
@@ -350,6 +368,8 @@ class ChatHandler:
         history: list[Message],
         inbound_content: str,
         system_prompt: str | None = None,
+        *,
+        extra_fixed: tuple[str, ...] = (),
     ) -> list[Message]:
         """Trim persisted history to the configured context window."""
         limit = self.max_turns * 2
@@ -361,7 +381,7 @@ class ChatHandler:
         return trim_messages(
             history,
             self.context_window,
-            fixed_texts=(fixed, inbound_content),
+            fixed_texts=(fixed, inbound_content, *extra_fixed),
         )
 
     def _attachment_context(self, inbound: InboundMessage) -> str:

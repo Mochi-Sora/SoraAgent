@@ -861,9 +861,12 @@ def test_attachment_reaches_the_system_prompt_through_the_manager():
         return transport
 
     transport = asyncio.run(scenario())
-    system = provider.calls[-1][0].content
-    assert "## Attached files (dynamic)" in system
-    assert "file contents" in system
+    sent = provider.calls[-1]
+    system = sent[0].content
+    assert "## Attached files (dynamic)" not in system
+    users = [message for message in sent if message.role == "user"]
+    assert '<untrusted source="attachments"' in users[0].content
+    assert "file contents" in users[0].content
     assert any(sent[1] == "done" for sent in transport.sent)
 
 

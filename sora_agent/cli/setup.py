@@ -864,8 +864,8 @@ def _configure_files(settings: Settings) -> None:
     files = settings.features.files
     ui.section(
         "Files and images",
-        "Download attachments and turn them into markdown appended to the "
-        "system prompt. This works even when the main model cannot see images.",
+        "Download attachments and turn them into untrusted markdown in a user "
+        "turn. This works even when the main model cannot see images.",
     )
     files.enabled = prompts.confirm(
         "Understand incoming files and images?", default=files.enabled
