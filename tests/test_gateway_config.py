@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
@@ -42,14 +43,28 @@ def _clear_runtime_overrides(monkeypatch):
 def _capture_serve(monkeypatch):
     captured: dict = {}
 
+    @dataclass
+    class FakeConfig:
+        allow_from: tuple[str, ...] = ()
+        download_attachments: bool = True
+
+    class FakePlugin:
+        def load_channel_class(self):
+            return type("FakeChannel", (), {})
+
     async def fake_serve(channel_cls, config, **kwargs):
         captured["channel_cls"] = channel_cls
         captured["config"] = config
         captured["kwargs"] = kwargs
 
     monkeypatch.setattr(gateway, "_serve", fake_serve)
+    monkeypatch.setattr(gateway, "load_plugin", lambda name: FakePlugin())
     monkeypatch.setattr(
-        gateway, "load_channel_class", lambda name: type("FakeChannel", (), {})
+        gateway,
+        "build_channel_config",
+        lambda name, settings, secrets, args: FakeConfig(
+            allow_from=tuple(settings.channel.allow_from)
+        ),
     )
     return captured
 
@@ -220,16 +235,14 @@ def test_gateway_without_a_config_keeps_legacy_defaults(monkeypatch, tmp_path):
     assert captured["channel_cls"].__name__ == "FakeChannel"
 
 
-def test_gateway_refuses_unwired_channels_before_building_runtime(
-    monkeypatch, capsys
-):
+def test_gateway_reports_missing_channel_credentials(monkeypatch, capsys):
     _clear_runtime_overrides(monkeypatch)
     settings = advanced_settings()
     settings.channel.kind = "discord"
     save_settings(settings)
 
     assert gateway.main([]) == 2
-    assert "no configuration is wired" in capsys.readouterr().err
+    assert "SORA_DISCORD_TOKEN" in capsys.readouterr().err
 
 
 def test_gateway_is_still_exported_as_a_console_entry_point():

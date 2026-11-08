@@ -10,8 +10,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import importlib
 import logging
-import os
 import signal
 import sys
 from collections.abc import Sequence
@@ -43,8 +43,8 @@ from .approval import ApprovalBroker
 from .bus import MessageBus
 from .chat import CHAT_SYSTEM_PROMPT, ChatHandler
 from .manager import ChannelManager
-from .registry import discover_plugins, load_channel_class
-from .telegram.config import TelegramConfig, split_ids
+from .registry import discover_plugins, load_plugin
+from .telegram.config import from_settings as telegram_config_from_settings
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -62,28 +62,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"sora-gateway: {exc}", file=sys.stderr)
         return 2
 
-    channel_kind = args.channel or settings.channel.kind or "telegram"
-    if channel_kind != "telegram":
+    channel_kind = (
+        args.channel or settings.channel.kind or "telegram"
+    ).strip().lower()
+    try:
+        plugin = load_plugin(channel_kind)
+    except Exception as exc:  # noqa: BLE001 - a broken plugin is a CLI error
         print(
-            f"sora-gateway: no configuration is wired for channel "
-            f"{channel_kind!r} yet",
+            f"sora-gateway: unknown channel {channel_kind!r}: {exc}",
             file=sys.stderr,
         )
         return 2
     try:
-        config = _telegram_config(settings, secrets, args)
-    except ValueError as exc:
+        config = build_channel_config(channel_kind, settings, secrets, args)
+    except (ValueError, ImportError) as exc:
         print(f"sora-gateway: {exc}", file=sys.stderr)
         return 2
     if not config.allow_from:
         print(
-            "sora-gateway: warning: allow_from is empty, so every message will "
-            "be ignored. Set SORA_TELEGRAM_ALLOW_FROM=<user id>, pass "
-            "--allow <user id>, or run `sora setup`.",
+            f"sora-gateway: warning: {channel_kind} allow_from is empty, so "
+            "every message will be ignored. Set the channel's ALLOW_FROM "
+            "variable, pass --allow <id>, or run `sora setup`.",
             file=sys.stderr,
         )
     try:
-        channel_cls = load_channel_class("telegram")
+        channel_cls = plugin.load_channel_class()
     except ImportError as exc:
         print(f"sora-gateway: {exc}", file=sys.stderr)
         return 2
@@ -237,7 +240,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 async def _serve(
     channel_cls: type,
-    config: TelegramConfig,
+    config: Any,
     *,
     provider,
     registry,
@@ -320,11 +323,12 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sora-gateway",
         description=(
-            "Run the agent behind a chat channel. Telegram reads its token and "
-            "allow list from SORA_TELEGRAM_TOKEN and "
-            "SORA_TELEGRAM_ALLOW_FROM unless the flags below override them. "
-            "A saved `sora setup` configuration supplies the defaults when no "
-            "flag or environment variable is set."
+            "Run the agent behind a chat channel. Each channel reads its "
+            "credentials and access policy from SORA_<CHANNEL>_* variables "
+            "unless the flags below override them. A saved `sora setup` "
+            "configuration supplies the defaults when no flag or environment "
+            "variable is set. Run `sora-gateway --list` to see the installed "
+            "channels."
         ),
     )
     parser.add_argument("--channel", default=None, help="channel to run")
@@ -433,7 +437,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow",
         default=None,
-        help="comma-separated Telegram user ids; * allows everyone",
+        help="comma-separated sender ids; * allows everyone",
     )
     parser.add_argument(
         "--list", action="store_true", help="list discovered channels and exit"
@@ -441,90 +445,20 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _telegram_config(settings, secrets, args) -> TelegramConfig:
-    token = (
-        args.token
-        or os.getenv("SORA_TELEGRAM_TOKEN", "").strip()
-        or secrets.get("SORA_TELEGRAM_TOKEN", "").strip()
-    )
-    if not token:
-        raise ValueError(
-            "SORA_TELEGRAM_TOKEN is not set; create a bot with @BotFather and "
-            "run `sora setup`, export the token, or pass --token"
+def _telegram_config(settings, secrets, args):
+    """Backward-compatible wrapper around the Telegram config builder."""
+    return telegram_config_from_settings(settings, secrets, args)
+
+
+def build_channel_config(name: str, settings, secrets, args) -> Any:
+    """Load one channel's ``from_settings`` config builder."""
+    module = importlib.import_module(f"{__package__}.{name}.config")
+    builder = getattr(module, "from_settings", None)
+    if not callable(builder):
+        raise TypeError(
+            f"channel {name!r} does not provide a from_settings config builder"
         )
-
-    allow_raw = os.getenv("SORA_TELEGRAM_ALLOW_FROM")
-    if args.allow is not None:
-        allow_from = split_ids(args.allow)
-    elif allow_raw is not None:
-        allow_from = split_ids(allow_raw)
-    else:
-        allow_from = tuple(settings.channel.allow_from)
-
-    parse_raw = os.getenv("SORA_TELEGRAM_PARSE_MODE")
-    parse_mode = (
-        (parse_raw.strip() or None)
-        if parse_raw is not None
-        else settings.channel.parse_mode
-    )
-
-    def env_or(name: str, fallback):
-        raw = os.getenv(name)
-        return fallback if raw is None or not raw.strip() else raw.strip()
-
-    return TelegramConfig(
-        token=token,
-        allow_from=allow_from,
-        api_base=env_or(
-            "SORA_TELEGRAM_API_BASE", settings.channel.api_base
-        ),
-        poll_timeout=_as_int(
-            env_or("SORA_TELEGRAM_POLL_TIMEOUT", settings.channel.poll_timeout),
-            settings.channel.poll_timeout,
-        ),
-        request_timeout=_as_float(
-            env_or(
-                "SORA_TELEGRAM_REQUEST_TIMEOUT",
-                settings.channel.request_timeout,
-            ),
-            settings.channel.request_timeout,
-        ),
-        parse_mode=parse_mode,
-        max_message_chars=_as_int(
-            env_or(
-                "SORA_TELEGRAM_MAX_CHARS",
-                settings.channel.max_message_chars,
-            ),
-            settings.channel.max_message_chars,
-        ),
-        download_attachments=_as_bool(
-            os.getenv("SORA_TELEGRAM_DOWNLOAD_FILES"), True
-        ),
-        max_attachment_bytes=_as_int(
-            os.getenv("SORA_TELEGRAM_MAX_ATTACHMENT_BYTES"),
-            20 * 1024 * 1024,
-        ),
-    )
-
-
-def _as_int(value, fallback: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return fallback
-
-
-def _as_bool(value, fallback: bool) -> bool:
-    if value is None or not str(value).strip():
-        return fallback
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _as_float(value, fallback: float) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return fallback
+    return builder(settings, secrets, args)
 
 
 def _log_run_event(event: RunEvent) -> None:

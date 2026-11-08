@@ -423,6 +423,8 @@ class LimitSettings:
 class ChannelSettings:
     kind: str = "telegram"
     allow_from: tuple[str, ...] = ()
+    typing: bool = True
+    options: dict[str, Any] = field(default_factory=dict)
     parse_mode: str | None = None
     api_base: str = "https://api.telegram.org"
     poll_timeout: int = 30
@@ -431,6 +433,8 @@ class ChannelSettings:
 
     def __post_init__(self) -> None:
         self.kind = self.kind.strip().lower() or "telegram"
+        self.typing = _as_bool(self.typing, True)
+        self.options = dict(_mapping(self.options, "channel.options"))
         self.api_base = self.api_base.strip() or "https://api.telegram.org"
         self.poll_timeout = _as_int(self.poll_timeout, 30, minimum=0)
         self.request_timeout = _as_float(
@@ -455,6 +459,8 @@ class ChannelSettings:
         return cls(
             kind=_as_str(raw.get("kind"), base.kind),
             allow_from=_as_str_tuple(raw.get("allow_from")),
+            typing=_as_bool(raw.get("typing"), base.typing),
+            options=dict(_mapping(raw.get("options"), "channel.options")),
             parse_mode=_as_optional_str(raw.get("parse_mode")),
             api_base=_as_str(raw.get("api_base"), base.api_base),
             poll_timeout=_as_int(

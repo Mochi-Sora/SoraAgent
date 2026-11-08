@@ -117,6 +117,8 @@ class TelegramChannel(BaseChannel):
             )
 
     async def send_typing(self, inbound: InboundMessage) -> None:
+        if not getattr(self.config, "typing", True):
+            return
         await asyncio.to_thread(
             self.transport.send_chat_action,
             inbound.chat_id,

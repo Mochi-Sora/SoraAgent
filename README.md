@@ -21,9 +21,11 @@ deliberately tiny; the production concerns live in explicit gates around it:
   persistent file-backed identity (`USER.md` / `SOUL.md`), a validated session
   state document, and an optional CortexDB-backed long-term memory with daily
   verbatim recall and nightly consolidation ("dreams").
-- **Chat channels** — pluggable transports (a Telegram channel ships in-box)
-  with typing indicators, per-session history, and human approvals rendered as
-  chat prompts.
+- **Chat channels** — ten in-box transports (Telegram, Discord, Slack,
+  WhatsApp Cloud API, Microsoft Teams, Signal, Google Chat, Matrix,
+  Feishu/Lark, and iMessage via BlueBubbles) with per-session history,
+  human approvals rendered as chat prompts, and a "preparing a response"
+  indicator on every platform that exposes one.
 
 The core imports only the Python standard library; optional integrations
 (`openai`, `zstandard`) are extras. Requires Python **3.9+**. Current version:
@@ -74,6 +76,10 @@ The core imports only the Python standard library; optional integrations
     standard library; image description can use an OpenAI-compatible vision
     model or optional OCR (`pytesseract` + Pillow).
   - Telegram works over `urllib`; no `python-telegram-bot` dependency is needed.
+    The other in-box channels use the same standard-library approach (Discord
+    and Slack WebSockets, signed HTTP webhooks, or platform REST APIs). Signal
+    requires a `signal-cli` daemon and iMessage requires a BlueBubbles server;
+    both are external services, not Python dependencies.
 
 ## Installation
 
@@ -232,7 +238,7 @@ After setup:
 ```bash
 sora chat                              # local terminal chat
 sora run "expedite PO-1234"            # one task, then exit
-sora gateway start                     # Telegram gateway in the background
+sora gateway start                     # chat gateway in the background
 sora doctor                            # configuration and safety check
 ```
 
@@ -400,7 +406,7 @@ The layers are intentionally separable:
 | Approval | `sora_agent/approval.py` | `ApprovalGate`, `AuditEntry`; chat variant in `channels/approval.py`. |
 | Evaluation | `sora_agent/eval.py` | `Trajectory`, `EvalReport`, `QualityGate`, `structural_grader`, metrics. |
 | Judge | `sora_agent/judge.py` | Optional sampled, calibrated, advisory trajectory judge. |
-| Channels | `sora_agent/channels/` | Buses, manager, chat handler, sessions, approvals, Telegram transport, plugin discovery. |
+| Channels | `sora_agent/channels/` | Buses, manager, chat handler, sessions, approvals, ten transports, plugin discovery. |
 | Memory | `sora_agent/memory/` | Daily verbatim store, CortexDB client/sidecar, recall, dreaming, backups. |
 | Model-facing extras | `clock.py`, `calendar.py`, `identity*.py`, `state*.py` | Time, schedule, persona/profile, session state. |
 | Ancillary | `isolation.py`, `rag.py` | Process-isolated tool calls; a minimal retriever protocol. |
@@ -1113,6 +1119,49 @@ firewall always redacts against the updated profile.
 | `SessionStore` | Durable JSON conversation history, one hashed file per session under `~/.sora_agent/sessions` (override `SORA_SESSIONS_ROOT`). History is trimmed to `max_turns * 2` messages (default 40 turns). |
 | `ApprovalBroker` / `ChannelApprovalGate` | Chat-based approvals (see [Human approval](#human-approval)). |
 
+### Built-in channels
+
+Ten transports ship in-box. They all send one final reply after the turn
+completes (no token streaming), and each one shows a "preparing" signal while
+the agent is working.
+
+| Channel | Inbound | Outbound | Preparing signal | Minimum setup |
+| --- | --- | --- | --- | --- |
+| Telegram | Bot API long poll | Bot API | `sendChatAction: typing` | Bot token |
+| Discord | Gateway WebSocket | REST | `POST /channels/{id}/typing` | Bot token + Message Content intent |
+| Slack | Socket Mode | Web API | Assistant status, then a temporary placeholder message | Bot token + app token (`connections:write`) |
+| WhatsApp | Cloud API webhook | Graph API | Read receipt with `typing_indicator` | Phone number id, permanent token, verify token, app secret |
+| Microsoft Teams | Bot Framework webhook | Bot Framework REST | `typing` activity | Azure Bot app id + client secret |
+| Signal | `signal-cli` SSE | `signal-cli` JSON-RPC | `sendTyping` | Running `signal-cli daemon --http` |
+| Google Chat | Signed HTTP events | Incoming webhook | Immediate webhook acknowledgement | App project number + space webhook URL |
+| Matrix | Client-Server `/sync` | Client-Server API | `m.typing` | Homeserver URL + access token (unencrypted rooms) |
+| Feishu / Lark | Event v2 webhook | Open API | `OnIt` reaction, removed after the reply | App id, secret, verification token |
+| iMessage | BlueBubbles webhook | BlueBubbles REST | Typing endpoint | BlueBubbles server URL + password |
+
+All channels enforce the same `allow_from` rule: `"*"` allows everyone and an
+empty list denies everyone. A token alone is never an access policy.
+
+Select one channel per gateway process with `--channel <name>` or the saved
+`channel.kind` setting. Each channel reads its own `SORA_<CHANNEL>_*` variables;
+run `sora-gateway --list` to see the installed channel packages.
+
+```bash
+export SORA_DISCORD_TOKEN=...
+export SORA_DISCORD_ALLOW_FROM=123456789012345678
+sora-gateway --channel discord
+```
+
+**Platform notes.** Discord needs the Message Content intent enabled for the
+bot. Slack uses Socket Mode, so no public URL is required. WhatsApp is the
+Cloud API (not WhatsApp Web); Meta must be able to reach the webhook endpoint.
+Teams and Google Chat verify RS256 webhook tokens against the platform's JWKS.
+Matrix supports unencrypted rooms only. Signal and iMessage depend on their
+external daemons being reachable. Webhook channels bind to `127.0.0.1` by
+default; set `SORA_<CHANNEL>_WEBHOOK_HOST=0.0.0.0` only behind a TLS-terminating
+reverse proxy or tunnel, and keep signature/token verification enabled. Google
+Chat has no typing API, so the immediate acknowledgement is the preparing
+signal and the final reply is posted through the configured incoming webhook.
+
 ### Telegram
 
 The in-box channel long-polls the Bot API using only `urllib` (`getUpdates`),
@@ -1171,8 +1220,9 @@ sora gateway stop
 | `sora gateway logs` | Print the last 50 lines; use `-n` for another count. |
 
 Save the Telegram token with `sora set-key telegram` (or `sora setup`) so the
-background process can find it on future starts. `SORA_GATEWAY_PID` and
-`SORA_GATEWAY_LOG` override the PID and log paths.
+background process can find it on future starts. Other channels read their
+credentials from the `SORA_<CHANNEL>_*` environment variables above.
+`SORA_GATEWAY_PID` and `SORA_GATEWAY_LOG` override the PID and log paths.
 
 Background mode survives SSH disconnects but not a reboot. For boot
 persistence, run `sora-gateway` under systemd, launchd, or another service
@@ -1181,12 +1231,13 @@ manager; it stays in the foreground and handles `SIGTERM` gracefully.
 ### Files and images
 
 The **file understander** (`sora_agent/files.py`) downloads and converts
-Telegram attachments (up to the Bot API limit) into detailed markdown, then
-sends that markdown as a **user turn wrapped in an untrusted boundary** before
-the actual request. It never enters the system prompt. The latest attachment
-context stays available in memory for follow-up turns and is cleared by
-`/reset`. With a vision model (auto-selected or configured) or OCR, the main
-model does not need to support images or file inputs.
+attachments from channels that support them (up to the channel's limit) into
+detailed markdown, then sends that markdown as a **user turn wrapped in an
+untrusted boundary** before the actual request. It never enters the system
+prompt. The latest attachment context stays available in memory for follow-up
+turns and is cleared by `/reset`. With a vision model (auto-selected or
+configured) or OCR, the main model does not need to support images or file
+inputs.
 
 Supported conversions:
 
@@ -1212,9 +1263,10 @@ sora config set features.files.vision_model gpt-5.4-mini
 ```
 
 Environment overrides: `SORA_FILES`, `SORA_FILES_MAX_BYTES`,
-`SORA_FILES_MAX_CHARS`, and `SORA_FILES_TOTAL_MAX_CHARS`. Telegram download
-limits are controlled by `SORA_TELEGRAM_DOWNLOAD_FILES` and
-`SORA_TELEGRAM_MAX_ATTACHMENT_BYTES` (default 20 MB, the Bot API limit).
+`SORA_FILES_MAX_CHARS`, and `SORA_FILES_TOTAL_MAX_CHARS`. Per-channel download
+limits are controlled by `SORA_<CHANNEL>_DOWNLOAD_FILES` and
+`SORA_<CHANNEL>_MAX_ATTACHMENT_BYTES` (Telegram defaults to 20 MB, the Bot API
+limit).
 
 For images, SoraAgent uses the main model automatically when it is known to
 accept image input (OpenAI GPT-4o/4.1/5/6 and o3/o4-mini; Qwen3.7 Plus,

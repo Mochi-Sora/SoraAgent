@@ -143,6 +143,38 @@ def test_settings_round_trip_preserves_values():
     assert loaded.features.memory.recall_top_k == 3
 
 
+def test_channel_settings_round_trip_typing_and_options():
+    loaded = Settings.from_dict(
+        {
+            "setup": {"mode": "recommended"},
+            "channel": {
+                "kind": "Discord",
+                "typing": "off",
+                "options": {"reply_in_thread": True, "max_retries": 2},
+            },
+        }
+    )
+
+    assert loaded.channel.kind == "discord"
+    assert loaded.channel.typing is False
+    assert loaded.channel.options == {
+        "reply_in_thread": True,
+        "max_retries": 2,
+    }
+
+    round_tripped = Settings.from_dict(
+        json.loads(json.dumps(loaded.to_dict()))
+    )
+    assert round_tripped.channel == loaded.channel
+
+
+def test_channel_settings_reject_invalid_values():
+    with pytest.raises(SettingsError):
+        ChannelSettings.from_dict({"typing": "maybe"})
+    with pytest.raises(SettingsError):
+        ChannelSettings.from_dict({"options": ["not", "a", "mapping"]})
+
+
 def test_partial_config_inherits_the_preset_it_claims():
     loaded = Settings.from_dict(
         {

@@ -834,7 +834,10 @@ def test_cancel_releases_a_pending_approval():
 
 def test_cli_lists_channels(capsys):
     assert cli_main(["--list"]) == 0
-    assert "telegram" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "telegram" in output
+    assert "discord" in output
+    assert "slack" in output
 
 
 def test_cli_requires_a_token(monkeypatch, capsys):
@@ -843,6 +846,6 @@ def test_cli_requires_a_token(monkeypatch, capsys):
     assert "SORA_TELEGRAM_TOKEN" in capsys.readouterr().err
 
 
-def test_cli_rejects_unwired_channels(capsys):
+def test_cli_reports_missing_channel_credentials(capsys):
     assert cli_main(["--channel", "discord"]) == 2
-    assert "no configuration" in capsys.readouterr().err
+    assert "SORA_DISCORD_TOKEN" in capsys.readouterr().err

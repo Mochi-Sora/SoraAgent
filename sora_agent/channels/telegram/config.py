@@ -6,6 +6,8 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from .._util import env_bool, env_float, env_int, env_str
+
 _PARSE_MODES = frozenset({"", "HTML", "Markdown", "MarkdownV2"})
 
 
@@ -26,6 +28,7 @@ class TelegramConfig:
     max_message_chars: int = 4096
     download_attachments: bool = True
     max_attachment_bytes: int = 20 * 1024 * 1024
+    typing: bool = True
 
     def __post_init__(self) -> None:
         if not self.token.strip():
@@ -80,7 +83,60 @@ class TelegramConfig:
 
 def split_ids(raw: str) -> tuple[str, ...]:
     """Split a comma-separated id list, dropping blanks."""
-    return tuple(part.strip() for part in raw.split(",") if part.strip())
+    from .._util import split_ids as _split_ids
+
+    return _split_ids(raw)
+
+
+def from_settings(settings, secrets, args):
+    """Build a config from settings, secrets, the environment, and flags."""
+    token = (
+        getattr(args, "token", None)
+        or env_str("SORA_TELEGRAM_TOKEN")
+        or str(secrets.get("SORA_TELEGRAM_TOKEN", "")).strip()
+    )
+    if not token:
+        raise ValueError(
+            "SORA_TELEGRAM_TOKEN is not set; create a bot with @BotFather and "
+            "run `sora setup`, export the token, or pass --token"
+        )
+
+    allow_flag = getattr(args, "allow", None)
+    allow_env = os.getenv("SORA_TELEGRAM_ALLOW_FROM")
+    if allow_flag is not None:
+        allow_from = split_ids(allow_flag)
+    elif allow_env is not None:
+        allow_from = split_ids(allow_env)
+    else:
+        allow_from = tuple(settings.channel.allow_from)
+
+    parse_env = os.getenv("SORA_TELEGRAM_PARSE_MODE")
+    parse_mode = (
+        (parse_env.strip() or None)
+        if parse_env is not None
+        else settings.channel.parse_mode
+    )
+
+    return TelegramConfig(
+        token=token,
+        allow_from=allow_from,
+        api_base=env_str("SORA_TELEGRAM_API_BASE", settings.channel.api_base),
+        poll_timeout=env_int(
+            "SORA_TELEGRAM_POLL_TIMEOUT", settings.channel.poll_timeout
+        ),
+        request_timeout=env_float(
+            "SORA_TELEGRAM_REQUEST_TIMEOUT", settings.channel.request_timeout
+        ),
+        parse_mode=parse_mode,
+        max_message_chars=env_int(
+            "SORA_TELEGRAM_MAX_CHARS", settings.channel.max_message_chars
+        ),
+        download_attachments=env_bool("SORA_TELEGRAM_DOWNLOAD_FILES", True),
+        max_attachment_bytes=env_int(
+            "SORA_TELEGRAM_MAX_ATTACHMENT_BYTES", 20 * 1024 * 1024
+        ),
+        typing=bool(getattr(settings.channel, "typing", True)),
+    )
 
 
 def _as_int(raw: str | None, default: int) -> int:
