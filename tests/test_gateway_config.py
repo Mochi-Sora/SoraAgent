@@ -33,6 +33,8 @@ def _clear_runtime_overrides(monkeypatch):
         "SORA_TELEGRAM_TOKEN",
         "SORA_TELEGRAM_ALLOW_FROM",
         "SORA_TELEGRAM_PARSE_MODE",
+        "SORA_TELEGRAM_DOWNLOAD_FILES",
+        "SORA_TELEGRAM_MAX_ATTACHMENT_BYTES",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -93,6 +95,8 @@ def test_telegram_environment_overrides_saved_values(monkeypatch):
     monkeypatch.setenv("SORA_TELEGRAM_ALLOW_FROM", "22, 33")
     monkeypatch.setenv("SORA_TELEGRAM_PARSE_MODE", "Markdown")
     monkeypatch.setenv("SORA_TELEGRAM_POLL_TIMEOUT", "20")
+    monkeypatch.setenv("SORA_TELEGRAM_DOWNLOAD_FILES", "off")
+    monkeypatch.setenv("SORA_TELEGRAM_MAX_ATTACHMENT_BYTES", "12345")
 
     config = gateway._telegram_config(
         settings,
@@ -104,6 +108,8 @@ def test_telegram_environment_overrides_saved_values(monkeypatch):
     assert config.allow_from == ("22", "33")
     assert config.parse_mode == "Markdown"
     assert config.poll_timeout == 20
+    assert config.download_attachments is False
+    assert config.max_attachment_bytes == 12345
 
 
 def test_explicit_flags_win_over_environment(monkeypatch):

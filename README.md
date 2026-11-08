@@ -1116,22 +1116,26 @@ firewall always redacts against the updated profile.
 ### Telegram
 
 The in-box channel long-polls the Bot API using only `urllib` (`getUpdates`),
-records attachment `file_id`s without downloading, and delivers replies in
+downloads attachments when file understanding is enabled, and delivers replies in
 platform-sized chunks that prefer natural breaks.
 
 - **Typing indicator**: the gateway sends Telegram `sendChatAction` while a
   turn is running, refreshing it periodically and cancelling it on completion.
   Replies are sent once, after the turn completes.
 - **Approvals**: approval prompts get Approve/Reject inline buttons
-  (`approval:<yes|no>:<id>`); button presses are acknowledged and the keyboard
-  removed. Replies by text (`yes` / `no`) work too.
+  (`approval:<yes|no>:<id>`); prompts stay inside their forum topic. A button
+  press is acknowledged only after the broker consumes it; stale buttons say
+  the approval is no longer active and keep their keyboard. Replies by text
+  (`yes` / `no`) work too, but only from the sender who triggered the turn.
 - **Topics**: a `message_thread_id` scopes the session to
   `telegram:<chat>:<thread>`.
 - **Config**: `SORA_TELEGRAM_TOKEN` (required), `SORA_TELEGRAM_ALLOW_FROM`
   (comma-separated user ids, or `*`), `SORA_TELEGRAM_API_BASE`,
   `SORA_TELEGRAM_POLL_TIMEOUT`, `SORA_TELEGRAM_REQUEST_TIMEOUT`,
   `SORA_TELEGRAM_PARSE_MODE` (`HTML`/`Markdown`/`MarkdownV2`),
-  `SORA_TELEGRAM_MAX_CHARS` (default 4096).
+  `SORA_TELEGRAM_MAX_CHARS` (default 4096),
+  `SORA_TELEGRAM_DOWNLOAD_FILES` (default on), and
+  `SORA_TELEGRAM_MAX_ATTACHMENT_BYTES` (default 20 MiB).
 
 Start it with:
 

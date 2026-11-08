@@ -497,6 +497,13 @@ def _telegram_config(settings, secrets, args) -> TelegramConfig:
             ),
             settings.channel.max_message_chars,
         ),
+        download_attachments=_as_bool(
+            os.getenv("SORA_TELEGRAM_DOWNLOAD_FILES"), True
+        ),
+        max_attachment_bytes=_as_int(
+            os.getenv("SORA_TELEGRAM_MAX_ATTACHMENT_BYTES"),
+            20 * 1024 * 1024,
+        ),
     )
 
 
@@ -505,6 +512,12 @@ def _as_int(value, fallback: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return fallback
+
+
+def _as_bool(value, fallback: bool) -> bool:
+    if value is None or not str(value).strip():
+        return fallback
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _as_float(value, fallback: float) -> float:
