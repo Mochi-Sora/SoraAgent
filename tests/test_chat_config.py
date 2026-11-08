@@ -5,12 +5,7 @@ from __future__ import annotations
 from sora_agent.approval import AutoApprovalGate
 from sora_agent.channels.chat import ChatHandler
 from sora_agent.channels.sessions import SessionStore
-from sora_agent.channels.types import (
-    STREAM_DELTA_KIND,
-    STREAM_END_KIND,
-    InboundMessage,
-    TurnReply,
-)
+from sora_agent.channels.types import InboundMessage
 from sora_agent.files import Attachment, FileUnderstander
 from sora_agent.providers import Message, ModelTurn, ToolCall
 from sora_agent.tools import Tool, ToolRegistry
@@ -215,49 +210,6 @@ def test_quality_on_records_a_report():
     report = handler.last_report("cli:42")
     assert report is not None
     assert report.passed is True
-
-
-# ---------------------------------------------------------------------------
-# Streaming off
-# ---------------------------------------------------------------------------
-
-
-def test_streaming_off_never_emits_live_updates():
-    events: list = []
-    handler = ChatHandler(
-        PlainProvider("answer"),
-        max_steps=1,
-        clock=False,
-        quality=False,
-        emitter=events.append,
-        streaming=False,
-    )
-
-    reply = handler.handle(_inbound())
-
-    assert reply == "answer"
-    assert events == []
-
-
-def test_streaming_on_emits_cumulative_snapshots_and_ends():
-    events: list = []
-    handler = ChatHandler(
-        PlainProvider("streamed answer"),
-        max_steps=1,
-        clock=False,
-        quality=False,
-        emitter=events.append,
-        streaming=True,
-    )
-
-    reply = handler.handle(_inbound())
-
-    assert isinstance(reply, TurnReply)
-    assert reply.delivered is True
-    kinds = [event.metadata["kind"] for event in events]
-    assert STREAM_DELTA_KIND in kinds
-    assert kinds[-1] == STREAM_END_KIND
-    assert any(event.content == "streamed answer" for event in events)
 
 
 # ---------------------------------------------------------------------------

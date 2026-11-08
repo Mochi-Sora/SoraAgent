@@ -3,18 +3,12 @@
 from __future__ import annotations
 
 import contextlib
-import sys
 from typing import Any
 
 from .. import __version__
 from ..approval import ApprovalGate, AutoApprovalGate
 from ..channels.chat import CHAT_SYSTEM_PROMPT, ChatHandler
-from ..channels.types import (
-    STREAM_DELTA_KIND,
-    STREAM_END_KIND,
-    InboundMessage,
-    TurnReply,
-)
+from ..channels.types import InboundMessage
 from ..persona import apply_persona, display_name
 from ..runtime_setup import (
     approval_mode,
@@ -28,39 +22,9 @@ from ..runtime_setup import (
     context_window,
     provider_label,
     quality_enabled,
-    streaming_enabled,
 )
 from ..settings import Settings
 from . import ui
-
-
-class ConsoleEmitter:
-    """Render cumulative stream snapshots as terminal deltas."""
-
-    def __init__(self, out: Any = None) -> None:
-        self.out = out or sys.stdout
-        self._sent: dict[str, str] = {}
-
-    def __call__(self, message) -> None:
-        kind = message.metadata.get("kind")
-        stream_id = str(message.metadata.get("stream_id") or "")
-        if kind == STREAM_END_KIND:
-            if stream_id in self._sent:
-                self.out.write("\n")
-                self.out.flush()
-                self._sent.pop(stream_id, None)
-            return
-        if kind != STREAM_DELTA_KIND:
-            return
-        current = message.content
-        previous = self._sent.get(stream_id, "")
-        chunk = (
-            current.removeprefix(previous)
-        )
-        if chunk:
-            self.out.write(chunk)
-            self.out.flush()
-        self._sent[stream_id] = current
 
 
 def build_handler(
@@ -68,8 +32,6 @@ def build_handler(
     secrets: dict[str, str],
     *,
     sessions: Any = ...,
-    streaming: bool | None = None,
-    emitter: Any = None,
 ) -> tuple[ChatHandler, Any]:
     """Build a ChatHandler for local use.  Returns ``(handler, memory)``."""
     identity = build_identity(settings)
@@ -81,7 +43,6 @@ def build_handler(
     calendar = build_calendar(settings)
     mode = approval_mode(settings)
     gate = AutoApprovalGate() if mode == "off" else ApprovalGate()
-    stream = streaming_enabled(settings) if streaming is None else streaming
     prompt = apply_persona(
         CHAT_SYSTEM_PROMPT,
         settings.agent.name,
@@ -96,25 +57,21 @@ def build_handler(
         approval_gate=gate,
         sessions=sessions,
         quality=None if quality_enabled(settings) else False,
-        emitter=emitter if stream else None,
         max_steps=settings.limits.max_steps,
         max_turns=settings.limits.max_turns,
         max_tool_result_chars=settings.limits.max_tool_result_chars,
-        max_stream_chars=settings.limits.max_stream_chars,
         tool_timeout=settings.limits.tool_timeout,
         provider_retries=settings.limits.provider_retries,
         clock=clock_enabled(settings),
         calendar=calendar,
         context_window=context_window(settings),
-        streaming=stream,
         system_prompt=prompt,
     )
     return handler, memory
 
 
 def interactive(settings: Settings, secrets: dict[str, str]) -> int:
-    emitter = ConsoleEmitter()
-    handler, memory = build_handler(settings, secrets, emitter=emitter)
+    handler, memory = build_handler(settings, secrets)
     ui.banner(
         settings.agent.name,
         settings.agent.icon,
@@ -199,12 +156,8 @@ def run_once(settings: Settings, secrets: dict[str, str], task: str) -> int:
     return 0
 
 
-def _print_reply(reply: str | TurnReply) -> None:
-    if isinstance(reply, TurnReply):
-        if not reply.delivered:
-            ui.console.print(reply.text)
-    else:
-        ui.console.print(reply)
+def _print_reply(reply: str) -> None:
+    ui.console.print(reply)
 
 
 def _print_help(settings: Settings) -> None:

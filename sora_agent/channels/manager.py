@@ -11,18 +11,12 @@ from typing import Any, Union
 from .approval import APPROVAL_CALLBACK_KIND, ApprovalBroker
 from .base import BaseChannel
 from .bus import MessageBus
-from .types import (
-    STREAM_DELTA_KIND,
-    STREAM_END_KIND,
-    InboundMessage,
-    OutboundMessage,
-    TurnReply,
-)
+from .types import InboundMessage, OutboundMessage
 
-Reply = Union[str, TurnReply]
-Handler = Callable[[InboundMessage], Union[Reply, Awaitable[Reply]]]
+Handler = Callable[[InboundMessage], Union[str, Awaitable[str]]]
 
 _MAX_SEND_ATTEMPTS = 3
+_DEFAULT_TYPING_INTERVAL = 4.0
 
 
 class ChannelManager:
@@ -42,6 +36,7 @@ class ChannelManager:
         approvals: ApprovalBroker | None = None,
         commands: Callable[[InboundMessage], str | None] | None = None,
         on_shutdown: Callable[[], object] | None = None,
+        typing_interval: float = _DEFAULT_TYPING_INTERVAL,
         logger: logging.Logger | None = None,
     ) -> None:
         if not channels:
@@ -52,6 +47,7 @@ class ChannelManager:
         self.approvals = approvals
         self.commands = commands
         self.on_shutdown = on_shutdown
+        self.typing_interval = max(0.01, float(typing_interval))
         self.log = logger or logging.getLogger(__name__)
         self._by_name: dict[str, BaseChannel] = {}
         for channel in self.channels:
@@ -159,20 +155,47 @@ class ChannelManager:
     async def _run_turn(self, inbound: InboundMessage) -> None:
         lock = self._session_locks.setdefault(inbound.session_key, asyncio.Lock())
         async with lock:
+            channel = self._by_name.get(inbound.channel)
+            typing = (
+                asyncio.create_task(self._typing_loop(channel, inbound))
+                if channel is not None
+                else None
+            )
             try:
-                result = await self._invoke(inbound)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                self.log.exception("handler failed for %s", inbound.session_key)
-                result = "Sorry — I couldn't complete that request."
-            text, delivered = _coerce_reply(result)
+                try:
+                    result = await self._invoke(inbound)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self.log.exception(
+                        "handler failed for %s", inbound.session_key
+                    )
+                    result = "Sorry — I couldn't complete that request."
+            finally:
+                if typing is not None:
+                    typing.cancel()
+                    await asyncio.gather(typing, return_exceptions=True)
+            text = _reply_text(result)
             if not text:
                 return
-            channel = self._by_name.get(inbound.channel)
-            if delivered and channel is not None and channel.supports_streaming:
-                return
             await self._publish_reply(inbound, text)
+
+    async def _typing_loop(
+        self, channel: BaseChannel, inbound: InboundMessage
+    ) -> None:
+        while True:
+            try:
+                await channel.send_typing(inbound)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - typing is best-effort
+                self.log.debug(
+                    "typing indicator failed for %s: %s",
+                    inbound.session_key,
+                    exc,
+                )
+                return
+            await asyncio.sleep(self.typing_interval)
 
     def _command_reply(self, inbound: InboundMessage) -> str | None:
         handler = self.commands
@@ -205,12 +228,6 @@ class ChannelManager:
             channel = self._by_name.get(message.channel)
             if channel is None:
                 self.log.error("no channel named %r to deliver to", message.channel)
-                continue
-            if (
-                message.metadata.get("kind")
-                in {STREAM_DELTA_KIND, STREAM_END_KIND}
-                and not channel.supports_streaming
-            ):
                 continue
             await self._send(channel, message)
 
@@ -257,12 +274,8 @@ class ChannelManager:
         return value
 
 
-def _coerce_reply(value: Any) -> tuple[str, bool]:
-    if isinstance(value, TurnReply):
-        return value.text, value.delivered
-    if isinstance(value, str):
-        return value, False
-    return str(value), False
+def _reply_text(value: Any) -> str:
+    return value if isinstance(value, str) else str(value)
 
 
 def _reply_target(inbound: InboundMessage) -> str | None:

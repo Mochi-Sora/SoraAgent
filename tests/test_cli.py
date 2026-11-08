@@ -2,17 +2,9 @@
 
 from __future__ import annotations
 
-import io
-
 import pytest
 from typer.testing import CliRunner
 
-from sora_agent.channels.types import (
-    STREAM_DELTA_KIND,
-    STREAM_END_KIND,
-    OutboundMessage,
-)
-from sora_agent.cli.chat import ConsoleEmitter
 from sora_agent.cli.main import app
 from sora_agent.cli.setup import (
     _configure_files,
@@ -220,36 +212,3 @@ def test_mask_never_prints_a_whole_secret():
     assert masked.endswith("7890")
 
 
-# ---------------------------------------------------------------------------
-# Terminal streaming renderer
-# ---------------------------------------------------------------------------
-
-
-def _stream(text: str, kind: str, stream_id: str = "one") -> OutboundMessage:
-    return OutboundMessage(
-        "cli",
-        "local",
-        text,
-        metadata={"kind": kind, "stream_id": stream_id},
-    )
-
-
-def test_console_emitter_prints_only_new_text_and_a_final_newline():
-    out = io.StringIO()
-    emitter = ConsoleEmitter(out)
-
-    emitter(_stream("hel", STREAM_DELTA_KIND))
-    emitter(_stream("hello", STREAM_DELTA_KIND))
-    emitter(_stream("", STREAM_END_KIND))
-
-    assert out.getvalue() == "hello\n"
-
-
-def test_console_emitter_handles_a_replaced_snapshot():
-    out = io.StringIO()
-    emitter = ConsoleEmitter(out)
-
-    emitter(_stream("first draft", STREAM_DELTA_KIND))
-    emitter(_stream("final answer", STREAM_DELTA_KIND))
-
-    assert out.getvalue() == "first draftfinal answer"

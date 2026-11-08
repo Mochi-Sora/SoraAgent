@@ -25,11 +25,7 @@ from sora_agent.channels.telegram.transport import (
     TelegramError,
     UrllibTelegramTransport,
 )
-from sora_agent.channels.types import (
-    STREAM_DELTA_KIND,
-    STREAM_END_KIND,
-    OutboundMessage,
-)
+from sora_agent.channels.types import InboundMessage, OutboundMessage
 from sora_agent.files import FileUnderstander
 from sora_agent.providers import ModelTurn, ToolCall
 from sora_agent.tools import Tool, ToolRegistry
@@ -62,7 +58,7 @@ class FakeTransport:
         self.sent: list[tuple] = []
         self.answered: list[tuple] = []
         self.cleared: list[tuple] = []
-        self.edits: list[tuple] = []
+        self.actions: list[tuple] = []
         self.downloads: list[tuple] = []
         self.files: dict[str, bytes] = {}
 
@@ -76,13 +72,29 @@ class FakeTransport:
         return batch
 
     def send_message(
-        self, chat_id, text, *, reply_to=None, parse_mode=None, reply_markup=None
+        self,
+        chat_id,
+        text,
+        *,
+        reply_to=None,
+        parse_mode=None,
+        reply_markup=None,
+        message_thread_id=None,
     ):
-        self.sent.append((chat_id, text, reply_to, parse_mode, reply_markup))
+        self.sent.append(
+            (
+                chat_id,
+                text,
+                reply_to,
+                parse_mode,
+                reply_markup,
+                message_thread_id,
+            )
+        )
         return "9"
 
-    def edit_message_text(self, chat_id, message_id, text, *, parse_mode=None):
-        self.edits.append((chat_id, message_id, text))
+    def send_chat_action(self, chat_id, action, *, message_thread_id=None):
+        self.actions.append((chat_id, action, message_thread_id))
 
     def answer_callback_query(self, callback_query_id, text=""):
         self.answered.append((callback_query_id, text))
@@ -407,8 +419,11 @@ def test_send_chunks_long_messages():
 
     sent = asyncio.run(scenario())
     assert len(sent) == 3
-    assert all(len(text) <= 10 for _, text, _, _, _ in sent)
-    assert " ".join(text for _, text, _, _, _ in sent) == "alpha beta gamma delta"
+    assert all(len(text) <= 10 for _, text, _, _, _, _ in sent)
+    assert (
+        " ".join(text for _, text, _, _, _, _ in sent)
+        == "alpha beta gamma delta"
+    )
     assert sent[0][2] is None
 
 
@@ -696,34 +711,40 @@ def test_send_renders_approval_buttons():
     }
 
 
-def test_channel_edits_one_live_message_while_streaming():
+def test_channel_sends_typing_action():
     async def scenario():
         transport = FakeTransport()
         channel = TelegramChannel(_config(), MessageBus(), transport=transport)
-        meta = {"kind": STREAM_DELTA_KIND, "stream_id": "s1"}
-        await channel.send(
-            OutboundMessage("telegram", "42", "Hel", metadata=meta)
+        inbound = InboundMessage(
+            "telegram",
+            "7",
+            "42",
+            "hi",
+            metadata={"message_thread_id": 9},
         )
-        await channel.send(
-            OutboundMessage("telegram", "42", "Hello", metadata=meta)
-        )
+        await channel.send_typing(inbound)
+        return transport
+
+    transport = asyncio.run(scenario())
+    assert transport.actions == [("42", "typing", 9)]
+
+
+def test_send_forwards_topic_thread_id():
+    async def scenario():
+        transport = FakeTransport()
+        channel = TelegramChannel(_config(), MessageBus(), transport=transport)
         await channel.send(
             OutboundMessage(
                 "telegram",
                 "42",
-                "",
-                metadata={"kind": STREAM_END_KIND, "stream_id": "s1"},
+                "hello",
+                metadata={"message_thread_id": 9},
             )
         )
-        # After the end marker the next run starts a fresh message.
-        await channel.send(
-            OutboundMessage("telegram", "42", "Again", metadata=meta)
-        )
-        return transport
+        return transport.sent
 
-    transport = asyncio.run(scenario())
-    assert [text for _, text, _, _, _ in transport.sent] == ["Hel", "Again"]
-    assert transport.edits == [("42", "9", "Hello")]
+    sent = asyncio.run(scenario())
+    assert sent[0][5] == 9
 
 
 def test_send_without_approval_metadata_has_no_buttons():
@@ -768,7 +789,14 @@ class CallbackTransport(FakeTransport):
         self.pending_callback = True
 
     def send_message(
-        self, chat_id, text, *, reply_to=None, parse_mode=None, reply_markup=None
+        self,
+        chat_id,
+        text,
+        *,
+        reply_to=None,
+        parse_mode=None,
+        reply_markup=None,
+        message_thread_id=None,
     ):
         message_id = super().send_message(
             chat_id,
@@ -776,6 +804,7 @@ class CallbackTransport(FakeTransport):
             reply_to=reply_to,
             parse_mode=parse_mode,
             reply_markup=reply_markup,
+            message_thread_id=message_thread_id,
         )
         if not reply_markup or not self.pending_callback:
             return message_id
@@ -884,4 +913,4 @@ def test_button_press_completes_an_approval():
     transport = asyncio.run(scenario())
     assert executed == ["PO-1"]
     assert transport.answered == [("cq1", "Approved")]
-    assert any(markup for _, _, _, _, markup in transport.sent)
+    assert any(markup for _, _, _, _, markup, _ in transport.sent)

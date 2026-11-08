@@ -335,7 +335,6 @@ class FeatureSettings:
     calendar: bool = True
     sessions: bool = True
     tools: str = "demo"
-    streaming: bool = True
     approval: str = "ask"
     quality: bool = True
 
@@ -363,7 +362,6 @@ class FeatureSettings:
             calendar=_as_bool(raw.get("calendar"), base.calendar),
             sessions=_as_bool(raw.get("sessions"), base.sessions),
             tools=_as_str(raw.get("tools"), base.tools),
-            streaming=_as_bool(raw.get("streaming"), base.streaming),
             approval=_as_str(raw.get("approval"), base.approval),
             quality=_as_bool(raw.get("quality"), base.quality),
         )
@@ -378,7 +376,6 @@ class LimitSettings:
     tool_timeout: float = 60.0
     approval_timeout: float = 300.0
     max_tool_result_chars: int = 4000
-    max_stream_chars: int = 3500
 
     def __post_init__(self) -> None:
         self.max_steps = _as_int(self.max_steps, 12, minimum=1)
@@ -395,9 +392,6 @@ class LimitSettings:
         )
         self.max_tool_result_chars = _as_int(
             self.max_tool_result_chars, 4000, minimum=0
-        )
-        self.max_stream_chars = _as_int(
-            self.max_stream_chars, 3500, minimum=1
         )
 
     @classmethod
@@ -421,9 +415,6 @@ class LimitSettings:
             ),
             max_tool_result_chars=_as_int(
                 raw.get("max_tool_result_chars"), base.max_tool_result_chars
-            ),
-            max_stream_chars=_as_int(
-                raw.get("max_stream_chars"), base.max_stream_chars
             ),
         )
 
@@ -609,7 +600,6 @@ def recommended_settings() -> Settings:
             calendar=True,
             sessions=True,
             tools="demo",
-            streaming=True,
             approval="ask",
             quality=True,
         ),
@@ -650,7 +640,6 @@ def advanced_settings() -> Settings:
             calendar=False,
             sessions=False,
             tools="none",
-            streaming=False,
             approval="off",
             quality=False,
         ),
@@ -694,7 +683,6 @@ def legacy_settings() -> Settings:
             calendar=True,
             sessions=True,
             tools="none",
-            streaming=True,
             approval="ask",
             quality=True,
         ),

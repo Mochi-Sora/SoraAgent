@@ -175,7 +175,7 @@ def test_a_broken_observer_cannot_break_the_run():
 # ---------------------------------------------------------------------------
 
 
-def test_non_streaming_usage_is_parsed(monkeypatch):
+def test_usage_is_parsed(monkeypatch):
     response = SimpleNamespace(
         choices=[
             SimpleNamespace(
@@ -198,51 +198,6 @@ def test_non_streaming_usage_is_parsed(monkeypatch):
 
     assert turn.text == "hi"
     assert turn.usage == TokenUsage(3, 4, 7)
-
-
-def test_streaming_usage_is_parsed(monkeypatch):
-    chunks = [
-        SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    delta=SimpleNamespace(content="he", tool_calls=None)
-                )
-            ],
-            usage=None,
-        ),
-        SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    delta=SimpleNamespace(content="llo", tool_calls=None)
-                )
-            ],
-            usage=None,
-        ),
-        SimpleNamespace(
-            choices=[],
-            usage=SimpleNamespace(
-                prompt_tokens=5, completion_tokens=2, total_tokens=7
-            ),
-        ),
-    ]
-    captured = {}
-
-    def create(**kwargs):
-        captured.update(kwargs)
-        return iter(chunks)
-
-    client = SimpleNamespace(
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
-    provider = OpenAIChatProvider(api_key="k")
-    monkeypatch.setattr(provider, "_client", lambda: client)
-
-    turn = provider.stream_turn([], [], lambda chunk: None)
-
-    assert turn.text == "hello"
-    assert turn.usage == TokenUsage(5, 2, 7)
-    assert captured["stream"] is True
-    assert captured["stream_options"] == {"include_usage": True}
 
 
 # ---------------------------------------------------------------------------

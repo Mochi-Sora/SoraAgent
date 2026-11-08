@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
-import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -26,13 +24,7 @@ from ..tool_search import FIND_TOOLS_NAME
 from ..tools import ToolRegistry
 from .approval import ApprovalBroker
 from .sessions import SessionStore
-from .types import (
-    STREAM_DELTA_KIND,
-    STREAM_END_KIND,
-    InboundMessage,
-    OutboundMessage,
-    TurnReply,
-)
+from .types import InboundMessage
 
 log = logging.getLogger(__name__)
 
@@ -42,8 +34,6 @@ CHAT_SYSTEM_PROMPT = (
     "help, and never claim an action succeeded unless a tool confirmed it."
 )
 
-_STREAM_INTERVAL = 0.25
-_STREAM_MIN_CHARS = 16
 
 
 @dataclass
@@ -68,90 +58,6 @@ class CancelToken:
         return self._event.is_set()
 
 
-class _StreamWriter:
-    """Coalesce provider chunks into cumulative snapshots for the channel.
-
-    One live message is kept per run step, so progress text from a tool-calling
-    turn stays separate from the final answer.
-    """
-
-    def __init__(
-        self,
-        inbound: InboundMessage,
-        emit: Callable[[OutboundMessage], None],
-        limit: int,
-    ) -> None:
-        self.inbound = inbound
-        self.emit = emit
-        self.limit = limit
-        self.run_id = uuid.uuid4().hex[:8]
-        self.buffers: dict[int, str] = {}
-        self.emitted: dict[int, str] = {}
-        self.last_emit: dict[int, float] = {}
-        self.step = -1
-
-    def delta(self, chunk: str, step: int) -> None:
-        if not chunk:
-            return
-        if step != self.step:
-            self._flush(self.step, force=True)
-            self._end(self.step)
-            self.step = step
-        self.buffers[step] = self.buffers.get(step, "") + chunk
-        self._flush(step)
-
-    def finish(self, run: RunResult) -> bool:
-        """Flush every step and report whether the final answer is on screen."""
-        for step in sorted(self.buffers):
-            self._flush(step, force=True)
-            self._end(step)
-        final = run.final_answer.strip()
-        if not final or not run.steps:
-            return False
-        if any(len(text) > self.limit for text in self.buffers.values()):
-            # The live message was never rendered in full; let the manager
-            # deliver the answer with normal chunking.
-            return False
-        last = run.steps[-1].index
-        return self.buffers.get(last, "").strip() == final
-
-    def _flush(self, step: int, force: bool = False) -> None:
-        if step < 0:
-            return
-        text = self.buffers.get(step, "")
-        if not text or text == self.emitted.get(step):
-            return
-        if len(text) > self.limit:
-            return
-        now = time.monotonic()
-        previous = self.emitted.get(step, "")
-        if not force:
-            elapsed = now - self.last_emit.get(step, 0.0)
-            if elapsed < _STREAM_INTERVAL and len(text) - len(previous) < (
-                _STREAM_MIN_CHARS
-            ):
-                return
-        self.emitted[step] = text
-        self.last_emit[step] = now
-        self.emit(self._message(text, STREAM_DELTA_KIND, step))
-
-    def _end(self, step: int) -> None:
-        if step < 0 or step not in self.emitted:
-            return
-        self.emit(self._message("", STREAM_END_KIND, step))
-
-    def _message(self, text: str, kind: str, step: int) -> OutboundMessage:
-        return OutboundMessage(
-            channel=self.inbound.channel,
-            chat_id=self.inbound.chat_id,
-            content=text,
-            metadata={
-                "kind": kind,
-                "stream_id": f"{self.inbound.session_key}:{self.run_id}:{step}",
-            },
-        )
-
-
 class ChatHandler:
     """Turn inbound chat messages into replies.
 
@@ -170,20 +76,17 @@ class ChatHandler:
         approval_gate: Any = None,
         sessions: SessionStore | None = None,
         quality: Any = None,
-        emitter: Callable[[OutboundMessage], None] | None = None,
         max_steps: int = 8,
         max_turns: int = 40,
         max_tool_result_chars: int = 4000,
         tool_timeout: float = 30.0,
         provider_retries: int = 2,
         on_event: Callable[[RunEvent], None] | None = None,
-        max_stream_chars: int = 3500,
         system_prompt: str = CHAT_SYSTEM_PROMPT,
         clock: Any = None,
         calendar: Any = None,
         calendar_db: Any = None,
         context_window: int | None = None,
-        streaming: bool = True,
         file_understander: Any = None,
     ) -> None:
         self.provider = provider
@@ -204,8 +107,6 @@ class ChatHandler:
             self.quality = QualityGate()
         else:
             self.quality = quality
-        self.emitter = emitter
-        self.streaming = bool(streaming)
         self.file_understander = file_understander
         self.context_window = (
             max(1_000, int(context_window))
@@ -218,7 +119,6 @@ class ChatHandler:
         self.tool_timeout = max(0.1, float(tool_timeout))
         self.provider_retries = max(0, int(provider_retries))
         self.on_event = on_event
-        self.max_stream_chars = max(1, int(max_stream_chars))
         self.system_prompt = system_prompt
         if self.identity is not None:
             self._attach_identity(self.identity, memory)
@@ -246,7 +146,7 @@ class ChatHandler:
         self._last_efficiency: dict[str, TrajectoryMetrics] = {}
         self._lock = threading.Lock()
 
-    def handle(self, inbound: InboundMessage) -> str | TurnReply:
+    def handle(self, inbound: InboundMessage) -> str:
         """Run one turn and return the text to send back."""
         key = inbound.session_key
         token = CancelToken()
@@ -260,16 +160,6 @@ class ChatHandler:
             approval = self.approvals.gate(inbound)
         else:
             approval = None
-        writer = (
-            _StreamWriter(inbound, self.emitter, self.max_stream_chars)
-            if self.emitter is not None and self.streaming
-            else None
-        )
-
-        def on_delta(chunk: str, step: int) -> None:
-            if writer is not None and not token.cancelled:
-                writer.delta(chunk, step)
-
         system_prompt = self._prompt()
         attachment_context = self._attachment_context(inbound)
         if attachment_context:
@@ -294,7 +184,6 @@ class ChatHandler:
                     tool_timeout=self.tool_timeout,
                     provider_retries=self.provider_retries,
                     context=f"channel={inbound.channel}",
-                    on_delta=on_delta if writer is not None else None,
                     should_stop=lambda: token.cancelled,
                     on_event=self.on_event,
                 )
@@ -326,7 +215,6 @@ class ChatHandler:
             else:
                 self._last_efficiency[key] = efficiency
 
-        delivered = writer.finish(run) if writer is not None else False
         stored = list(history)
         stored.append(Message("user", inbound.content))
         stored.append(Message("assistant", reply))
@@ -335,9 +223,7 @@ class ChatHandler:
             del stored[: len(stored) - limit]
         with self._lock:
             self._store_history(key, stored)
-        if writer is None:
-            return reply
-        return TurnReply(reply, delivered=delivered, report=report)
+        return reply
 
     def cancel(self, session_key: str) -> bool:
         """Ask a running turn to stop.  Returns whether one was running."""

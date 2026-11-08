@@ -21,8 +21,6 @@ class BaseChannel(ABC):
 
     name: str = "base"
     display_name: str = "Base"
-    #: Whether the transport can edit a live message as text arrives.
-    supports_streaming: bool = False
 
     def __init__(self, config: Any, bus: MessageBus) -> None:
         self.config = config
@@ -45,6 +43,10 @@ class BaseChannel(ABC):
     @abstractmethod
     async def send(self, msg: OutboundMessage) -> None:
         """Deliver one message, raising if the platform rejects it."""
+
+    async def send_typing(self, inbound: InboundMessage) -> None:
+        """Best-effort typing indicator.  Channels may ignore this."""
+        return
 
     def is_allowed(self, sender_id: str) -> bool:
         """Check ``config.allow_from``.

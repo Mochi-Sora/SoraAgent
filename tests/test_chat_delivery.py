@@ -1,4 +1,4 @@
-"""Tests for streamed replies, cancellation, and control commands."""
+"""Tests for completed-reply delivery, typing indicators, and cancellation."""
 
 from __future__ import annotations
 
@@ -10,14 +10,8 @@ from sora_agent.channels.base import BaseChannel
 from sora_agent.channels.bus import MessageBus
 from sora_agent.channels.chat import ChatHandler
 from sora_agent.channels.manager import ChannelManager
-from sora_agent.channels.types import (
-    STREAM_DELTA_KIND,
-    STREAM_END_KIND,
-    InboundMessage,
-    OutboundMessage,
-    TurnReply,
-)
-from sora_agent.providers import ModelTurn, ToolCall, provider_turn
+from sora_agent.channels.types import InboundMessage, OutboundMessage
+from sora_agent.providers import ModelTurn, ToolCall
 from sora_agent.runner import Runner, RunSpec
 from sora_agent.tools import Tool, ToolExecutor, ToolRegistry
 
@@ -34,23 +28,13 @@ class PlainProvider:
         return ModelTurn(text=self.text)
 
 
-class ChunkProvider:
-    def __init__(self, pieces=None) -> None:
-        self.pieces = pieces or ["Hel", "lo ", "world"]
-
-    def stream_turn(self, messages, tools, on_delta, *, should_stop=None):
-        for piece in self.pieces:
-            on_delta(piece)
-        return ModelTurn(text="".join(self.pieces))
-
-
 class RecordingChannel(BaseChannel):
     name = "fake"
-    supports_streaming = False
 
     def __init__(self, config, bus):
         super().__init__(config, bus)
         self.sent: list[OutboundMessage] = []
+        self.typing: list[InboundMessage] = []
         self._stopped: asyncio.Event | None = None
 
     async def start(self) -> None:
@@ -67,8 +51,36 @@ class RecordingChannel(BaseChannel):
         self.sent.append(msg)
 
 
-class StreamingChannel(RecordingChannel):
-    supports_streaming = True
+class TypingChannel(RecordingChannel):
+    async def send_typing(self, inbound: InboundMessage) -> None:
+        self.typing.append(inbound)
+
+
+class BrokenTypingChannel(RecordingChannel):
+    async def send_typing(self, inbound: InboundMessage) -> None:
+        raise RuntimeError("typing unavailable")
+
+
+class FlakyChannel(RecordingChannel):
+    def __init__(self, config, bus):
+        super().__init__(config, bus)
+        self.attempts = 0
+
+    async def send(self, msg: OutboundMessage) -> None:
+        self.attempts += 1
+        if self.attempts == 1:
+            raise RuntimeError("transient delivery failure")
+        await super().send(msg)
+
+
+class FailingChannel(RecordingChannel):
+    def __init__(self, config, bus):
+        super().__init__(config, bus)
+        self.attempts = 0
+
+    async def send(self, msg: OutboundMessage) -> None:
+        self.attempts += 1
+        raise RuntimeError("permanent delivery failure")
 
 
 def _inbound(text: str) -> InboundMessage:
@@ -85,120 +97,13 @@ async def _wait_for(predicate, timeout: float = 2.0) -> None:
 
 
 # ---------------------------------------------------------------------------
-# provider streaming
+# handler and runner cancellation
 # ---------------------------------------------------------------------------
 
 
-def test_non_streaming_provider_emits_its_text_once():
-    chunks: list[str] = []
-    turn = provider_turn(
-        PlainProvider("hi there"), [], [], on_delta=chunks.append
-    )
-    assert turn.text == "hi there"
-    assert chunks == ["hi there"]
-
-
-def test_non_streaming_provider_stays_silent_after_cancel():
-    chunks: list[str] = []
-    provider_turn(
-        PlainProvider("late answer"),
-        [],
-        [],
-        on_delta=chunks.append,
-        should_stop=lambda: True,
-    )
-    assert chunks == []
-
-
-def test_streaming_provider_controls_the_chunks():
-    chunks: list[str] = []
-    turn = provider_turn(ChunkProvider(), [], [], on_delta=chunks.append)
-    assert turn.text == "Hello world"
-    assert chunks == ["Hel", "lo ", "world"]
-
-
-# ---------------------------------------------------------------------------
-# chat handler streaming
-# ---------------------------------------------------------------------------
-
-
-def test_chat_handler_streams_and_marks_the_reply_delivered():
-    emitted: list[OutboundMessage] = []
-    handler = ChatHandler(
-        ChunkProvider(), max_steps=1, emitter=emitted.append
-    )
-
-    reply = handler.handle(_inbound("hi"))
-
-    assert isinstance(reply, TurnReply)
-    assert reply.text == "Hello world"
-    assert reply.delivered is True
-    deltas = [
-        message
-        for message in emitted
-        if message.metadata.get("kind") == STREAM_DELTA_KIND
-    ]
-    assert deltas
-    assert deltas[-1].content == "Hello world"
-    assert any(
-        message.metadata.get("kind") == STREAM_END_KIND for message in emitted
-    )
-
-
-def test_chat_handler_streams_the_fallback_text_for_plain_providers():
-    emitted: list[OutboundMessage] = []
-    handler = ChatHandler(
-        PlainProvider("plain answer"), max_steps=1, emitter=emitted.append
-    )
-
-    reply = handler.handle(_inbound("hi"))
-
-    assert isinstance(reply, TurnReply)
-    assert reply.delivered is True
-    assert emitted[-2].content == "plain answer"
-
-
-def test_long_answers_fall_back_to_the_final_message():
-    emitted: list[OutboundMessage] = []
-    handler = ChatHandler(
-        ChunkProvider(["x" * 30]),
-        max_steps=1,
-        emitter=emitted.append,
-        max_stream_chars=20,
-    )
-
-    reply = handler.handle(_inbound("hi"))
-
-    assert isinstance(reply, TurnReply)
-    assert reply.delivered is False
-
-
-def test_stream_deltas_are_coalesced():
-    emitted: list[OutboundMessage] = []
-    handler = ChatHandler(
-        ChunkProvider(["abc"] * 10), max_steps=1, emitter=emitted.append
-    )
-
-    reply = handler.handle(_inbound("hi"))
-
-    assert isinstance(reply, TurnReply)
-    deltas = [
-        message
-        for message in emitted
-        if message.metadata.get("kind") == STREAM_DELTA_KIND
-    ]
-    assert 1 < len(deltas) < 10
-    assert deltas[-1].content == "abc" * 10
-
-
-def test_chat_handler_returns_plain_text_without_an_emitter():
+def test_chat_handler_returns_plain_text():
     handler = ChatHandler(PlainProvider("plain answer"), max_steps=1)
     assert handler.handle(_inbound("hi")) == "plain answer"
-
-
-# ---------------------------------------------------------------------------
-# runner and handler cancellation
-# ---------------------------------------------------------------------------
 
 
 def test_runner_never_calls_a_cancelled_turn():
@@ -290,7 +195,7 @@ def test_handle_command_parses_control_commands():
 
 
 # ---------------------------------------------------------------------------
-# manager behaviour
+# manager delivery and typing
 # ---------------------------------------------------------------------------
 
 
@@ -318,13 +223,93 @@ def test_manager_answers_commands_without_running_the_agent():
     assert calls == 0
 
 
-def test_manager_resends_the_final_text_for_a_non_streaming_channel():
+def test_manager_always_sends_the_final_reply_once():
     async def scenario():
         bus = MessageBus()
         channel = RecordingChannel(SimpleNamespace(allow_from=("*",)), bus)
+        manager = ChannelManager([channel], bus, lambda inbound: "final")
+        task = asyncio.create_task(manager.serve())
+        try:
+            await _wait_for(lambda: channel.is_running)
+            await bus.publish_inbound(_inbound("hi"))
+            await _wait_for(lambda: bool(channel.sent))
+            await asyncio.sleep(0.05)
+        finally:
+            manager.request_stop()
+            await asyncio.wait_for(task, 2)
+        return [message.content for message in channel.sent]
+
+    assert asyncio.run(scenario()) == ["final"]
+
+
+def test_manager_sends_typing_until_the_turn_completes():
+    async def scenario():
+        bus = MessageBus()
+        release = threading.Event()
+        started = threading.Event()
+
+        def handler(inbound: InboundMessage) -> str:
+            started.set()
+            release.wait(5)
+            return "answer"
+
+        channel = TypingChannel(SimpleNamespace(allow_from=("*",)), bus)
         manager = ChannelManager(
-            [channel], bus, lambda inbound: TurnReply("final", delivered=True)
+            [channel], bus, handler, typing_interval=0.01
         )
+        task = asyncio.create_task(manager.serve())
+        try:
+            await _wait_for(lambda: channel.is_running)
+            await bus.publish_inbound(_inbound("hi"))
+            await asyncio.to_thread(started.wait, 2)
+            await _wait_for(lambda: len(channel.typing) >= 2)
+            release.set()
+            await _wait_for(lambda: bool(channel.sent))
+            count = len(channel.typing)
+            await asyncio.sleep(0.05)
+            assert len(channel.typing) == count
+        finally:
+            manager.request_stop()
+            await asyncio.wait_for(task, 2)
+        return channel
+
+    channel = asyncio.run(scenario())
+    assert all(item.session_key == "fake:42" for item in channel.typing)
+    assert channel.sent[-1].content == "answer"
+
+
+def test_manager_stops_typing_when_the_handler_fails():
+    async def scenario():
+        bus = MessageBus()
+        channel = TypingChannel(SimpleNamespace(allow_from=("*",)), bus)
+        manager = ChannelManager(
+            [channel],
+            bus,
+            lambda inbound: (_ for _ in ()).throw(RuntimeError("boom")),
+            typing_interval=0.01,
+        )
+        task = asyncio.create_task(manager.serve())
+        try:
+            await _wait_for(lambda: channel.is_running)
+            await bus.publish_inbound(_inbound("hi"))
+            await _wait_for(lambda: bool(channel.sent))
+            count = len(channel.typing)
+            await asyncio.sleep(0.05)
+            assert len(channel.typing) == count
+        finally:
+            manager.request_stop()
+            await asyncio.wait_for(task, 2)
+        return channel
+
+    channel = asyncio.run(scenario())
+    assert "couldn't complete" in channel.sent[-1].content
+
+
+def test_typing_failure_does_not_block_the_reply():
+    async def scenario():
+        bus = MessageBus()
+        channel = BrokenTypingChannel(SimpleNamespace(allow_from=("*",)), bus)
+        manager = ChannelManager([channel], bus, lambda inbound: "answer")
         task = asyncio.create_task(manager.serve())
         try:
             await _wait_for(lambda: channel.is_running)
@@ -335,27 +320,49 @@ def test_manager_resends_the_final_text_for_a_non_streaming_channel():
             await asyncio.wait_for(task, 2)
         return [message.content for message in channel.sent]
 
-    assert asyncio.run(scenario()) == ["final"]
+    assert asyncio.run(scenario()) == ["answer"]
 
 
-def test_manager_skips_the_final_text_when_the_channel_streamed_it():
+def test_transient_delivery_failure_is_retried():
     async def scenario():
         bus = MessageBus()
-        channel = StreamingChannel(SimpleNamespace(allow_from=("*",)), bus)
-        manager = ChannelManager(
-            [channel], bus, lambda inbound: TurnReply("final", delivered=True)
-        )
+        channel = FlakyChannel(SimpleNamespace(allow_from=("*",)), bus)
+        manager = ChannelManager([channel], bus, lambda inbound: "answer")
         task = asyncio.create_task(manager.serve())
         try:
             await _wait_for(lambda: channel.is_running)
             await bus.publish_inbound(_inbound("hi"))
-            await asyncio.sleep(0.1)
+            await _wait_for(lambda: bool(channel.sent))
         finally:
             manager.request_stop()
             await asyncio.wait_for(task, 2)
-        return channel.sent
+        return channel
 
-    assert asyncio.run(scenario()) == []
+    channel = asyncio.run(scenario())
+    assert channel.attempts == 2
+    assert [message.content for message in channel.sent] == ["answer"]
+
+
+def test_permanent_delivery_failure_does_not_crash_the_manager():
+    async def scenario():
+        bus = MessageBus()
+        channel = FailingChannel(SimpleNamespace(allow_from=("*",)), bus)
+        manager = ChannelManager([channel], bus, lambda inbound: "answer")
+        task = asyncio.create_task(manager.serve())
+        try:
+            await _wait_for(lambda: channel.is_running)
+            await bus.publish_inbound(_inbound("hi"))
+            await _wait_for(lambda: channel.attempts >= 3)
+            assert manager._stop is not None
+            assert not manager._stop.is_set()
+        finally:
+            manager.request_stop()
+            await asyncio.wait_for(task, 2)
+        return channel
+
+    channel = asyncio.run(scenario())
+    assert channel.attempts == 3
+    assert channel.sent == []
 
 
 def test_manager_runs_the_shutdown_hook():
@@ -379,31 +386,3 @@ def test_manager_runs_the_shutdown_hook():
 
     asyncio.run(scenario())
     assert called == [1]
-
-
-def test_manager_drops_stream_frames_for_a_non_streaming_channel():
-    async def scenario():
-        bus = MessageBus()
-        channel = RecordingChannel(SimpleNamespace(allow_from=("*",)), bus)
-        manager = ChannelManager([channel], bus, lambda inbound: "")
-        task = asyncio.create_task(manager.serve())
-        try:
-            await _wait_for(lambda: channel.is_running)
-            await bus.publish_outbound(
-                OutboundMessage(
-                    "fake",
-                    "42",
-                    "partial",
-                    metadata={
-                        "kind": STREAM_DELTA_KIND,
-                        "stream_id": "s1",
-                    },
-                )
-            )
-            await asyncio.sleep(0.1)
-        finally:
-            manager.request_stop()
-            await asyncio.wait_for(task, 2)
-        return channel.sent
-
-    assert asyncio.run(scenario()) == []

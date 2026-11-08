@@ -67,7 +67,6 @@ def test_recommended_preset_turns_everything_on():
     assert features.calendar is True
     assert features.sessions is True
     assert features.tools == "demo"
-    assert features.streaming is True
     assert features.approval == "ask"
     assert features.quality is True
 
@@ -93,7 +92,6 @@ def test_advanced_preset_turns_optional_features_off():
     assert features.calendar is False
     assert features.sessions is False
     assert features.tools == "none"
-    assert features.streaming is False
     assert features.approval == "off"
     assert features.quality is False
 
@@ -109,7 +107,6 @@ def test_legacy_preset_matches_the_environment_only_gateway():
     assert settings.features.calendar is True
     assert settings.features.sessions is True
     assert settings.features.tools == "none"
-    assert settings.features.streaming is True
     assert settings.features.approval == "ask"
     assert settings.features.quality is True
     assert settings.limits.max_steps == 8

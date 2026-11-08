@@ -32,18 +32,18 @@ class TelegramTransport(Protocol):
         reply_to: str | None = None,
         parse_mode: str | None = None,
         reply_markup: dict[str, Any] | None = None,
+        message_thread_id: Any = None,
     ) -> str | None:
         """Send one message and return its platform id when available."""
 
-    def edit_message_text(
+    def send_chat_action(
         self,
         chat_id: str,
-        message_id: str,
-        text: str,
+        action: str,
         *,
-        parse_mode: str | None = None,
+        message_thread_id: Any = None,
     ) -> None:
-        """Replace the text of a message already sent."""
+        """Send a transient chat action such as ``typing``."""
 
     def answer_callback_query(self, callback_query_id: str, text: str = "") -> None:
         """Acknowledge a button press so Telegram stops the spinner."""
@@ -95,6 +95,7 @@ class UrllibTelegramTransport:
         reply_to: str | None = None,
         parse_mode: str | None = None,
         reply_markup: dict[str, Any] | None = None,
+        message_thread_id: Any = None,
     ) -> str | None:
         payload: dict[str, Any] = {
             "chat_id": chat_id,
@@ -110,32 +111,30 @@ class UrllibTelegramTransport:
                 payload["reply_parameters"] = {"message_id": int(reply_to)}
             except (TypeError, ValueError):
                 pass
+        if message_thread_id is not None:
+            try:
+                payload["message_thread_id"] = int(message_thread_id)
+            except (TypeError, ValueError):
+                pass
         result = self._call("sendMessage", payload)
         if isinstance(result, dict) and result.get("message_id") is not None:
             return str(result["message_id"])
         return None
 
-    def edit_message_text(
+    def send_chat_action(
         self,
         chat_id: str,
-        message_id: str,
-        text: str,
+        action: str,
         *,
-        parse_mode: str | None = None,
+        message_thread_id: Any = None,
     ) -> None:
-        try:
-            numeric_id = int(message_id)
-        except (TypeError, ValueError):
-            return
-        payload: dict[str, Any] = {
-            "chat_id": chat_id,
-            "message_id": numeric_id,
-            "text": text,
-            "disable_web_page_preview": True,
-        }
-        if parse_mode:
-            payload["parse_mode"] = parse_mode
-        self._call("editMessageText", payload)
+        payload: dict[str, Any] = {"chat_id": chat_id, "action": action}
+        if message_thread_id is not None:
+            try:
+                payload["message_thread_id"] = int(message_thread_id)
+            except (TypeError, ValueError):
+                pass
+        self._call("sendChatAction", payload)
 
     def answer_callback_query(self, callback_query_id: str, text: str = "") -> None:
         payload: dict[str, Any] = {"callback_query_id": callback_query_id}

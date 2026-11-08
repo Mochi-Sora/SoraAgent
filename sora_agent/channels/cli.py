@@ -36,7 +36,6 @@ from ..runtime_setup import (
     load_runtime,
     memory_enabled,
     quality_enabled,
-    streaming_enabled,
 )
 from ..settings import SettingsError
 from .approval import ApprovalBroker
@@ -45,7 +44,6 @@ from .chat import CHAT_SYSTEM_PROMPT, ChatHandler
 from .manager import ChannelManager
 from .registry import discover_plugins, load_channel_class
 from .telegram.config import TelegramConfig, split_ids
-from .types import OutboundMessage
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -157,11 +155,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.no_quality is not None
         else quality_enabled(settings)
     )
-    streaming = (
-        not args.no_streaming
-        if args.no_streaming is not None
-        else streaming_enabled(settings)
-    )
     prompt = apply_persona(
         CHAT_SYSTEM_PROMPT,
         settings.agent.name,
@@ -227,10 +220,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 file_understander=file_understander,
                 context_window=context_window(settings),
                 quality=quality,
-                streaming=streaming,
                 system_prompt=prompt,
                 max_tool_result_chars=settings.limits.max_tool_result_chars,
-                max_stream_chars=settings.limits.max_stream_chars,
                 gateway_label=(
                     f"{settings.agent.icon} sora-gateway".strip()
                     if _configured
@@ -264,10 +255,8 @@ async def _serve(
     context_window: int | None = None,
     file_understander: Any = None,
     quality: bool = True,
-    streaming: bool = True,
     system_prompt: str = CHAT_SYSTEM_PROMPT,
     max_tool_result_chars: int = 4000,
-    max_stream_chars: int = 3500,
     gateway_label: str = "sora-gateway",
 ) -> None:
     bus = MessageBus()
@@ -279,14 +268,6 @@ async def _serve(
         broker = ApprovalBroker(bus, timeout=approval_timeout)
     loop = asyncio.get_running_loop()
 
-    def emit(message: OutboundMessage) -> None:
-        try:
-            asyncio.run_coroutine_threadsafe(
-                bus.publish_outbound(message), loop
-            )
-        except RuntimeError:
-            pass  # the loop is already gone
-
     handler = ChatHandler(
         provider,
         registry,
@@ -295,12 +276,10 @@ async def _serve(
         approvals=broker,
         approval_gate=gate,
         sessions=sessions,
-        emitter=emit if streaming else None,
         on_event=_log_run_event,
         max_steps=max_steps,
         max_turns=max_turns,
         max_tool_result_chars=max_tool_result_chars,
-        max_stream_chars=max_stream_chars,
         tool_timeout=tool_timeout,
         provider_retries=provider_retries,
         clock=clock,
@@ -309,7 +288,6 @@ async def _serve(
         context_window=context_window,
         file_understander=file_understander,
         quality=None if quality else False,
-        streaming=streaming,
         system_prompt=system_prompt,
     )
     channel = channel_cls(config, bus)
@@ -431,12 +409,6 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         default=None,
         help="disable post-run quality evaluation",
-    )
-    parser.add_argument(
-        "--no-streaming",
-        action="store_true",
-        default=None,
-        help="wait for the complete reply instead of streaming",
     )
     parser.add_argument(
         "--no-clock",

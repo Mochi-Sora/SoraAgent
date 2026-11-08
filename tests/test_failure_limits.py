@@ -85,27 +85,6 @@ def test_retries_stop_after_the_budget():
     assert "transient" in result.error
 
 
-def test_a_turn_that_streamed_is_not_retried():
-    class StreamingFailure:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def stream_turn(self, messages, tools, on_delta, *, should_stop=None):
-            self.calls += 1
-            on_delta("partial")
-            raise RuntimeError("boom")
-
-    provider = StreamingFailure()
-    result = _run(
-        provider,
-        provider_retries=3,
-        on_delta=lambda chunk, step: None,
-    )
-
-    assert result.stop_reason == "provider_error"
-    assert provider.calls == 1
-
-
 def test_cancellation_interrupts_the_backoff():
     provider = FlakyProvider(failures=99)
     state = {"stop": False}

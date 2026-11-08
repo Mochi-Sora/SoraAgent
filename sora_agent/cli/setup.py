@@ -257,7 +257,6 @@ def _show_recommended_settings(
             ("Calendar", "On"),
             ("Sessions", "On"),
             ("Tools", "Demo pack"),
-            ("Streaming", "On"),
             ("Approvals", "Ask before consequential tools"),
             ("Quality gate", "On"),
             ("Limits", "12 steps / 80 turns / 60 s / 3 retries"),
@@ -287,7 +286,6 @@ def _advanced_flow(settings: Settings, secrets: dict[str, str]) -> None:
     _configure_clock_calendar(settings)
     _configure_sessions(settings)
     _configure_tools_and_limits(settings)
-    _configure_streaming(settings)
     _configure_approval(settings)
     _configure_quality(settings)
     _advanced_review(settings, secrets)
@@ -305,7 +303,7 @@ def _advanced_warning() -> None:
             "  • memory (including the CortexDB sidecar)",
             "  • identity (USER.md / SOUL.md)",
             "  • file understanding, clock, calendar, and session persistence",
-            "  • tools, streaming, approval prompts, and quality evaluation",
+            "  • tools, approval prompts, and quality evaluation",
             "",
             "Consequential tools can execute without confirmation.",
             "Runs will produce no quality report.",
@@ -362,7 +360,6 @@ def _advanced_review(settings: Settings, secrets: dict[str, str]) -> None:
                 ("Clock and calendar", "clock"),
                 ("Sessions", "sessions"),
                 ("Tools and limits", "tools"),
-                ("Streaming", "streaming"),
                 ("Approval", "approval"),
                 ("Quality evaluation", "quality"),
                 ("<- Back", "back"),
@@ -385,7 +382,6 @@ def _advanced_review(settings: Settings, secrets: dict[str, str]) -> None:
             "clock": lambda: _configure_clock_calendar(settings),
             "sessions": lambda: _configure_sessions(settings),
             "tools": lambda: _configure_tools_and_limits(settings),
-            "streaming": lambda: _configure_streaming(settings),
             "approval": lambda: _configure_approval(settings),
             "quality": lambda: _configure_quality(settings),
         }
@@ -991,17 +987,6 @@ def _configure_tools_and_limits(settings: Settings) -> None:
     )
 
 
-def _configure_streaming(settings: Settings) -> None:
-    ui.section(
-        "Streaming",
-        "With streaming off, the provider returns one completed message "
-        "instead of live token updates.",
-    )
-    settings.features.streaming = prompts.confirm(
-        "Stream responses live?", default=settings.features.streaming
-    )
-
-
 def _configure_approval(settings: Settings) -> None:
     ui.section(
         "Approval",
@@ -1125,7 +1110,6 @@ def _show_advanced_settings(
             ("Calendar", "On" if settings.features.calendar else "Off"),
             ("Sessions", "On" if settings.features.sessions else "In-memory only"),
             ("Tools", settings.features.tools),
-            ("Streaming", "On" if settings.features.streaming else "Off"),
             (
                 "Approval",
                 _APPROVAL_LABELS.get(settings.features.approval, settings.features.approval),

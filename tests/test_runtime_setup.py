@@ -23,7 +23,6 @@ from sora_agent.runtime_setup import (
     provider_kind,
     quality_enabled,
     resolve_api_key,
-    streaming_enabled,
 )
 from sora_agent.settings import (
     MemorySettings,
@@ -255,8 +254,6 @@ def test_switching_settings_does_not_override_the_environment(monkeypatch):
 
     monkeypatch.setenv("SORA_QUALITY", "off")
     assert quality_enabled(settings) is False
-    monkeypatch.setenv("SORA_STREAMING", "off")
-    assert streaming_enabled(settings) is False
     monkeypatch.setenv("SORA_CLOCK", "off")
     assert clock_enabled(settings) is False
 

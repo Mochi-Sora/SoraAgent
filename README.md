@@ -22,7 +22,7 @@ deliberately tiny; the production concerns live in explicit gates around it:
   state document, and an optional CortexDB-backed long-term memory with daily
   verbatim recall and nightly consolidation ("dreams").
 - **Chat channels** — pluggable transports (a Telegram channel ships in-box)
-  with streaming replies, per-session history, and human approvals rendered as
+  with typing indicators, per-session history, and human approvals rendered as
   chat prompts.
 
 The core imports only the Python standard library; optional integrations
@@ -208,11 +208,11 @@ The first screen offers exactly two paths:
 | Mode | What it does |
 | --- | --- |
 | **Recommended Setup** | Everything on and tuned for daily use. Asks only for the channel, main model, agent name/icon, temperature, and personality, then shows a review you can edit. |
-| **Advanced Setup (tinker with caution)** | Every optional subsystem starts **off**, including memory, file understanding, identity, clock, calendar, sessions, tools, streaming, approval prompts, and quality evaluation. Each section can be edited individually and ends with an explicit save confirmation. |
+| **Advanced Setup (tinker with caution)** | Every optional subsystem starts **off**, including memory, file understanding, identity, clock, calendar, sessions, tools, approval prompts, and quality evaluation. Each section can be edited individually and ends with an explicit save confirmation. |
 
 Recommended Setup writes full long-term memory (including the CortexDB
 sidecar), file understanding, identity, clock, calendar, sessions, the demo
-tool pack, streaming, approval prompts, quality evaluation, and limits of 12
+tool pack, approval prompts, quality evaluation, and limits of 12
 steps / 80 turns / 60 s timeouts / 3 retries.
 
 Advanced Setup starts with temperature `0.1` and safety features disabled. It
@@ -463,7 +463,6 @@ custom integration all funnel through it via `AgentRuntime`.
 | `tools` | required | Initial visible tools. |
 | `max_steps` | `10` | Provider turns allowed. `Agent` default 10; `ChatHandler` default 8. |
 | `tool_provider` | `None` | Recompute the visible tool list before every step (lazy discovery). |
-| `on_delta` | `None` | `(chunk, step_index)` callback for streamed text. |
 | `should_stop` | `None` | Cooperative cancellation, checked between steps and calls. |
 | `provider_retries` | `2` | Retries for transient provider failures. |
 | `retry_base_delay` / `retry_max_delay` | `0.5` / `8.0` | Exponential backoff window, equal jitter. |
@@ -484,7 +483,7 @@ appended), `steps`, `final_answer`, `stop_reason`, `error`, `metrics`
 | `completed` | The model answered without calling a tool. |
 | `max_steps` | Step budget exhausted. |
 | `cancelled` | `should_stop()` returned true. |
-| `provider_error` | Provider raised and retries were exhausted (or a streamed turn failed). |
+| `provider_error` | Provider raised and retries were exhausted. |
 | `tool_error` | The tool executor itself crashed. |
 | `approval_rejected` | A human denied the action, or the gate failed/timed out. |
 | `<tool>_required` | The required first tool (e.g. `memory_recall_required`) was skipped repeatedly; the third violation hard-stops the run. |
@@ -493,9 +492,7 @@ appended), `steps`, `final_answer`, `stop_reason`, `error`, `metrics`
 ### Reliability behavior
 
 - **Retries**: transient provider failures retry with exponential backoff and
-  equal jitter. A turn that already streamed text to the user is **never**
-  retried, so visible text cannot be duplicated. Backoff sleeps in 50 ms slices
-  so cancellation is immediate.
+  equal jitter. Backoff sleeps in 50 ms slices so cancellation is immediate.
 - **Required first tool**: when set (or when memory is enabled — see
   [Memory](#memory-cortexdb)), a direct answer or wrong tool is rejected with a
   correction message. The first two violations get a correction; the third
@@ -513,8 +510,8 @@ appended), `steps`, `final_answer`, `stop_reason`, `error`, `metrics`
 - **Events**: `run_started`, `provider_finished`, `provider_retry`,
   `tool_finished`, `run_finished` — each with step, name, duration, ok, detail.
 - **Metrics**: durations, provider calls/retries, tool calls/errors/executions/
-  skips, approval denials, redundant calls, isolated calls, streamed chars, and
-  token usage when the provider reports it.
+  skips, approval denials, redundant calls, isolated calls, and token usage when
+  the provider reports it.
 
 ## Providers
 
@@ -529,9 +526,8 @@ class TextProvider(Protocol):
 ```
 
 `ModelTurn` carries `text`, `tool_calls: list[ToolCall]`, and optional
-`TokenUsage`. Optional `stream_turn(messages, tools, on_delta, should_stop=...)`
-adds token streaming; the runtime's provider edge (`provider_turn()`) adapts
-non-streaming providers by emitting their whole text as one chunk.
+`TokenUsage`. Providers return one completed turn; chat channels show a typing
+indicator while the turn is running.
 
 Text-only providers may speak a legacy single-action protocol — exactly one
 line such as:
@@ -556,8 +552,8 @@ ClockProvider (applied last, current time)
 
 `MockProvider` follows the production path offline: recall first when memory is
 visible, discover a hidden business tool with `find_tools`, then call it.
-`OpenAIChatProvider` is a thin Chat Completions wrapper with native tool calls,
-streaming, and usage reporting.
+`OpenAIChatProvider` is a thin Chat Completions wrapper with native tool calls
+and usage reporting.
 
 ## Tools
 
@@ -1064,9 +1060,9 @@ firewall always redacts against the updated profile.
 | --- | --- |
 | `InboundMessage` / `OutboundMessage` | Channel-agnostic payloads (channel, sender, chat, content, media `file_id`s, metadata). |
 | `MessageBus` | Two asyncio queues (inbound/outbound) so a slow platform never blocks the model loop. |
-| `BaseChannel` | Transport ABC: `start()` (blocks), `stop()` (idempotent), `send()`, plus the shared `allow_from` authorization rule (`"*"` allows everyone; an empty list denies everyone — a token is not an access policy). |
+| `BaseChannel` | Transport ABC: `start()` (blocks), `stop()` (idempotent), `send()`, an optional typing indicator, plus the shared `allow_from` authorization rule (`"*"` allows everyone; an empty list denies everyone — a token is not an access policy). |
 | `ChannelManager` | Supervises channels, dispatches commands, runs turns in tasks with per-session locks, answers control commands, delivers outbound with retries. If a channel dies, the gateway shuts down rather than half-serving. |
-| `ChatHandler` | Per-session history, run assembly, streaming, cancellation, `/status`, `/eval`, `/reset`, `/cancel`. |
+| `ChatHandler` | Per-session history, run assembly, cancellation, `/status`, `/eval`, `/reset`, `/cancel`. |
 | `SessionStore` | Durable JSON conversation history, one hashed file per session under `~/.sora_agent/sessions` (override `SORA_SESSIONS_ROOT`). History is trimmed to `max_turns * 2` messages (default 40 turns). |
 | `ApprovalBroker` / `ChannelApprovalGate` | Chat-based approvals (see [Human approval](#human-approval)). |
 
@@ -1076,9 +1072,9 @@ The in-box channel long-polls the Bot API using only `urllib` (`getUpdates`),
 records attachment `file_id`s without downloading, and delivers replies in
 platform-sized chunks that prefer natural breaks.
 
-- **Streaming**: Telegram `supports_streaming=True`; the handler edits one live
-  message per run step as tokens arrive (coalesced: ≥0.25 s or ≥16 chars), and
-  the final answer is only re-sent if it never rendered completely.
+- **Typing indicator**: the gateway sends Telegram `sendChatAction` while a
+  turn is running, refreshing it periodically and cancelling it on completion.
+  Replies are sent once, after the turn completes.
 - **Approvals**: approval prompts get Approve/Reject inline buttons
   (`approval:<yes|no>:<id>`); button presses are acknowledged and the keyboard
   removed. Replies by text (`yes` / `no`) work too.
@@ -1277,7 +1273,6 @@ The config file is deliberately plain JSON:
     "calendar": true,
     "sessions": true,
     "tools": "demo",
-    "streaming": true,
     "approval": "ask",
     "quality": true
   },
@@ -1303,7 +1298,7 @@ sora-gateway [--channel CHANNEL] [--provider KIND] [--model ID]
              [--no-sessions] [--provider-timeout S] [--provider-retries N]
              [--tool-timeout S] [--tools none|demo]
              [--memory] [--identity] [--approval off|ask]
-             [--approval-timeout S] [--no-quality] [--no-streaming]
+             [--approval-timeout S] [--no-quality]
              [--no-clock] [--no-calendar] [--calendar-db PATH]
              [--token TOKEN] [--allow IDS] [--list]
 ```
@@ -1330,7 +1325,6 @@ deployments behave exactly as before. Flags and `SORA_*` variables still win.
 | `--approval` | `ask` | `off` auto-approves consequential tools but still audits them. |
 | `--approval-timeout` | `300` | Seconds to wait for a chat approval. |
 | `--no-quality` | off | Disable post-run quality evaluation. |
-| `--no-streaming` | off | Wait for the completed reply instead of live updates. |
 | `--no-clock` | off | Omit the current-time section. |
 | `--no-calendar` | off | Disable calendar tools. |
 | `--calendar-db` | `~/.sora_agent/calendar.db` | Calendar database path. |
@@ -1373,7 +1367,6 @@ Every saved setting is a default. These variables override it:
 | `SORA_CONTEXT_WINDOW` | Context-window budget in tokens (minimum `1000`). |
 | `SORA_APPROVAL` | `ask` or `off`. Off still records audit entries. |
 | `SORA_QUALITY` | `1`/`0` for post-run quality evaluation. |
-| `SORA_STREAMING` | `1`/`0` for live streaming updates. |
 | `SORA_CLOCK` | `1`/`0` for the current-time prompt section. |
 | `SORA_CALENDAR` | `1`/`0` for native calendar tools. |
 | `SORA_SESSIONS` | `1`/`0` for on-disk conversation history. |
@@ -1458,7 +1451,7 @@ SoraAgent/
     ├── cli/                    # the sora command
     │   ├── main.py             # Typer app: setup, chat, gateway, config, doctor
     │   ├── setup.py            # Recommended and Advanced wizards
-    │   ├── chat.py             # local REPL, one-shot run, stream renderer
+    │   ├── chat.py             # local REPL and one-shot run
     │   ├── doctor.py           # read-only health and safety check
     │   ├── ui.py               # Rich palette, panels, and tables
     │   └── prompts.py          # Questionary prompts with terminal fallback

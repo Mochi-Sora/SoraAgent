@@ -23,7 +23,6 @@ def _clear_runtime_overrides(monkeypatch):
         "SORA_CONTEXT_WINDOW",
         "SORA_APPROVAL",
         "SORA_QUALITY",
-        "SORA_STREAMING",
         "SORA_CLOCK",
         "SORA_CALENDAR",
         "SORA_SESSIONS",
@@ -156,7 +155,6 @@ def test_gateway_uses_the_saved_configuration(monkeypatch, tmp_path):
     assert captured["config"].allow_from == ("7",)
     assert kwargs["approval_mode"] == "off"
     assert kwargs["quality"] is False
-    assert kwargs["streaming"] is False
     assert kwargs["clock"] is False
     assert kwargs["max_steps"] == 8
     assert kwargs["gateway_label"] == "☁️ sora-gateway"
@@ -180,7 +178,6 @@ def test_gateway_environment_still_overrides_saved_configuration(
     monkeypatch.setenv("SORA_TELEGRAM_TOKEN", "token")
     monkeypatch.setenv("SORA_APPROVAL", "off")
     monkeypatch.setenv("SORA_QUALITY", "0")
-    monkeypatch.setenv("SORA_STREAMING", "0")
     monkeypatch.setenv("SORA_CLOCK", "0")
     captured = _capture_serve(monkeypatch)
 
@@ -189,7 +186,6 @@ def test_gateway_environment_still_overrides_saved_configuration(
     kwargs = captured["kwargs"]
     assert kwargs["approval_mode"] == "off"
     assert kwargs["quality"] is False
-    assert kwargs["streaming"] is False
     assert kwargs["clock"] is False
     assert kwargs["file_understander"] is not None
     assert captured["config"].download_attachments is True
@@ -207,7 +203,6 @@ def test_gateway_without_a_config_keeps_legacy_defaults(monkeypatch, tmp_path):
     kwargs = captured["kwargs"]
     assert kwargs["approval_mode"] == "ask"
     assert kwargs["quality"] is True
-    assert kwargs["streaming"] is True
     assert kwargs["clock"] is True
     assert kwargs["max_steps"] == 8
     assert kwargs["gateway_label"] == "sora-gateway"
