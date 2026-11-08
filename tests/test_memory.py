@@ -203,6 +203,76 @@ def test_backup_retention_keeps_daily_weekly_monthly(tmp_path: Path) -> None:
     assert all((config.backup_dir / item["file"]).exists() for item in manifests)
 
 
+def test_backup_prune_never_leaves_the_backup_directory(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    manager = BackupManager(config)
+    victim = tmp_path / "victim.db.zst"
+    victim.write_bytes(b"keep me")
+    outside = config.backup_dir / ".." / "victim.db.zst"
+    malicious = {
+        "version": 1,
+        "file": "../victim.db.zst",
+        "kind": "daily",
+        "label": "2020-01-01",
+        "created_at": "2020-01-01T00:00:00+00:00",
+        "sha256": "0" * 64,
+    }
+    (config.backup_dir / "evil.db.zst.json").write_text(
+        json.dumps(malicious), encoding="utf-8"
+    )
+
+    manager.prune()
+
+    assert outside.exists()
+    assert victim.read_bytes() == b"keep me"
+
+
+def test_backup_prune_skips_symlinks_that_escape(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    manager = BackupManager(config)
+    victim = tmp_path / "victim.db.zst"
+    victim.write_bytes(b"keep me")
+    link = config.backup_dir / "link.db.zst"
+    try:
+        link.symlink_to(victim)
+    except OSError:
+        pytest.skip("symlinks are not available")
+    manifest = {
+        "version": 1,
+        "file": "link.db.zst",
+        "kind": "daily",
+        "label": "2020-01-02",
+        "created_at": "2020-01-02T00:00:00+00:00",
+        "sha256": "0" * 64,
+    }
+    (config.backup_dir / "link.db.zst.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+
+    manager.prune()
+
+    assert victim.exists()
+    assert link.is_symlink()
+
+
+def test_backup_reports_missing_zstd_support(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from sora_agent.memory import backup as backup_module
+
+    config = config_for(tmp_path)
+    config.ensure_directories()
+    manager = BackupManager(config)
+    monkeypatch.setattr(backup_module, "zstd_available", lambda: False)
+
+    with pytest.raises(BackupError, match="zstandard"):
+        manager.snapshot_active()
+    with pytest.raises(BackupError, match="zstandard"):
+        manager.restore(config.backup_dir / "missing.db.zst")
+
+
 class _ClientServer(ThreadingHTTPServer):
     requests: list[tuple[str, str, Any]]
 
@@ -557,7 +627,7 @@ def test_dream_transfers_marks_and_deletes_daily(tmp_path: Path) -> None:
     report = runner.run()
     assert report["errors"] == []
     assert len(backend.memories) == 2
-    assert not daily.path_for(day.date()).exists()
+    assert daily.count(day.date()) == 0
     for record in backend.memories.values():
         assert record["metadata"]["dream_round"] == 1
         assert record["metadata"]["dream_due"] == "2026-10-28T00:00:00+00:00"
@@ -585,6 +655,115 @@ def test_dream_keeps_daily_when_transfer_fails(tmp_path: Path) -> None:
     assert daily.path_for(day.date()).exists()
     assert report["errors"]
     assert report["transferred_days"] == []
+
+
+def test_dream_keeps_messages_appended_during_transfer(
+    tmp_path: Path,
+) -> None:
+    day = datetime(2026, 10, 26, 23, tzinfo=timezone.utc)
+    config, daily, backend = _dream_setup(tmp_path, day)
+    daily.append("user", "First message.")
+    daily.append("assistant", "Second message.")
+
+    class AppendingBackend(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.appended = False
+
+        def save_memory(self, payload: dict[str, Any]) -> dict[str, Any]:
+            result = super().save_memory(payload)
+            if not self.appended:
+                self.appended = True
+                daily.append(
+                    "user", "Arrived during transfer.", ts=day
+                )
+            return result
+
+    backend = AppendingBackend()
+    runner = DreamRunner(
+        config,
+        daily,
+        backend,
+        clock=lambda: datetime(
+            2026, 10, 27, 0, 0, 1, tzinfo=timezone.utc
+        ),
+    )
+
+    report = runner.run()
+
+    assert report["errors"] == []
+    remaining = daily.read_day(day.date())
+    assert len(remaining) == 1
+    assert remaining[0]["content"] == "Arrived during transfer."
+    assert report["transferred_days"][0]["messages"] == 2
+
+
+def test_dream_retry_is_idempotent_after_a_partial_run(
+    tmp_path: Path,
+) -> None:
+    day = datetime(2026, 10, 26, 23, tzinfo=timezone.utc)
+    config, daily, backend = _dream_setup(tmp_path, day)
+    daily.append("user", "Remember this.")
+    messages = daily.read_day(day.date())
+    memory_id = "daily:{}:{}".format(day.date().isoformat(), messages[0]["id"])
+    # Simulate a crash after the transfer but before the row deletion.
+    backend.save_memory(
+        {
+            "memory_id": memory_id,
+            "content": "Remember this.",
+            "metadata": {},
+        }
+    )
+    runner = DreamRunner(
+        config,
+        daily,
+        backend,
+        clock=lambda: datetime(2026, 10, 27, 0, 0, 1, tzinfo=timezone.utc),
+    )
+
+    report = runner.run()
+
+    assert report["errors"] == []
+    assert len(backend.memories) == 1
+    assert daily.count(day.date()) == 0
+
+
+def test_daily_store_rebuilds_fts_for_legacy_rows(tmp_path: Path) -> None:
+    day = date(2026, 10, 26)
+    root = tmp_path / "daily"
+    root.mkdir()
+    path = root / f"{day.isoformat()}.db"
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "ts TEXT NOT NULL, session_id TEXT NOT NULL, role TEXT NOT NULL, "
+        "content TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO messages(ts, session_id, role, content) "
+        "VALUES ('2026-10-26T12:00:00+00:00', 'default', 'user', "
+        "'legacy searchable content')"
+    )
+    conn.commit()
+    conn.close()
+
+    store = DailyStore(
+        root, clock=lambda: datetime(2026, 10, 26, 23, tzinfo=timezone.utc)
+    )
+    hits = store.search("legacy", days=1)
+
+    assert [hit.message_id for hit in hits] == [1]
+
+
+def test_daily_store_searches_non_ascii_text(tmp_path: Path) -> None:
+    pinned = datetime(2026, 10, 26, 23, tzinfo=timezone.utc)
+    store = DailyStore(tmp_path / "daily", clock=lambda: pinned)
+    store.append("user", "デプロイは月曜日です。", ts=pinned)
+
+    hits = store.search("デプロイ", days=1)
+
+    assert len(hits) == 1
+    assert "月曜日" in hits[0].content
 
 
 def test_dream_creates_merge_and_conflict_records(tmp_path: Path) -> None:
@@ -933,3 +1112,39 @@ def test_sidecar_single_instance_lock(tmp_path: Path) -> None:
 
     second._acquire_lock()
     second._release_lock()
+
+
+def test_hook_replaces_a_dead_sidecar_client(tmp_path: Path) -> None:
+    class FlakyBackend(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.alive = True
+
+        def health(self) -> bool:
+            return self.alive
+
+    class RestartingSidecar:
+        def __init__(self, client: FakeBackend) -> None:
+            self.client = client
+            self.calls = 0
+
+        def ensure_running(self) -> FakeBackend:
+            self.calls += 1
+            return self.client
+
+        def stop(self) -> None:
+            pass
+
+    first = FlakyBackend()
+    replacement = FakeBackend()
+    sidecar = RestartingSidecar(replacement)
+    hook = MemoryHook(
+        config_for(tmp_path), client=first, sidecar=cast(Any, sidecar)
+    )
+
+    assert hook._backend() is first
+    first.alive = False
+    hook._health_checked_at = -1e9
+    assert hook._backend() is replacement
+    assert sidecar.calls == 1
+    assert hook._backend() is replacement

@@ -115,6 +115,13 @@ _ANY_EDIT_RE = re.compile(
 )
 _ANY_EDIT_OPEN_RE = re.compile(r"</?(?:user_edit|soul_edit)\b", re.IGNORECASE)
 
+_PHONE_RE = re.compile(
+    r"(?<![\d-])"
+    r"(?!(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2})(?!\d))"
+    r"(?:\+?\d[\d ()-]{7,}\d)"
+    r"(?![\d-])"
+)
+
 _PROFILE_PATTERNS = (
     re.compile(r"(?i)\bmy name is\s+[^.!?\n]{1,80}"),
     re.compile(r"(?i)\bcall me\s+[^.!?\n]{1,40}"),
@@ -125,7 +132,7 @@ _PROFILE_PATTERNS = (
     re.compile(r"(?i)\bmy favou?rite\s+[^.!?\n]{1,80}\s+is\s+[^.!?\n]{1,80}"),
     re.compile(r"(?i)\bremember (?:that )?i\s+[^.!?\n]{1,120}"),
     re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b"),
-    re.compile(r"(?<!\d)(?:\+?\d[\d ()-]{7,}\d)(?!\d)"),
+    _PHONE_RE,
 )
 
 # Credentials are redacted for every memory source, not just user messages.

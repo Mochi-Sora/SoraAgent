@@ -12,6 +12,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from ._zstd import available as zstd_available
 from ._zstd import compress_file, decompress_file
 from .config import MemoryConfig
 
@@ -63,6 +64,11 @@ class BackupManager:
         return self.snapshot(source, "daily", label)
 
     def snapshot(self, source: Path, kind: str, label: str) -> dict[str, Any]:
+        if not zstd_available():
+            raise BackupError(
+                "memory snapshots require zstd support: install the optional "
+                "'zstandard' package (or use Python 3.14+)"
+            )
         source = Path(source)
         if not source.exists():
             raise BackupError("database does not exist: " + str(source))
@@ -107,6 +113,11 @@ class BackupManager:
         target: Path | None = None,
         stop: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        if not zstd_available():
+            raise BackupError(
+                "restoring a memory snapshot requires zstd support: install "
+                "the optional 'zstandard' package (or use Python 3.14+)"
+            )
         snapshot = Path(snapshot)
         if not snapshot.exists():
             raise BackupError("snapshot does not exist: " + str(snapshot))
@@ -185,7 +196,9 @@ class BackupManager:
         for manifest in manifests:
             if manifest["file"] in keep:
                 continue
-            path = self.config.backup_dir / str(manifest["file"])
+            path = self._safe_snapshot_path(str(manifest["file"]))
+            if path is None:
+                continue
             for candidate in (path, Path(str(path) + ".json")):
                 try:
                     candidate.unlink()
@@ -194,6 +207,26 @@ class BackupManager:
                     pass
         self._refresh_latest()
         return removed
+
+    def _safe_snapshot_path(self, filename: str) -> Path | None:
+        """Return a path inside the backup directory, or ``None``.
+
+        Manifests are JSON files that a local attacker or a corrupt write can
+        modify.  Pruning must never follow a name such as ``../../.ssh`` out
+        of the backup directory or through a symlink.
+        """
+        name = str(filename).strip()
+        if not name or Path(name).name != name:
+            return None
+        if "/" in name or "\\" in name or name in {".", ".."}:
+            return None
+        path = self.config.backup_dir / name
+        root = self.config.backup_dir.resolve()
+        try:
+            path.resolve().relative_to(root)
+        except (OSError, ValueError):
+            return None
+        return path
 
     def list_snapshots(self) -> list[dict[str, Any]]:
         manifests: list[dict[str, Any]] = []

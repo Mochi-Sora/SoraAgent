@@ -257,7 +257,7 @@ def test_dream_redacts_legacy_daily_content_before_transfer(
     record = next(iter(backend.memories.values()))
     assert_no_profile_facts(record["content"])
     assert record["metadata"]["profile_redacted"] is True
-    assert not daily.path_for(yesterday.date()).exists()
+    assert daily.count(yesterday.date()) == 0
 
 
 def test_dream_preserves_fully_redacted_daily_rows(tmp_path: Path) -> None:
@@ -292,7 +292,7 @@ def test_dream_preserves_fully_redacted_daily_rows(tmp_path: Path) -> None:
         assert record["content"] == "[profile details withheld]"
         assert record["metadata"]["profile_redacted"] is True
     assert report["transferred_days"][0]["messages"] == 2
-    assert not daily.path_for(yesterday.date()).exists()
+    assert daily.count(yesterday.date()) == 0
 
 
 def test_recall_redacts_daily_and_longterm_profile_content(
@@ -432,3 +432,22 @@ def test_redactor_keeps_the_password_label(tmp_path: Path) -> None:
 
     assert "password: [secret]" in redacted
     assert "swordfish" not in redacted
+
+
+def test_redactor_keeps_iso_dates_but_removes_phone_numbers(
+    tmp_path: Path,
+) -> None:
+    store = IdentityStore(IdentityConfig(root=tmp_path / "identity"))
+
+    dated = store.redact_for_memory(
+        "The deploy is 2026-11-08 and the review is 2026-11-09T09:30:00Z."
+    )
+    assert "2026-11-08" in dated
+    assert "2026-11-09T09:30:00Z" in dated
+
+    phoned = store.redact_for_memory("Call me at +1 (555) 123-4567.")
+    assert "555" not in phoned
+    assert "[profile]" in phoned
+
+    phone_only = store.redact_for_memory("555-123-4567")
+    assert "555" not in phone_only

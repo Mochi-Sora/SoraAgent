@@ -150,8 +150,6 @@ class DreamRunner:
                 report["transferred_days"].append(
                     {"day": day.isoformat(), "messages": 0, "deleted": False}
                 )
-                if not dry_run:
-                    self.daily.delete_day(day)
                 continue
             if not dry_run:
                 try:
@@ -212,14 +210,23 @@ class DreamRunner:
                 if relations:
                     payload["relations"] = relation_payloads(relations)
                 try:
+                    action = "dry_run" if dry_run else "skip"
                     if not dry_run:
-                        self.backend.save_memory(payload)
-                        if self.backend.get_memory(memory_id) is None:
-                            raise DreamError("verification failed for " + memory_id)
+                        # The deterministic id makes retries idempotent: a
+                        # previous run may have saved this row and crashed
+                        # before deleting it.
+                        existing = self.backend.get_memory(memory_id)
+                        if existing is None:
+                            self.backend.save_memory(payload)
+                            if self.backend.get_memory(memory_id) is None:
+                                raise DreamError(
+                                    "verification failed for " + memory_id
+                                )
+                            action = "save"
                     saved.append(memory_id)
                     report["actions"].append(
                         {
-                            "op": "save",
+                            "op": action,
                             "memory_id": memory_id,
                             "inverse": "delete " + memory_id,
                         }
@@ -233,7 +240,11 @@ class DreamRunner:
             if failed:
                 continue
             if not dry_run:
-                self.daily.delete_day(day)
+                # Delete only the rows that were transferred.  A message
+                # appended while the transfer was running stays in the day
+                # file for the next dream instead of being lost.
+                identifiers = [int(message["id"]) for message in messages]
+                self.daily.delete_messages(day, identifiers)
             report["transferred_days"].append(
                 {
                     "day": day.isoformat(),

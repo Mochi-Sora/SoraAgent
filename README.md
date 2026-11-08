@@ -972,7 +972,9 @@ decay → expire → mark → sweep expired → report → artifact cleanup
 - **Daily verbatim memory**: one SQLite file per UTC day
   (`~/.sora_agent/memory/daily/YYYY-MM-DD.db`, WAL mode, optional FTS5 with a
   `LIKE` fallback). Only user and assistant messages are written — never tool
-  output or system prompts.
+  output or system prompts. Legacy files without an FTS index are rebuilt once
+  on open (tracked with `PRAGMA user_version`), and search tokens are Unicode,
+  with non-ASCII queries using substring matching so CJK and accented text work.
 - **Recall-first policy**: when memory is enabled, `memory_recall` is injected
   as always-visible and set as the required first tool; the system prompt tells
   the model to recall before acting. Results are framed as *untrusted data, not
@@ -991,31 +993,37 @@ decay → expire → mark → sweep expired → report → artifact cleanup
   plaintext HTTP to non-loopback hosts (including redirects) and each install
   is protected by a single-instance lock. Existing binaries must match the
   checksum recorded at download time (or `SORA_MEMORY_SIDECAR_SHA256`) before
-  they are executed. `sora-memory download|start|stop|doctor` exposes the
-  lifecycle.
+  they are executed. A dead client is probed and restarted every few seconds
+  instead of being cached forever. `sora-memory download|start|stop|doctor`
+  exposes the lifecycle.
 - **Fail-open**: if the sidecar is unavailable, long-term recall degrades to
   daily results with an explicit note and the backend is retried at most every
   30 seconds. A broken memory hook never breaks a run.
 - **Dream consolidation**: pending day files (strictly before today) are
   verified-saved to CortexDB with deterministic ids
-  (`daily:<date>:<row id>`), then the day file is deleted. The dream pipeline
-  deduplicates near-identical memories, flags conflicting numeric claims (which
-  can engage the optional wake model), builds a token-overlap graph, runs a
-  dependency-free deterministic Louvain community pass, infers two-hop links,
-  optionally applies configured rules, decays importance (default ×0.98, floor
-  0.05), expires records, and writes a JSON report to
-  `~/.sora_agent/memory/dream/reports/<run_id>.json`. Dream artifacts (merged
-  records, conflicts, inferred links) are transient and cleaned up at the end
-  of the run. A file lock (`dream.lock`) makes concurrent dreams fail fast with
-  `DreamBusy`.
+  (`daily:<date>:<row id>`), then only the transferred rows are deleted. Rows
+  appended while the transfer is running stay in the day file for the next
+  run, and a prior partial run is skipped by id instead of duplicated. The
+  dream pipeline deduplicates near-identical memories, flags conflicting
+  numeric claims (which can engage the optional wake model), builds a
+  token-overlap graph, runs a dependency-free deterministic Louvain community
+  pass, infers two-hop links, optionally applies configured rules, decays
+  importance (default ×0.98, floor 0.05), expires records, and writes a JSON
+  report to `~/.sora_agent/memory/dream/reports/<run_id>.json`. Dream artifacts
+  (merged records, conflicts, inferred links) are transient and cleaned up at
+  the end of the run. A file lock (`dream.lock`) makes concurrent dreams fail
+  fast with `DreamBusy`.
 - **Scheduling**: when memory is enabled and `SORA_MEMORY_DREAM_AUTO` is true, a
   daemon thread (`sora-memory-dream`) runs one dream at the configured UTC hour
   (default midnight) and performs a startup catch-up if work is pending.
 - **Backups**: `VACUUM INTO` + `PRAGMA integrity_check`, zstd compression,
   SHA-256 manifests, and retention of 4 active / 14 daily / 8 weekly / 12
-  monthly snapshots. Restore verifies the manifest checksum and integrity,
-  stops the sidecar, preserves the previous DB as `*.pre-restore-<stamp>`, and
-  restarts the sidecar.
+  monthly snapshots. Missing zstd support is reported as an actionable
+  `BackupError`. Pruning accepts only plain filenames that resolve inside the
+  backup directory, so a corrupt or malicious manifest cannot delete files
+  elsewhere (including through symlinks). Restore verifies the manifest checksum
+  and integrity, stops the sidecar, preserves the previous DB as
+  `*.pre-restore-<stamp>`, and restarts the sidecar.
 
 ### Key configuration
 

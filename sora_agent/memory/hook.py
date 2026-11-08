@@ -22,6 +22,7 @@ from .wake import OpenAIWakeGate
 _ACTION_LINE_RE = re.compile(
     r"(?m)^[ \t]*ACTION:\s*[A-Za-z_]\w*\s*\([^\n]*\)[ \t]*$"
 )
+_HEALTH_CHECK_SECONDS = 5.0
 _ACTION_TAIL_RE = re.compile(
     r"(?:^|\s)ACTION:\s*[A-Za-z_]\w*\s*\(.*\)\s*$", re.DOTALL
 )
@@ -51,6 +52,7 @@ class MemoryHook:
         self._client = client
         self._backend_lock = threading.Lock()
         self._failure_until = 0.0
+        self._health_checked_at = 0.0
         self._tool: _MemoryTool | None = None
         self._wake = wake
         if self._wake is None:
@@ -184,22 +186,48 @@ class MemoryHook:
         self.sidecar.stop()
 
     def _backend(self) -> MemoryBackend | None:
+        now = time.monotonic()
         if self._client is not None:
-            return self._client
-        if time.monotonic() < self._failure_until:
+            if now - self._health_checked_at < _HEALTH_CHECK_SECONDS:
+                return self._client
+            if self._healthy(self._client):
+                self._health_checked_at = now
+                return self._client
+            # The process died or stopped answering.  Drop it and allow an
+            # immediate restart instead of serving a dead client forever.
+            self._client = None
+            self._failure_until = 0.0
+        if now < self._failure_until:
             return None
         with self._backend_lock:
+            now = time.monotonic()
             if self._client is not None:
-                return self._client
-            if time.monotonic() < self._failure_until:
+                if self._healthy(self._client):
+                    self._health_checked_at = now
+                    return self._client
+                self._client = None
+                self._failure_until = 0.0
+            if now < self._failure_until:
                 return None
             try:
-                self._client = self.sidecar.ensure_running()
-                return self._client
+                client = self.sidecar.ensure_running()
+                self._client = client
+                self._health_checked_at = time.monotonic()
+                return client
             except Exception as exc:  # noqa: BLE001
                 self._failure_until = time.monotonic() + 30.0
                 self.log.warning("CortexDB unavailable: %s", exc)
                 return None
+
+    @staticmethod
+    def _healthy(client: MemoryBackend) -> bool:
+        check = getattr(client, "health", None)
+        if not callable(check):
+            return True
+        try:
+            return bool(check())
+        except Exception:  # noqa: BLE001 - a broken probe is a dead backend
+            return False
 
 
 class _MemoryTool:

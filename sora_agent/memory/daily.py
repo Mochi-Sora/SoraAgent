@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 _DAY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.db$")
-_TOKEN_RE = re.compile(r"[A-Za-z0-9_]{2,}")
+_TOKEN_RE = re.compile(r"\w{2,}", re.UNICODE)
+_FTS_VERSION = 1
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -148,7 +149,9 @@ class DailyStore:
     ) -> list[DailyHit]:
         path = self.path_for(day)
         with self._open(path) as conn:
-            if self._has_fts(conn):
+            if self._has_fts(conn) and all(
+                token.isascii() for token in tokens
+            ):
                 expr = " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens[:16])
                 try:
                     rows = conn.execute(
@@ -219,7 +222,7 @@ class DailyStore:
                 day = date.fromisoformat(match.group(1))
             except ValueError:
                 continue
-            if day < today:
+            if day < today and self.count(day) > 0:
                 pending.append(day)
         return sorted(pending)
 
@@ -276,6 +279,22 @@ class DailyStore:
                 pass
         return removed
 
+    def delete_messages(self, day: date, message_ids: Sequence[int]) -> int:
+        """Delete only the listed rows, leaving concurrent appends intact."""
+        identifiers = [int(value) for value in message_ids]
+        if not identifiers:
+            return 0
+        path = self.path_for(day)
+        if not path.exists():
+            return 0
+        placeholders = ",".join("?" for _ in identifiers)
+        with self._open(path) as conn:
+            cursor = conn.execute(
+                f"DELETE FROM messages WHERE id IN ({placeholders})",
+                tuple(identifiers),
+            )
+            return max(0, int(cursor.rowcount or 0))
+
     @contextmanager
     def _open(self, path: Path):
         conn = self._connect(path)
@@ -294,7 +313,20 @@ class DailyStore:
         conn.executescript(_SCHEMA)
         if self.use_fts:
             try:
+                version = int(
+                    conn.execute("PRAGMA user_version").fetchone()[0]
+                )
                 conn.executescript(_FTS_SCHEMA)
+                if version < _FTS_VERSION:
+                    # Backfill rows written before FTS (or its triggers)
+                    # existed, then remember that the index is current.
+                    conn.execute(
+                        "INSERT INTO messages_fts(messages_fts) "
+                        "VALUES('rebuild')"
+                    )
+                    conn.execute(
+                        f"PRAGMA user_version = {_FTS_VERSION}"
+                    )
             except sqlite3.OperationalError:
                 self.use_fts = False
         return conn
