@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from sora_agent.agent import Agent, AgentResult
-from sora_agent.identity import IdentityConfig, IdentityStore
+from sora_agent.identity import IdentityConfig, IdentityStore, SECRET_MARKER
 from sora_agent.memory.config import MemoryConfig
 from sora_agent.memory.daily import DailyStore
 from sora_agent.memory.hook import MemoryHook
@@ -387,3 +387,48 @@ def test_redactor_failure_drops_the_memory_write(tmp_path: Path) -> None:
     hook.before_run("sensitive task")
     hook.after_run(SimpleNamespace(proposal="done"))
     assert hook.daily.count() == 0
+
+
+def test_redactor_removes_common_credentials(tmp_path: Path) -> None:
+    store = IdentityStore(IdentityConfig(root=tmp_path / "identity"))
+    secrets = [
+        "sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+        "sk_live_abcdefghijklmnop1234",
+        "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        "AKIAIOSFODNN7EXAMPLE",
+        "AIza" + "A" * 35,
+        "Bearer abcdefghijklmnop123456",
+        (
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+            ".abcdefghijklmnop"
+        ),
+        "xoxb-1234567890-abcdefghij",
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIEexample\n"
+        "-----END RSA PRIVATE KEY-----",
+        "password: hunter2",
+    ]
+
+    redacted = store.redact_for_memory(
+        "keys\n" + "\n".join(secrets), source="assistant"
+    )
+
+    assert SECRET_MARKER in redacted
+    assert "sk-proj-abcdefghijklmnopqrstuvwxyz123456" not in redacted
+    assert "sk_live_abcdefghijklmnop1234" not in redacted
+    assert "ghp_abcdefghijklmnopqrstuvwxyz0123456789" not in redacted
+    assert "AKIAIOSFODNN7EXAMPLE" not in redacted
+    assert "AIza" + "A" * 35 not in redacted
+    assert "abcdefghijklmnop123456" not in redacted
+    assert "eyJhbGciOiJIUzI1NiJ9" not in redacted
+    assert "xoxb-1234567890-abcdefghij" not in redacted
+    assert "MIIEexample" not in redacted
+    assert "hunter2" not in redacted
+
+
+def test_redactor_keeps_the_password_label(tmp_path: Path) -> None:
+    store = IdentityStore(IdentityConfig(root=tmp_path / "identity"))
+
+    redacted = store.redact_for_memory("database password: swordfish")
+
+    assert "password: [secret]" in redacted
+    assert "swordfish" not in redacted

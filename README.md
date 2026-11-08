@@ -328,6 +328,11 @@ provider = default_provider("openai")   # also: azure, deepseek, qwen, mock
 | `openai` / `azure` | OpenAI-compatible chat completions | `OPENAI_API_KEY` (plus optional `OPENAI_MODEL`, default `gpt-5.4-mini`, and `OPENAI_BASE_URL`) |
 | `deepseek` / `ds` | DeepSeek | `DEEPSEEK_API_KEY` (optional `DEEPSEEK_MODEL`, default `deepseek-flash`) |
 | `qwen` / `dashscope` | DashScope compatible mode | `DASHSCOPE_API_KEY` (optional `QWEN_MODEL`, default `qwen3.7-plus`) |
+| `custom` | Any OpenAI-compatible endpoint | `SORA_BASE_URL`; the key is optional and is never borrowed from `OPENAI_API_KEY` |
+
+A real provider with no key raises `ProviderConfigError` naming the exact
+environment variable; keys are never reused across providers. Plain HTTP base
+URLs are rejected unless they point at loopback.
 
 `azure` is an alias for the same OpenAI-compatible provider; set
 `OPENAI_BASE_URL` to your deployment endpoint (and `OPENAI_MODEL` to the
@@ -929,6 +934,10 @@ The **memory firewall** lives here: `IdentityStore.redact_for_memory(text)`
 removes known profile terms/bullets and (for user messages) common explicit
 profile/PII patterns before anything is written to memory or returned from
 recall, replacing them with `[profile]` / `[profile details withheld]`.
+Credentials are removed for every source, including assistant output: OpenAI
+and Stripe keys, GitHub tokens, AWS and Google keys, Slack tokens, bearer
+tokens, JWTs, PEM private keys, and `password: ...` / `token = ...`
+assignments become `[secret]`.
 
 | Env var | Default | Meaning |
 | --- | --- | --- |
@@ -976,10 +985,14 @@ decay → expire → mark → sweep expired → report → artifact cleanup
 - **Sidecar lifecycle**: `SidecarManager` downloads a platform binary for
   `SORA_MEMORY_SIDECAR_VERSION` (default `2.139.1`) from
   `SORA_MEMORY_DOWNLOAD_BASE_URL` (default: the `liliang-cn/cortexdb` GitHub
-  releases), verifies its published `.sha256`, extracts it to
-  `~/.sora_agent/bin/cortexdb-grpc`, starts it with a minimal environment, and
-  polls `/v1/health` until it is up (default 20 s).
-  `sora-memory download|start|stop|doctor` exposes the lifecycle.
+  releases), verifies the artifact against a pinned checksum, extracts it to
+  `~/.sora_agent/bin/cortexdb-grpc`, starts it with an allowlisted environment,
+  and polls `/v1/health` until it is up (default 20 s). Downloads refuse
+  plaintext HTTP to non-loopback hosts (including redirects) and each install
+  is protected by a single-instance lock. Existing binaries must match the
+  checksum recorded at download time (or `SORA_MEMORY_SIDECAR_SHA256`) before
+  they are executed. `sora-memory download|start|stop|doctor` exposes the
+  lifecycle.
 - **Fail-open**: if the sidecar is unavailable, long-term recall degrades to
   daily results with an explicit note and the backend is retried at most every
   30 seconds. A broken memory hook never breaks a run.
@@ -1018,6 +1031,7 @@ decay → expire → mark → sweep expired → report → artifact cleanup
 | `SORA_MEMORY_DOWNLOAD_BASE_URL` | CortexDB release base URL | Where to download the sidecar from. |
 | `SORA_MEMORY_SIDECAR_BIN` | — | Use an existing binary instead. |
 | `SORA_MEMORY_SIDECAR_VERSION` | `2.139.1` | Release to download. |
+| `SORA_MEMORY_SIDECAR_SHA256` | — | Pin the expected binary checksum (64 hex characters). |
 | `SORA_MEMORY_HTTP_ADDR` / `SORA_MEMORY_GRPC_ADDR` | `127.0.0.1:0` | Listen addresses (port 0 = free port). |
 | `SORA_MEMORY_TOKEN` | generated file | Bearer token for the HTTP API. |
 | `SORA_MEMORY_REQUEST_TIMEOUT` / `SORA_MEMORY_START_TIMEOUT` | `10.0` / `20.0` | Seconds. |
@@ -1388,7 +1402,7 @@ Command-line flags override all of these. The same precedence applies to
 
 | Variable | Used by |
 | --- | --- |
-| `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL` | `openai` / `azure` provider (and any OpenAI-compatible base URL). |
+| `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL` | `openai` / `azure` provider. Not used by other provider kinds. |
 | `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL` | `deepseek` provider. |
 | `DASHSCOPE_API_KEY`, `QWEN_MODEL` | `qwen` provider. |
 | `SORA_VISION_MODEL`, `SORA_VISION_BASE_URL`, `SORA_VISION_API_KEY` | Optional image-description model. Falls back to the main provider when it is known to accept images. |
@@ -1451,6 +1465,8 @@ SoraAgent/
     ├── state_machine.py        # PO exception-handling state machine
     ├── identity.py             # USER.md/SOUL.md storage, validation, memory firewall
     ├── identity_provider.py    # identity prompt injection + edit handling
+    ├── untrusted.py            # random-boundary framing for untrusted content
+    ├── audit.py                # append-only audit log for automatic edits
     ├── rag.py                  # minimal Retriever protocol + in-memory stub
     ├── cli/                    # the sora command
     │   ├── main.py             # Typer app: setup, chat, gateway, config, doctor

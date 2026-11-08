@@ -48,6 +48,7 @@ class MemoryConfig:
     recall_retrieval_mode: str = "auto"
 
     sidecar_version: str = "2.139.1"
+    sidecar_sha256: str = ""
     sidecar_binary: Path | None = None
     http_addr: str = "127.0.0.1:0"
     grpc_addr: str = "127.0.0.1:0"
@@ -258,6 +259,7 @@ class MemoryConfig:
                 "SORA_MEMORY_SIDECAR_VERSION",
                 _pick_str(raw, "sidecar_version", "2.139.1"),
             ),
+            sidecar_sha256=os.getenv("SORA_MEMORY_SIDECAR_SHA256", ""),
             sidecar_binary=Path(binary).expanduser() if binary else None,
             http_addr=os.getenv("SORA_MEMORY_HTTP_ADDR", "127.0.0.1:0"),
             grpc_addr=os.getenv("SORA_MEMORY_GRPC_ADDR", "127.0.0.1:0"),

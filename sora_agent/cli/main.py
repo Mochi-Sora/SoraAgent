@@ -11,6 +11,7 @@ import typer
 from .. import __version__
 from ..channels.cli import main as gateway_main
 from ..model_catalog import provider_info
+from ..providers import ProviderConfigError
 from ..runtime_setup import provider_kind
 from ..settings import (
     MODES,
@@ -138,7 +139,12 @@ def run_command(
     settings, secrets = _load_for_use()
     if settings is None:
         raise typer.Exit(1)
-    raise typer.Exit(run_once(settings, secrets, task))
+    try:
+        code = run_once(settings, secrets, task)
+    except ProviderConfigError as exc:
+        ui.error(str(exc))
+        code = 2
+    raise typer.Exit(code)
 
 
 @app.command()
@@ -322,7 +328,11 @@ def _chat_impl() -> int:
     settings, secrets = _load_for_use()
     if settings is None:
         return 1
-    return interactive(settings, secrets)
+    try:
+        return interactive(settings, secrets)
+    except ProviderConfigError as exc:
+        ui.error(str(exc))
+        return 2
 
 
 def _navigate(data: Any, key: str) -> Any:

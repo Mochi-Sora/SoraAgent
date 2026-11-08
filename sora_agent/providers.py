@@ -21,6 +21,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, Union
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from .tools import Tool
@@ -30,6 +31,33 @@ _ACTION_RE = re.compile(
     r"ACTION:\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)", re.DOTALL
 )
 _ORDER_RE = re.compile(r"\b(PO-\d+)\b", re.IGNORECASE)
+
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+class ProviderConfigError(RuntimeError):
+    """A provider is missing configuration, usually its API key."""
+
+
+def _is_loopback(host: str | None) -> bool:
+    value = (host or "").strip("[]").lower()
+    return value in _LOOPBACK_HOSTS or value.startswith("127.")
+
+
+def _check_base_url(url: str | None) -> None:
+    """Reject unusable or plaintext remote endpoints."""
+    if not url:
+        return
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ProviderConfigError(
+            "provider base_url must start with http:// or https://"
+        )
+    if parsed.scheme != "https" and not _is_loopback(parsed.hostname):
+        raise ProviderConfigError(
+            "refusing to send credentials or chat content over plain HTTP to "
+            f"{parsed.hostname or url!r}; use https:// or a loopback address"
+        )
 
 
 @dataclass
@@ -376,9 +404,15 @@ class OpenAIChatProvider:
         base_url: str | None = None,
         timeout: float = 30.0,
         temperature: float | None = None,
+        require_api_key: bool = True,
     ) -> None:
         self.model = model
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
+        self.api_key = (api_key or "").strip()
+        if require_api_key and not self.api_key:
+            raise ProviderConfigError(
+                "an API key is required for OpenAIChatProvider"
+            )
+        _check_base_url(base_url)
         self.base_url = base_url
         self.timeout = timeout
         if temperature is not None and not 0.0 <= float(temperature) <= 2.0:
@@ -522,8 +556,9 @@ def default_provider(
     """Build a provider from explicit values and environment defaults.
 
     Explicit arguments win, then the environment, then the built-in defaults
-    for that provider kind.  Existing callers that pass only ``kind`` keep
-    their exact previous behaviour.
+    for that provider kind.  A real provider without a key raises
+    :class:`ProviderConfigError`; keys are never borrowed from a different
+    provider's environment variable.
     """
     kind = kind.lower()
     if kind in {"mock", "demo"}:
@@ -531,7 +566,7 @@ def default_provider(
     if kind in {"openai", "azure"}:
         return OpenAIChatProvider(
             model=model or os.getenv("OPENAI_MODEL", "gpt-5.4-mini"),
-            api_key=api_key,
+            api_key=_required_key("OpenAI", api_key, "OPENAI_API_KEY"),
             base_url=base_url or os.getenv("OPENAI_BASE_URL"),
             timeout=timeout,
             temperature=temperature,
@@ -539,7 +574,9 @@ def default_provider(
     if kind in {"deepseek", "ds"}:
         return OpenAIChatProvider(
             model=model or os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
-            api_key=api_key or os.getenv("DEEPSEEK_API_KEY"),
+            api_key=_required_key(
+                "DeepSeek", api_key, "DEEPSEEK_API_KEY"
+            ),
             base_url=(
                 base_url
                 or os.getenv("DEEPSEEK_BASE_URL")
@@ -551,7 +588,9 @@ def default_provider(
     if kind in {"qwen", "dashscope"}:
         return OpenAIChatProvider(
             model=model or os.getenv("QWEN_MODEL", "qwen3.7-plus"),
-            api_key=api_key or os.getenv("DASHSCOPE_API_KEY"),
+            api_key=_required_key(
+                "Qwen (DashScope)", api_key, "DASHSCOPE_API_KEY"
+            ),
             base_url=(
                 base_url
                 or os.getenv("QWEN_BASE_URL")
@@ -562,7 +601,7 @@ def default_provider(
         )
     if kind in {"custom", "openai-compatible"}:
         if not base_url:
-            raise ValueError(
+            raise ProviderConfigError(
                 "custom provider requires a base_url (an OpenAI-compatible "
                 "chat completions endpoint)"
             )
@@ -572,5 +611,17 @@ def default_provider(
             base_url=base_url,
             timeout=timeout,
             temperature=temperature,
+            require_api_key=False,
         )
     raise ValueError(f"unknown provider kind: {kind}")
+
+
+def _required_key(
+    label: str, explicit: str | None, env_name: str
+) -> str:
+    value = (explicit or os.getenv(env_name, "")).strip()
+    if not value:
+        raise ProviderConfigError(
+            f"{label} requires an API key: set {env_name} or pass api_key"
+        )
+    return value

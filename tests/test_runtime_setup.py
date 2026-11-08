@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from sora_agent.memory.config import MemoryConfig
-from sora_agent.providers import MockProvider
+from sora_agent.providers import MockProvider, ProviderConfigError
 from sora_agent.runtime_setup import (
     approval_mode,
     build_calendar,
@@ -213,7 +213,7 @@ def test_build_provider_supports_mock_and_custom(monkeypatch):
     assert provider.base_url == "https://example.test/v1"
 
     custom.provider.base_url = None
-    with pytest.raises(ValueError, match="base_url"):
+    with pytest.raises(ProviderConfigError, match="base_url"):
         build_provider(custom, api_key="key")
 
 

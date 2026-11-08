@@ -20,6 +20,7 @@ from typing import Any
 
 from ..approval import AutoApprovalGate
 from ..persona import apply_persona, display_name
+from ..providers import ProviderConfigError
 from ..runner import RunEvent
 from ..runtime_setup import (
     approval_mode,
@@ -142,7 +143,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             temperature=args.temperature,
             timeout=args.provider_timeout,
         )
-    except (ValueError, ImportError) as exc:
+    except (ValueError, ImportError, ProviderConfigError) as exc:
         print(f"sora-gateway: {exc}", file=sys.stderr)
         return 2
 

@@ -800,10 +800,136 @@ def test_sidecar_download_verifies_checksum(tmp_path: Path) -> None:
         manager = SidecarManager(config)
         path = manager.download()
         assert path.exists()
-        _DownloadHandler.checksum = "0" * 64
-        with pytest.raises(SidecarError):
+        pin = manager._checksum_path(path)
+        record = json.loads(pin.read_text(encoding="utf-8"))
+        assert record["version"] == "9.9.9"
+        assert record["sha256"] == hashlib.sha256(data).hexdigest()
+
+        # A later download prefers the local pin, so a changed payload is
+        # rejected even when the mirror serves a matching checksum.
+        replacement = io.BytesIO()
+        with tarfile.open(fileobj=replacement, mode="w:gz") as archive:
+            binary = b"different binary"
+            info = tarfile.TarInfo("cortexdb-grpc")
+            info.size = len(binary)
+            archive.addfile(info, io.BytesIO(binary))
+        _DownloadHandler.payload = replacement.getvalue()
+        _DownloadHandler.checksum = hashlib.sha256(
+            _DownloadHandler.payload
+        ).hexdigest()
+        with pytest.raises(SidecarError, match="checksum mismatch"):
             SidecarManager(config).download()
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_sidecar_explicit_checksum_pins_the_download(tmp_path: Path) -> None:
+    payload = io.BytesIO()
+    with tarfile.open(fileobj=payload, mode="w:gz") as archive:
+        binary = b"binary"
+        info = tarfile.TarInfo("cortexdb-grpc")
+        info.size = len(binary)
+        archive.addfile(info, io.BytesIO(binary))
+    data = payload.getvalue()
+    _DownloadHandler.payload = data
+    _DownloadHandler.checksum = "0" * 64
+    server, thread = _serve(_DownloadHandler)
+    try:
+        base = "http://127.0.0.1:" + str(server.server_address[1])
+        config = config_for(
+            tmp_path,
+            auto_download=True,
+            sidecar_version="9.9.8",
+            download_base_url=base,
+            sidecar_sha256=hashlib.sha256(data).hexdigest(),
+        )
+
+        assert SidecarManager(config).download().exists()
+
+        wrong = config_for(
+            tmp_path,
+            auto_download=True,
+            sidecar_version="9.9.7",
+            download_base_url=base,
+            sidecar_sha256="0" * 64,
+        )
+        with pytest.raises(SidecarError, match="checksum mismatch"):
+            SidecarManager(wrong).download()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_existing_sidecar_binary_must_be_verified(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    binary = config.sidecar_path
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_bytes(b"binary")
+    binary.chmod(0o755)
+    manager = SidecarManager(config)
+
+    with pytest.raises(SidecarError, match="unverified"):
+        manager._ensure_binary()
+
+    digest = hashlib.sha256(b"binary").hexdigest()
+    pinned = config_for(tmp_path, sidecar_sha256=digest)
+    assert SidecarManager(pinned)._ensure_binary() == binary
+    assert SidecarManager(pinned).doctor()["binary_verified"] is True
+
+    binary.write_bytes(b"tampered")
+    with pytest.raises(SidecarError, match="mismatch"):
+        SidecarManager(pinned)._ensure_binary()
+    assert SidecarManager(pinned).doctor()["binary_verified"] is False
+
+
+def test_sidecar_child_env_is_an_allowlist(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    manager = SidecarManager(config_for(tmp_path))
+
+    env = manager._child_env()
+
+    assert env["PATH"] == "/usr/bin"
+    assert "OPENAI_API_KEY" not in env
+    assert "DEEPSEEK_API_KEY" not in env
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert env["CORTEXDB_PATH"].endswith("cortexdb.db")
+
+
+def test_sidecar_plaintext_remote_download_is_rejected(tmp_path: Path) -> None:
+    config = config_for(
+        tmp_path,
+        auto_download=True,
+        download_base_url="http://example.test/releases",
+    )
+
+    with pytest.raises(SidecarError, match="plain HTTP"):
+        SidecarManager(config)._fetch("cortexdb-grpc_linux_amd64.tar.gz")
+
+
+def test_sidecar_download_url_rejects_embedded_credentials() -> None:
+    with pytest.raises(SidecarError, match="credentials"):
+        SidecarManager._open(
+            "https://user:secret@example.test/file", timeout=1
+        )
+
+
+def test_sidecar_single_instance_lock(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    first = SidecarManager(config)
+    second = SidecarManager(config)
+
+    first._acquire_lock()
+    try:
+        with pytest.raises(SidecarError, match="another SoraAgent process"):
+            second._acquire_lock()
+    finally:
+        first._release_lock()
+
+    second._acquire_lock()
+    second._release_lock()

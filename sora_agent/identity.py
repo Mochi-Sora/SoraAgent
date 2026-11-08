@@ -48,6 +48,7 @@ DEFAULT_MAX_REPAIRS = 2
 
 PROFILE_MARKER = "[profile]"
 PROFILE_WITHHELD = "[profile details withheld]"
+SECRET_MARKER = "[secret]"
 
 IDENTITY_HEADING = "## PERSISTENT USER PROFILE"
 STATE_HEADING = "## SESSION STATE PROTOCOL"
@@ -125,6 +126,39 @@ _PROFILE_PATTERNS = (
     re.compile(r"(?i)\bremember (?:that )?i\s+[^.!?\n]{1,120}"),
     re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b"),
     re.compile(r"(?<!\d)(?:\+?\d[\d ()-]{7,}\d)(?!\d)"),
+)
+
+# Credentials are redacted for every memory source, not just user messages.
+# The replacement keeps a short key name so the sentence stays readable.
+_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?"
+                   r"-----END [A-Z0-9 ]*PRIVATE KEY-----"),
+        SECRET_MARKER,
+    ),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"), SECRET_MARKER),
+    (re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9]{16,}\b"), SECRET_MARKER),
+    (re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,})\b"), SECRET_MARKER),
+    (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), SECRET_MARKER),
+    (re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), SECRET_MARKER),
+    (re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"), SECRET_MARKER),
+    (
+        re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{12,}"),
+        SECRET_MARKER,
+    ),
+    (
+        re.compile(
+            r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}"
+        ),
+        SECRET_MARKER,
+    ),
+    (
+        re.compile(
+            r"(?i)\b(password|passwd|pwd|secret|token|api[ _-]?key|"
+            r"access[ _-]?key|client[ _-]?secret)\s*[:=]\s*\"?[^\s\"']{4,}"
+        ),
+        r"\1: " + SECRET_MARKER,
+    ),
 )
 
 log = logging.getLogger(__name__)
@@ -1392,12 +1426,18 @@ class IdentityStore:
         for term in self._known_user_terms():
             value = self._replace_term(value, term)
 
+        for pattern, replacement in _SECRET_PATTERNS:
+            value = pattern.sub(replacement, value)
+
         if source == "user":
             for pattern in _PROFILE_PATTERNS:
                 value = pattern.sub(PROFILE_MARKER, value)
 
         value = re.sub(
             r"(?:\[profile\]\s*){2,}", PROFILE_MARKER + " ", value
+        )
+        value = re.sub(
+            r"(?:\[secret\]\s*){2,}", SECRET_MARKER + " ", value
         )
         value = re.sub(r"[ \t]+", " ", value)
         value = re.sub(r" *\n *", "\n", value)
