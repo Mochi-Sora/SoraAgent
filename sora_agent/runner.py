@@ -16,7 +16,13 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .providers import Message, ModelTurn, ToolCall, provider_turn
+from .providers import (
+    Message,
+    ModelTurn,
+    ToolCall,
+    is_retryable_error,
+    provider_turn,
+)
 from .tools import ToolExecutor, ToolResult
 
 log = logging.getLogger(__name__)
@@ -393,8 +399,13 @@ def _turn_with_retries(
             return turn, "", False
         except Exception as exc:  # noqa: BLE001 - retry policy lives here
             cancelled = spec.should_stop is not None and spec.should_stop()
-            if attempt >= retries or cancelled:
-                return None, f"{type(exc).__name__}: {exc}", cancelled
+            if cancelled:
+                return None, f"{type(exc).__name__}: {exc}", True
+            if not is_retryable_error(exc):
+                log.warning("provider failed permanently: %s", exc)
+                return None, f"{type(exc).__name__}: {exc}", False
+            if attempt >= retries:
+                return None, f"{type(exc).__name__}: {exc}", False
             metrics.provider_retries += 1
             notify(
                 RunEvent(

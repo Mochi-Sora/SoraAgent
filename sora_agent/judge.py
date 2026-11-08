@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -80,6 +81,24 @@ class Calibration:
     recall_bad: float
     sample_size: int
     updated_at: str = ""
+
+    def __post_init__(self) -> None:
+        values = {
+            "agreement": self.agreement,
+            "kappa": self.kappa,
+            "recall_bad": self.recall_bad,
+        }
+        for name, value in values.items():
+            if not math.isfinite(value):
+                raise ValueError(f"calibration {name} must be finite")
+        if not 0.0 <= self.agreement <= 1.0:
+            raise ValueError("calibration agreement must be in [0, 1]")
+        if not -1.0 <= self.kappa <= 1.0:
+            raise ValueError("calibration kappa must be in [-1, 1]")
+        if not 0.0 <= self.recall_bad <= 1.0:
+            raise ValueError("calibration recall_bad must be in [0, 1]")
+        if self.sample_size < 0:
+            raise ValueError("calibration sample_size must not be negative")
 
 
 def load_calibration(path: Path) -> Calibration | None:
@@ -343,7 +362,10 @@ def _dimensions(data: dict[str, Any]) -> dict[str, float]:
         value = raw.get(name)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             continue
-        dimensions[name] = max(0.0, min(1.0, float(value)))
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            continue
+        dimensions[name] = max(0.0, min(1.0, numeric))
     return dimensions
 
 

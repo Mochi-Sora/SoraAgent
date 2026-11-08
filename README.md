@@ -497,8 +497,11 @@ appended), `steps`, `final_answer`, `stop_reason`, `error`, `metrics`
 
 ### Reliability behavior
 
-- **Retries**: transient provider failures retry with exponential backoff and
-  equal jitter. Backoff sleeps in 50 ms slices so cancellation is immediate.
+- **Retries**: transient provider failures (timeouts, connection errors, 408 /
+  409 / 425 / 429, and 5xx) retry with exponential backoff and equal jitter.
+  Authentication, permission, validation, and configuration errors fail
+  immediately instead of burning the retry budget. Backoff sleeps in 50 ms
+  slices so cancellation is immediate.
 - **Required first tool**: when set (or when memory is enabled — see
   [Memory](#memory-cortexdb)), a direct answer or wrong tool is rejected with a
   correction message. The first two violations get a correction; the third
@@ -595,7 +598,7 @@ registry.add(Tool(
 | Option | Meaning |
 | --- | --- |
 | `needs_approval=True` | Routed through the approval gate before execution; the schema description gets a `[approval required]` marker. |
-| `isolated=True` | Runs in a spawned child process so a hang can actually be killed (`tool_timeout`, default 30 s). Arguments and return value must be picklable. This is crash/hang isolation, **not** a security sandbox. |
+| `isolated=True` | Runs in a spawned child process so a hang can actually be killed (`tool_timeout`, default 30 s). Arguments and return value must be picklable. The result pipe is read while the child runs, so a large result cannot cause a false timeout. This is crash/hang isolation, **not** a security sandbox. |
 | `requires=("lookup_order",)` | Declares prerequisites; the structural grader checks they succeeded earlier. |
 | `aliases=("meeting", "appointment")` | Extra trigger words used by lexical tool search. |
 
@@ -714,6 +717,8 @@ print(report.passed, report.score, report.checks, report.dimensions)
 
 `structural_grader` (the default) checks what a finished trajectory can prove:
 
+- the run stopped with `stop_reason="completed"` (denials, cancellation,
+  provider errors, and budget exhaustion fail even if text was produced);
 - the final answer is non-empty;
 - every called tool is in the tool set;
 - arguments conform to the tool's JSON schema (required fields and types);
@@ -721,7 +726,8 @@ print(report.passed, report.score, report.checks, report.dimensions)
 - a tool never executes after the run stopped;
 - a tool never executes without the approval it required;
 - the required first tool (when set) was actually first;
-- repeated identical calls are reported (score penalty, not a hard failure).
+- skipped calls are reported, and repeated identical calls are reported (score
+  penalty, not a hard failure).
 
 It deliberately does **not** check semantic correctness, grounding of claims in
 tool results, safety/desirability of side effects, business rules, idempotency,
@@ -729,7 +735,8 @@ prompt injection, whether a better tool existed, undeclared dependencies, or
 argument semantics beyond schema shape.
 
 `trajectory_metrics(trajectory)` derives efficiency measures: action success
-rate, redundant-call rate, steps to answer, attempted/successful calls, token
+rate (successful executions divided by attempted calls, including skipped
+calls), redundant-call rate, steps to answer, attempted/successful calls, token
 counts, and provider/tool seconds.
 
 ### Chat inspection and control
@@ -767,7 +774,9 @@ Guardrails:
 
 - **Calibration gate**: `JudgeGrader` refuses to score until a calibration
   manifest meets minimum agreement (0.80), Cohen's kappa (0.60), and recall on
-  bad trajectories (0.80).
+  bad trajectories (0.80). Calibration values must be finite and in range; a
+  NaN or infinite metric rejects the manifest instead of passing every
+  comparison. Non-finite dimension scores in a judge response are discarded.
 - **Family rule**: `agent_family` and `model_family` are declarations, not
   verifiable facts, but using the same family is rejected.
 - **Advisory safety**: the `safety` dimension appears in the report and lowers

@@ -625,3 +625,55 @@ def _required_key(
             f"{label} requires an API key: set {env_name} or pass api_key"
         )
     return value
+
+
+_RETRYABLE_STATUS = frozenset({408, 409, 425, 429})
+_RETRYABLE_NAME_HINTS = (
+    "timeout",
+    "connection",
+    "ratelimit",
+    "server",
+    "unavailable",
+    "overloaded",
+    "internalserver",
+)
+_PERMANENT_NAME_HINTS = (
+    "authentication",
+    "permission",
+    "invalidrequest",
+    "badrequest",
+    "notfound",
+    "unprocessable",
+    "contentpolicy",
+)
+
+
+def is_retryable_error(exc: BaseException) -> bool:
+    """Classify a provider failure as transient or permanent.
+
+    Authentication, permission, validation, and configuration failures will
+    not improve by retrying.  Timeouts, connection failures, rate limits, and
+    5xx responses will.  Unknown errors keep the historical retry behaviour.
+    """
+    if isinstance(
+        exc,
+        (ProviderConfigError, ValueError, TypeError, KeyError, ImportError),
+    ):
+        return False
+    status = getattr(exc, "status_code", None)
+    if not isinstance(status, int):
+        status = getattr(exc, "status", None)
+    if not isinstance(status, int):
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    if isinstance(status, int):
+        if status in _RETRYABLE_STATUS or 500 <= status <= 599:
+            return True
+        if 400 <= status <= 499:
+            return False
+    name = type(exc).__name__.casefold()
+    if any(hint in name for hint in _PERMANENT_NAME_HINTS):
+        return False
+    if any(hint in name for hint in _RETRYABLE_NAME_HINTS):
+        return True
+    return True

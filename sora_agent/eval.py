@@ -122,6 +122,12 @@ def structural_grader(trajectory: Trajectory) -> EvalReport:
     prior_success: set[str] = set()
     stopped = False
 
+    if trajectory.stop_reason and trajectory.stop_reason != "completed":
+        checks.append(
+            f"run stopped with {trajectory.stop_reason!r}, not 'completed'"
+        )
+        failed = True
+
     final = trajectory.final_answer.strip()
     if final:
         checks.append("final answer is non-empty")
@@ -130,6 +136,11 @@ def structural_grader(trajectory: Trajectory) -> EvalReport:
         failed = True
 
     results = [result for step in trajectory.steps for result in step.results]
+    skipped = [result for result in results if result.skipped]
+    if skipped:
+        checks.append(
+            f"{len(skipped)} tool call(s) were skipped and never executed"
+        )
     for result in results:
         name = result.call.name
         schema = trajectory.tools.get(name)
@@ -217,7 +228,9 @@ def trajectory_from_run(
 def trajectory_metrics(trajectory: Trajectory) -> TrajectoryMetrics:
     """Derive efficiency, success, and cost measures from a run's metrics."""
     metrics = trajectory.metrics
-    attempted = max(0, metrics.tool_calls)
+    attempted = max(
+        0, metrics.tool_calls + metrics.skipped_tool_calls
+    )
     successful = max(0, metrics.executed_tool_calls - metrics.tool_errors)
     return TrajectoryMetrics(
         action_success_rate=(

@@ -69,6 +69,7 @@ def _trajectory(
     requirements: dict | None = None,
     required: str | None = None,
     metrics: RunMetrics | None = None,
+    stop_reason: str = "completed",
 ) -> Trajectory:
     return Trajectory(
         task="task",
@@ -77,7 +78,7 @@ def _trajectory(
         tools=TOOLS if tools is None else tools,
         requirements=requirements or {},
         final_answer=answer,
-        stop_reason="completed",
+        stop_reason=stop_reason,
         required_first_tool=required,
     )
 
@@ -100,6 +101,44 @@ def test_empty_answer_fails():
     report = QualityGate().evaluate(_trajectory([], answer=""))
     assert report.passed is False
     assert any("empty" in check for check in report.checks)
+
+
+def test_a_non_completed_stop_reason_fails():
+    for reason in (
+        "approval_rejected",
+        "cancelled",
+        "provider_error",
+        "max_steps",
+        "tool_error",
+    ):
+        report = QualityGate().evaluate(
+            _trajectory([_step(0, [])], stop_reason=reason)
+        )
+        assert report.passed is False
+        assert any(reason in check for check in report.checks)
+
+
+def test_skipped_calls_are_reported_but_do_not_flip_a_completed_run():
+    report = QualityGate().evaluate(
+        _trajectory(
+            [
+                _step(
+                    0,
+                    [
+                        _result(
+                            "lookup_order",
+                            executed=False,
+                            is_error=True,
+                            skipped=True,
+                        )
+                    ],
+                )
+            ]
+        )
+    )
+
+    assert report.passed is True
+    assert any("skipped" in check for check in report.checks)
 
 
 def test_unknown_tool_fails():
@@ -263,6 +302,23 @@ def test_trajectory_metrics_define_asr_and_redundancy():
     assert efficiency.action_success_rate == 0.5
     assert efficiency.redundant_call_rate == 0.25
     assert efficiency.steps_to_answer == 3
+
+
+def test_skipped_calls_count_as_attempted_actions():
+    efficiency = trajectory_metrics(
+        _trajectory(
+            [_step(0, [])],
+            metrics=RunMetrics(
+                tool_calls=2,
+                executed_tool_calls=2,
+                skipped_tool_calls=2,
+            ),
+        )
+    )
+
+    assert efficiency.attempted_tool_calls == 4
+    assert efficiency.successful_tool_calls == 2
+    assert efficiency.action_success_rate == 0.5
 
 
 def test_a_real_run_with_a_failing_gate_still_executes():

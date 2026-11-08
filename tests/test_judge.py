@@ -193,6 +193,67 @@ def test_calibration_round_trip(tmp_path):
     assert loaded == original
 
 
+def test_calibration_rejects_non_finite_values(tmp_path):
+    with pytest.raises(ValueError, match="finite"):
+        Calibration(float("nan"), 0.6, 0.9, 10)
+    with pytest.raises(ValueError, match="finite"):
+        Calibration(0.8, float("inf"), 0.9, 10)
+
+    path = tmp_path / "nan.json"
+    path.write_text(
+        json.dumps(
+            {
+                "agreement": float("nan"),
+                "kappa": float("inf"),
+                "recall_bad": 0.9,
+                "sample_size": 10,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert load_calibration(path) is None
+
+
+def test_calibration_rejects_out_of_range_values(tmp_path):
+    with pytest.raises(ValueError):
+        Calibration(1.5, 0.6, 0.9, 10)
+    with pytest.raises(ValueError):
+        Calibration(0.8, -2.0, 0.9, 10)
+    with pytest.raises(ValueError):
+        Calibration(0.8, 0.6, 1.5, 10)
+    with pytest.raises(ValueError):
+        Calibration(0.8, 0.6, 0.9, -1)
+
+
+def test_non_finite_dimensions_are_ignored(tmp_path):
+    payload = (
+        '{"passed": true, "dimensions": {'
+        '"groundedness": NaN, "task_completion": NaN, '
+        '"tool_selection": NaN, "error_recovery": NaN, '
+        '"unnecessary_loops": NaN, "safety": NaN}}'
+    )
+
+    report = JudgeGrader(JsonProvider(payload), _config(tmp_path))(
+        _trajectory()
+    )
+
+    assert report.error
+    assert "no dimension scores" in report.error
+
+
+def test_finite_dimensions_survive_a_mixed_response(tmp_path):
+    payload = json.loads(GOOD_JSON)
+    payload["dimensions"]["groundedness"] = float("nan")
+    payload["dimensions"]["task_completion"] = 0.2
+
+    report = JudgeGrader(
+        JsonProvider(json.dumps(payload)), _config(tmp_path)
+    )(_trajectory())
+
+    assert "groundedness" not in report.dimensions
+    assert report.dimensions["task_completion"] == 0.2
+
+
 def test_calibrate_judge_skips_errored_reports(tmp_path):
     def grader(trajectory):
         from sora_agent.eval import EvalReport

@@ -31,6 +31,28 @@ class FlakyProvider:
         return ModelTurn(text=self.text)
 
 
+class StatusError(RuntimeError):
+    def __init__(self, status: int) -> None:
+        super().__init__(f"status {status}")
+        self.status_code = status
+
+
+class StatusProvider(FlakyProvider):
+    def __init__(self, status: int, failures: int = 99) -> None:
+        super().__init__(failures)
+        self.status = status
+
+    def complete_turn(self, messages, tools) -> ModelTurn:
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise StatusError(self.status)
+        return ModelTurn(text=self.text)
+
+
+def large_text() -> str:
+    return "x" * 2_000_000
+
+
 def _run(provider, **overrides):
     spec = {
         "messages": [],
@@ -83,6 +105,40 @@ def test_retries_stop_after_the_budget():
     assert result.stop_reason == "provider_error"
     assert provider.calls == 2
     assert "transient" in result.error
+
+
+def test_permanent_provider_error_is_not_retried():
+    for status in (400, 401, 403, 404, 422):
+        provider = StatusProvider(status)
+
+        result = _run(provider)
+
+        assert result.stop_reason == "provider_error"
+        assert provider.calls == 1
+
+
+def test_transient_status_errors_are_retried():
+    for status in (429, 500, 503):
+        provider = StatusProvider(status, failures=2)
+
+        result = _run(provider)
+
+        assert result.stop_reason == "completed"
+        assert provider.calls == 3
+
+
+def test_validation_errors_are_not_retried():
+    class ValueErrorProvider(FlakyProvider):
+        def complete_turn(self, messages, tools) -> ModelTurn:
+            self.calls += 1
+            raise ValueError("bad request shape")
+
+    provider = ValueErrorProvider(failures=0)
+
+    result = _run(provider)
+
+    assert result.stop_reason == "provider_error"
+    assert provider.calls == 1
 
 
 def test_cancellation_interrupts_the_backoff():
@@ -148,6 +204,22 @@ def test_unpicklable_isolated_tool_fails_cleanly():
 
     assert result.is_error is True
     assert "picklable" in result.content
+
+
+def test_isolated_tool_with_a_large_result_does_not_false_timeout():
+    registry = ToolRegistry()
+    registry.add(
+        Tool(large_text, "large", "Return a large string.", isolated=True)
+    )
+    executor = ToolExecutor(
+        registry, max_result_chars=0, tool_timeout=10.0
+    )
+
+    result = executor.execute(ToolCall("c1", "large", {}))
+
+    assert result.is_error is False
+    assert result.executed is True
+    assert len(result.content) == 2_000_000
 
 
 def test_isolated_tool_reports_child_errors():
