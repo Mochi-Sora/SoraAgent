@@ -56,7 +56,8 @@ The core imports only the Python standard library; optional integrations
 19. [Environment variables](#environment-variables)
 20. [Project layout](#project-layout)
 21. [Development](#development)
-22. [License](#license)
+22. [SoraPlatform](#soraplatform)
+23. [License](#license)
 
 ---
 
@@ -1593,6 +1594,16 @@ Notes for contributors:
   verdict into a tool call.
 - Prefer standard library solutions; the core package has zero dependencies and
   the memory core, state core, and calendar are stdlib-only by design.
+
+## SoraPlatform
+
+SoraAgent is the engine of [SoraPlatform](https://github.com/Mochi-Sora), an umbrella of
+open-source, independent products built against telemetry and bloat. It powers
+[SoraDesk](https://github.com/Mochi-Sora/SoraDesk), the desktop client;
+[SoraSkills](https://www.agensi.io/creators/mochi-sora) packages framework-agnostic
+agent skills on Agensi; and the rest of the ten-product roadmap is in development. The
+official site lives at
+[SoraOfficialWebsite](https://github.com/Mochi-Sora/SoraOfficialWebsite).
 
 ## License
 
