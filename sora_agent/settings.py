@@ -334,6 +334,7 @@ class FeatureSettings:
     clock: bool = True
     calendar: bool = True
     sessions: bool = True
+    streaming: bool = True
     tools: str = "demo"
     approval: str = "ask"
     quality: bool = True
@@ -361,6 +362,7 @@ class FeatureSettings:
             clock=_as_bool(raw.get("clock"), base.clock),
             calendar=_as_bool(raw.get("calendar"), base.calendar),
             sessions=_as_bool(raw.get("sessions"), base.sessions),
+            streaming=_as_bool(raw.get("streaming"), base.streaming),
             tools=_as_str(raw.get("tools"), base.tools),
             approval=_as_str(raw.get("approval"), base.approval),
             quality=_as_bool(raw.get("quality"), base.quality),
@@ -376,6 +378,7 @@ class LimitSettings:
     tool_timeout: float = 60.0
     approval_timeout: float = 300.0
     max_tool_result_chars: int = 4000
+    max_stream_chars: int = 3500
 
     def __post_init__(self) -> None:
         self.max_steps = _as_int(self.max_steps, 12, minimum=1)
@@ -392,6 +395,9 @@ class LimitSettings:
         )
         self.max_tool_result_chars = _as_int(
             self.max_tool_result_chars, 4000, minimum=0
+        )
+        self.max_stream_chars = _as_int(
+            self.max_stream_chars, 3500, minimum=1
         )
 
     @classmethod
@@ -415,6 +421,9 @@ class LimitSettings:
             ),
             max_tool_result_chars=_as_int(
                 raw.get("max_tool_result_chars"), base.max_tool_result_chars
+            ),
+            max_stream_chars=_as_int(
+                raw.get("max_stream_chars"), base.max_stream_chars
             ),
         )
 
@@ -605,6 +614,7 @@ def recommended_settings() -> Settings:
             clock=True,
             calendar=True,
             sessions=True,
+            streaming=True,
             tools="demo",
             approval="ask",
             quality=True,
@@ -645,6 +655,7 @@ def advanced_settings() -> Settings:
             clock=False,
             calendar=False,
             sessions=False,
+            streaming=False,
             tools="none",
             approval="off",
             quality=False,
@@ -688,6 +699,7 @@ def legacy_settings() -> Settings:
             clock=True,
             calendar=True,
             sessions=True,
+            streaming=True,
             tools="none",
             approval="ask",
             quality=True,

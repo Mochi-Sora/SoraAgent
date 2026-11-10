@@ -21,6 +21,8 @@ class BaseChannel(ABC):
 
     name: str = "base"
     display_name: str = "Base"
+    #: Whether the transport can edit a live message as text arrives.
+    supports_streaming: bool = False
 
     def __init__(self, config: Any, bus: MessageBus) -> None:
         self.config = config

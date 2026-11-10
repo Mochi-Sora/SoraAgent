@@ -161,6 +161,26 @@ class ClockProvider:
         augmented = self._augment(messages)
         return provider_text(self.inner, augmented, tools)
 
+    def stream_turn(
+        self,
+        messages: list[Message],
+        tools: list[Any],
+        on_delta: Callable[[str], None],
+        *,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> ModelTurn:
+        augmented = self._augment(messages)
+        stream = getattr(self.inner, "stream_turn", None)
+        if callable(stream):
+            return cast(
+                ModelTurn,
+                stream(augmented, tools, on_delta, should_stop=should_stop),
+            )
+        turn = provider_turn(self.inner, augmented, tools)
+        if turn.text:
+            on_delta(turn.text)
+        return turn
+
     def _augment(self, messages: Sequence[Any]) -> list[Any]:
         try:
             return with_clock(messages, self.clock())

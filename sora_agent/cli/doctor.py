@@ -12,6 +12,7 @@ from ..runtime_setup import (
     provider_kind,
     provider_label,
     quality_enabled,
+    streaming_enabled,
 )
 from ..settings import Settings, config_path, secrets_path
 from . import ui
@@ -109,6 +110,7 @@ def run_doctor(settings: Settings | None, secrets: dict[str, str]) -> int:
                 "On" if settings.features.sessions else "In-memory only",
             ),
             ("Tools", settings.features.tools),
+            ("Streaming", "On" if streaming_enabled(settings) else "Off"),
             ("Approval", approval_mode(settings)),
             ("Quality", "On" if quality_enabled(settings) else "Off"),
         ],

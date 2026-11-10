@@ -46,6 +46,7 @@ class RunRequest:
     context: str = ""
     after_execute: Callable[[ToolCall, ToolResult], None] | None = None
     required_first_tool: str | None = None
+    on_delta: Callable[[str, int], None] | None = None
     should_stop: Callable[[], bool] | None = None
     on_event: Callable[[RunEvent], None] | None = None
     provider_retries: int = 2
@@ -94,6 +95,7 @@ class AgentRuntime:
                 required_first_tool=required or None,
                 max_steps=request.max_steps,
                 context=request.context,
+                on_delta=request.on_delta,
                 should_stop=request.should_stop,
                 on_event=request.on_event,
                 provider_retries=request.provider_retries,

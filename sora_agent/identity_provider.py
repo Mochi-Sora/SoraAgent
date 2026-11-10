@@ -10,8 +10,8 @@ always inserted before the existing session-state section so the final order is:
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Sequence
-from typing import Any
+from collections.abc import Callable, Iterable, Sequence
+from typing import Any, cast
 
 from .clock import append_clock, extract_clock, strip_clock
 from .identity import (
@@ -69,6 +69,32 @@ class IdentityProvider:
         augmented = self._augment(messages)
         raw = provider_text(self.inner, augmented, tools)
         return self._settle(raw, augmented, tools)
+
+    def stream_turn(
+        self,
+        messages: Sequence[Any],
+        tools: Sequence[Any],
+        on_delta: Callable[[str], None],
+        *,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> ModelTurn:
+        augmented = self._augment(messages)
+        stream = getattr(self.inner, "stream_turn", None)
+        if callable(stream):
+            turn = cast(
+                ModelTurn,
+                stream(augmented, tools, on_delta, should_stop=should_stop),
+            )
+        else:
+            turn = provider_turn(self.inner, augmented, tools)
+            if turn.text:
+                on_delta(turn.text)
+        text = self._settle(turn.text, augmented, tools)
+        return ModelTurn(
+            text=text,
+            tool_calls=list(turn.tool_calls),
+            usage=turn.usage,
+        )
 
     def _augment(self, messages: Sequence[Any]) -> list[Any]:
         try:

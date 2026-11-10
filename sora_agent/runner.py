@@ -71,6 +71,7 @@ class RunMetrics:
     approval_denials: int = 0
     redundant_tool_calls: int = 0
     isolated_tool_calls: int = 0
+    streamed_chars: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
@@ -84,6 +85,8 @@ class RunSpec:
     context: str = ""
     # Recompute the visible tool list for every model step (lazy discovery).
     tool_provider: Callable[[], list[Any]] | None = None
+    # Called with (chunk, step_index) as the model produces text.
+    on_delta: Callable[[str, int], None] | None = None
     # Cooperative cancellation, checked between steps and between tool calls.
     should_stop: Callable[[], bool] | None = None
     # Transient provider failures are retried with exponential backoff and
@@ -380,6 +383,31 @@ def _skipped_results(
     ]
 
 
+class _DeltaCounter:
+    """Count streamed chunks so a retry never repeats visible text."""
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.chars = 0
+
+    def wrap(self, sink: Callable[[str], None]) -> Callable[[str], None]:
+        def emit(chunk: str) -> None:
+            self.count += 1
+            self.chars += len(chunk)
+            sink(chunk)
+
+        return emit
+
+
+def _bind_delta(
+    sink: Callable[[str, int], None], step: int
+) -> Callable[[str], None]:
+    def emit(chunk: str) -> None:
+        sink(chunk, step)
+
+    return emit
+
+
 def _turn_with_retries(
     provider: Any,
     spec: RunSpec,
@@ -389,18 +417,32 @@ def _turn_with_retries(
     metrics: RunMetrics,
     notify: Callable[[RunEvent], None],
 ) -> tuple[ModelTurn | None, str, bool]:
-    """Call the provider, retrying transient failures."""
+    """Call the provider, retrying only failures that streamed nothing."""
     retries = max(0, int(spec.provider_retries))
     attempt = 0
     while True:
         metrics.provider_calls += 1
+        counter = _DeltaCounter()
+        on_delta: Callable[[str], None] | None = None
+        if spec.on_delta is not None:
+            on_delta = counter.wrap(_bind_delta(spec.on_delta, step))
         try:
-            turn = provider_turn(provider, messages, tools)
+            turn = provider_turn(
+                provider,
+                messages,
+                tools,
+                on_delta=on_delta,
+                should_stop=spec.should_stop,
+            )
+            metrics.streamed_chars += counter.chars
             return turn, "", False
         except Exception as exc:  # noqa: BLE001 - retry policy lives here
             cancelled = spec.should_stop is not None and spec.should_stop()
             if cancelled:
                 return None, f"{type(exc).__name__}: {exc}", True
+            if counter.count > 0:
+                # Part of the answer is already visible: a retry would repeat it.
+                return None, f"{type(exc).__name__}: {exc}", False
             if not is_retryable_error(exc):
                 log.warning("provider failed permanently: %s", exc)
                 return None, f"{type(exc).__name__}: {exc}", False

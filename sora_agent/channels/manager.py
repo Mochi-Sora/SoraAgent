@@ -12,9 +12,16 @@ from typing import Any, Union
 from .approval import APPROVAL_CALLBACK_KIND, ApprovalBroker
 from .base import BaseChannel
 from .bus import MessageBus
-from .types import InboundMessage, OutboundMessage
+from .types import (
+    STREAM_DELTA_KIND,
+    STREAM_END_KIND,
+    InboundMessage,
+    OutboundMessage,
+    TurnReply,
+)
 
-Handler = Callable[[InboundMessage], Union[str, Awaitable[str]]]
+Reply = Union[str, TurnReply]
+Handler = Callable[[InboundMessage], Union[Reply, Awaitable[Reply]]]
 
 _MAX_SEND_ATTEMPTS = 3
 _DEFAULT_TYPING_INTERVAL = 4.0
@@ -237,8 +244,10 @@ class ChannelManager:
                 if typing is not None:
                     typing.cancel()
                     await asyncio.gather(typing, return_exceptions=True)
-            text = _reply_text(result)
+            text, delivered = _coerce_reply(result)
             if not text:
+                return
+            if delivered and channel is not None and channel.supports_streaming:
                 return
             await self._publish_reply(inbound, text)
 
@@ -291,6 +300,12 @@ class ChannelManager:
             if channel is None:
                 self.log.error("no channel named %r to deliver to", message.channel)
                 continue
+            if (
+                message.metadata.get("kind")
+                in {STREAM_DELTA_KIND, STREAM_END_KIND}
+                and not channel.supports_streaming
+            ):
+                continue
             await self._send(channel, message)
 
     async def _send(self, channel: BaseChannel, message: OutboundMessage) -> None:
@@ -336,8 +351,12 @@ class ChannelManager:
         return value
 
 
-def _reply_text(value: Any) -> str:
-    return value if isinstance(value, str) else str(value)
+def _coerce_reply(value: Any) -> tuple[str, bool]:
+    if isinstance(value, TurnReply):
+        return value.text, value.delivered
+    if isinstance(value, str):
+        return value, False
+    return str(value), False
 
 
 def _reply_target(inbound: InboundMessage) -> str | None:

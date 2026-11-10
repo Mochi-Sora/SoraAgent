@@ -373,6 +373,10 @@ def quality_enabled(settings: Settings) -> bool:
     return feature_enabled(settings, "quality", "SORA_QUALITY")
 
 
+def streaming_enabled(settings: Settings) -> bool:
+    return feature_enabled(settings, "streaming", "SORA_STREAMING")
+
+
 def clock_enabled(settings: Settings) -> bool:
     return feature_enabled(settings, "clock", "SORA_CLOCK")
 
