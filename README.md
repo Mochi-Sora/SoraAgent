@@ -30,7 +30,7 @@ deliberately tiny; the production concerns live in explicit gates around it:
 
 The core imports only the Python standard library; optional integrations
 (`openai`, `zstandard`) are extras. Requires Python **3.9+**. Current version:
-**0.1.0**.
+**0.1.1**.
 
 ---
 
@@ -102,12 +102,22 @@ irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.ps1 | ie
 The installer needs Python **3.9+** already available and downloads the latest
 release (falling back to `main` when no release exists). It installs SoraAgent
 into an isolated virtual environment, adds the command directory to your PATH,
-and verifies all console scripts. On Debian/Ubuntu systems without
-`python3-venv`, it creates the environment without pip and bootstraps pip
-inside it, so no `sudo` is required. After installation, run `sora update` to
-upgrade in place; user data under `~/.sora_agent` is never touched. Re-running
-the installer also works and is still required if the CLI extra was not
-installed.
+verifies all console scripts, and then launches the setup wizard directly. On a
+terminal it offers the same two paths as `sora setup`:
+
+- **Recommended Setup** — everything on, tuned for daily use.
+- **Advanced Setup** — every optional subsystem starts off, with explicit
+  safety warnings.
+
+Pass `--mode recommended` or `--mode advanced` to skip that choice, or
+`--no-setup` for automation that only installs the commands. Both modes install
+the same extras set, so Advanced can enable memory, files, or the OpenAI
+provider later without reinstalling. On Debian/Ubuntu
+systems without `python3-venv`, the installer creates the environment without
+pip and bootstraps pip inside it, so no `sudo` is required. After installation,
+run `sora update` to upgrade in place; user data under `~/.sora_agent` is never
+touched. Re-running the installer also works and is still required if the CLI
+extra was not installed.
 
 Uninstall removes only files the installer created: command wrappers must carry
 its marker, and the install root must contain `venv/pyvenv.cfg`. Drive roots,
@@ -117,6 +127,15 @@ Use `--purge` to remove `~/.sora_agent` data as well.
 Common options:
 
 ```bash
+# Install and start Recommended Setup (everything on)
+curl -fsSL .../install.sh | bash -s -- --mode recommended
+
+# Install and start Advanced Setup (optional subsystems off)
+curl -fsSL .../install.sh | bash -s -- --mode advanced
+
+# Install only; run `sora setup` yourself later
+curl -fsSL .../install.sh | bash -s -- --no-setup
+
 # Core package only (no optional extras; no `sora` wizard)
 curl -fsSL .../install.sh | SORA_EXTRAS=none bash
 
@@ -135,12 +154,15 @@ On Windows, set options through environment variables before `irm ... | iex`
 parameters:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.ps1))) -Version main
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.ps1))) -Mode recommended
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.ps1))) -Version main -NoSetup
 ```
 
 | Option | Environment variable | Default |
 | --- | --- | --- |
 | release tag or `main` | `SORA_VERSION` | latest release, else `main` |
+| setup mode (`recommended` or `advanced`) | `SORA_MODE` | prompt on a terminal |
+| skip the setup wizard | `--no-setup` / `-NoSetup` | off |
 | extras (`openai,memory,cli,files`, ...) or `none` | `SORA_EXTRAS` | `openai,memory,cli,files` |
 | install root | `SORA_INSTALL_DIR` | `~/.local/share/sora-agent` (`%LOCALAPPDATA%\SoraAgent` on Windows) |
 | command directory | `SORA_BIN_DIR` | `~/.local/bin` (`<install root>\bin` on Windows) |
@@ -178,12 +200,15 @@ All three also run as modules: `python -m sora_agent.cli`,
 ### Updating an existing install
 
 ```bash
-sora update              # latest release (fails closed if the release lookup fails)
+sora update              # latest release, or main when no release exists
 sora update --check      # only report whether an update is available
 sora update --version main
 sora update --extras none
 sora update --extras openai,memory,cli,files   # add PDF support to an old install
 ```
+
+If the repository has no published GitHub release, `sora update` follows
+`main`, matching the installer's fallback instead of failing.
 
 `sora update` detects how SoraAgent was installed:
 

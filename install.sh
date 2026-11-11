@@ -3,8 +3,9 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.sh | bash
 #
-# Installs SoraAgent into an isolated virtual environment and puts the
-# `sora`, `sora-gateway`, and `sora-memory` commands on your PATH. Run
+# Installs SoraAgent into an isolated virtual environment, puts the `sora`,
+# `sora-gateway`, and `sora-memory` commands on your PATH, and launches the
+# Recommended or Advanced setup wizard. Use --no-setup for install-only. Run
 # `sora update` to upgrade. Requires Python 3.9 or newer.
 set -euo pipefail
 
@@ -14,6 +15,7 @@ DEFAULT_EXTRAS="openai,memory,cli,files"
 
 VERSION="${SORA_VERSION:-latest}"
 EXTRAS="${SORA_EXTRAS-$DEFAULT_EXTRAS}"
+MODE="${SORA_MODE:-}"
 SOURCE="${SORA_SOURCE:-}"
 INSTALL_DIR="${SORA_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/sora-agent}"
 BIN_DIR="${SORA_BIN_DIR:-$HOME/.local/bin}"
@@ -22,6 +24,7 @@ PYTHON_BIN="${SORA_PYTHON:-}"
 UNINSTALL=0
 PURGE=0
 NO_PATH=0
+NO_SETUP=0
 
 usage() {
     cat <<EOF
@@ -35,6 +38,8 @@ Options:
   -e, --extras EXTRAS     Comma-separated extras, e.g. "openai,memory,cli,files",
                           or "none" for the dependency-free core
                           (default: $DEFAULT_EXTRAS)
+  -m, --mode MODE         Start setup after installing: recommended or advanced
+      --no-setup          Install only; do not launch the setup wizard
       --source PATH       Install from a local checkout instead of GitHub
       --install-dir DIR   Install root (default: $INSTALL_DIR)
       --bin-dir DIR       Directory for command wrappers (default: $BIN_DIR)
@@ -44,13 +49,15 @@ Options:
   -h, --help              Show this help
 
 Environment variables:
-  SORA_VERSION, SORA_EXTRAS, SORA_SOURCE, SORA_INSTALL_DIR, SORA_BIN_DIR,
-  SORA_PYTHON, SORA_REPO
+  SORA_VERSION, SORA_EXTRAS, SORA_MODE, SORA_SOURCE, SORA_INSTALL_DIR,
+  SORA_BIN_DIR, SORA_PYTHON, SORA_REPO
 
 Examples:
   curl -fsSL https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.sh | bash
+  curl -fsSL .../install.sh | bash -s -- --mode recommended
+  curl -fsSL .../install.sh | bash -s -- --mode advanced
   curl -fsSL .../install.sh | SORA_EXTRAS=none bash
-  curl -fsSL .../install.sh | bash -s -- --version main
+  curl -fsSL .../install.sh | bash -s -- --version main --no-setup
   ./install.sh --uninstall
 EOF
 }
@@ -168,6 +175,19 @@ while [ "$#" -gt 0 ]; do
             EXTRAS=${1#*=}
             shift
             ;;
+        -m|--mode)
+            [ "$#" -ge 2 ] || die "--mode requires recommended or advanced"
+            MODE=$2
+            shift 2
+            ;;
+        --mode=*)
+            MODE=${1#*=}
+            shift
+            ;;
+        --no-setup)
+            NO_SETUP=1
+            shift
+            ;;
         --source)
             [ "$#" -ge 2 ] || die "--source requires a path"
             SOURCE=$2
@@ -233,6 +253,22 @@ fi
 
 if [ "$PURGE" -eq 1 ]; then
     die "--purge is only valid with --uninstall"
+fi
+
+MODE=$(printf '%s' "$MODE" | tr '[:upper:]' '[:lower:]')
+case "$MODE" in
+    ""|recommended|advanced) ;;
+    *) die "--mode must be 'recommended' or 'advanced'" ;;
+esac
+MODE_EXPLICIT=0
+if [ -n "$MODE" ]; then
+    MODE_EXPLICIT=1
+    if [ "$NO_SETUP" -eq 0 ]; then
+        case ",$(printf '%s' "$EXTRAS" | tr -d ' ')," in
+            *",cli,"*) ;;
+            *) die "--mode requires the 'cli' extra (current SORA_EXTRAS=$EXTRAS)" ;;
+        esac
+    fi
 fi
 
 if [ -d "$INSTALL_DIR" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null || true)" ] \
@@ -475,12 +511,56 @@ esac
     || warn "sora-memory did not start correctly"
 
 printf '\nSoraAgent installed.\n\n'
-printf '  sora setup\n'
+printf 'Install root: %s\n' "$INSTALL_DIR"
+printf 'Commands:     %s\n' "$BIN_DIR"
+
+HAS_CLI=0
+case ",$(printf '%s' "$EXTRAS" | tr -d ' ')," in
+    *",cli,"*) HAS_CLI=1 ;;
+esac
+
+if [ "$NO_SETUP" -eq 1 ]; then
+    :
+elif [ "$HAS_CLI" -eq 0 ]; then
+    printf '\nThe CLI extra is not installed, so the setup wizard cannot run.\n'
+    printf 'Re-run the installer with the default extras to configure Sora.\n'
+elif [ "$MODE_EXPLICIT" -eq 0 ] && [ -f "$HOME/.sora_agent/config.json" ]; then
+    printf '\nExisting configuration found at %s; leaving it unchanged.\n' "$HOME/.sora_agent/config.json"
+    printf 'Run: %s setup   (or pass --mode to reconfigure now)\n' "$VENV_DIR/bin/sora"
+else
+    if ! { [ -r /dev/tty ] && exec 3</dev/tty; } 2>/dev/null; then
+        printf '\nNo terminal is available for setup prompts. Run:\n'
+        if [ -n "$MODE" ]; then
+            printf '  %s setup --mode %s\n' "$VENV_DIR/bin/sora" "$MODE"
+        else
+            printf '  %s setup\n' "$VENV_DIR/bin/sora"
+        fi
+    else
+        if [ -z "$MODE" ]; then
+            printf '\nSoraAgent needs one setup choice:\n'
+            printf '  1) Recommended Setup (default) — everything on\n'
+            printf '  2) Advanced Setup — every optional subsystem starts off\n'
+            printf 'Choose [1]: '
+            choice=""
+            read -r choice <&3 || true
+            case "$choice" in
+                2|a|A|advanced) MODE=advanced ;;
+                *) MODE=recommended ;;
+            esac
+        fi
+        printf '\nStarting %s setup...\n\n' "$MODE"
+        if ! "$VENV_DIR/bin/sora" setup --mode "$MODE" <&3; then
+            warn "setup did not finish; run: $VENV_DIR/bin/sora setup --mode $MODE"
+        fi
+        exec 3<&-
+    fi
+fi
+
+printf '\nNext steps:\n'
+printf '  sora chat\n'
 printf '  sora --help\n'
 printf '  sora-gateway --help\n'
 printf '  sora-memory doctor\n\n'
-printf 'Install root: %s\n' "$INSTALL_DIR"
-printf 'Commands:     %s\n' "$BIN_DIR"
 
 case ":$PATH:" in
     *":$BIN_DIR:"*)

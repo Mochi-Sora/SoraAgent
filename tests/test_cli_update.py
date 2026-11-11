@@ -94,11 +94,16 @@ def test_detected_extras_always_include_files_and_cli(monkeypatch):
     assert "openai" not in extras
 
 
-def test_resolve_target_latest_fails_closed_without_a_release(monkeypatch):
+def test_resolve_target_latest_falls_back_to_main_without_a_release(
+    monkeypatch,
+):
     monkeypatch.setattr(update, "_latest_release", lambda repo, timeout: None)
 
-    with pytest.raises(update.UpdateError, match="latest release"):
-        update._resolve_target("latest", "owner/repo", 5.0)
+    target = update._resolve_target("latest", "owner/repo", 5.0)
+
+    assert target.ref == "refs/heads/main"
+    assert target.label == "main (no release found)"
+    assert target.release is False
 
 
 def test_resolve_target_allows_explicit_main(monkeypatch):

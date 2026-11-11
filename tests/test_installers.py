@@ -86,3 +86,18 @@ def test_windows_installer_has_equivalent_guards() -> None:
     assert "does not look like a SoraAgent install" in text
     assert "managed by sora-agent installer" in text
     assert "must not be a drive root" in text
+
+
+def test_installers_offer_automatic_setup_modes() -> None:
+    shell = (ROOT / "install.sh").read_text(encoding="utf-8")
+    windows = (ROOT / "install.ps1").read_text(encoding="utf-8")
+
+    assert "--mode" in shell
+    assert "--no-setup" in shell
+    assert 'setup --mode "$MODE"' in shell
+    assert "SORA_MODE" in shell
+
+    assert "--?mode" in windows
+    assert "--?no-setup" in windows
+    assert "setup --mode $Mode" in windows
+    assert "SORA_MODE" in windows

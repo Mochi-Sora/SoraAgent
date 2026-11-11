@@ -58,4 +58,4 @@ __all__ = [
     "register_calendar_tools",
     "wrap_clock",
 ]
-__version__ = "0.1.0"
+__version__ = "0.1.1"

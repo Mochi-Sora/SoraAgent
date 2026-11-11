@@ -3,12 +3,16 @@
     SoraAgent one-line installer for Windows.
 
 .DESCRIPTION
-    Installs SoraAgent into an isolated virtual environment and puts the
-    sora, sora-gateway, and sora-memory commands on your PATH. Run
-    `sora update` to upgrade. Requires Python 3.9 or newer.
+    Installs SoraAgent into an isolated virtual environment, puts the sora,
+    sora-gateway, and sora-memory commands on your PATH, and launches the
+    Recommended or Advanced setup wizard. Use -NoSetup for install-only.
+    Run `sora update` to upgrade. Requires Python 3.9 or newer.
 
 .EXAMPLE
     irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.ps1 | iex
+
+.EXAMPLE
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.ps1))) -Mode recommended
 
 .EXAMPLE
     $env:SORA_EXTRAS = "none"; irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.ps1 | iex
@@ -30,12 +34,14 @@
     # .ps1 execution and invoked script blocks working.
     $Version = if ($env:SORA_VERSION) { $env:SORA_VERSION } else { "latest" }
     $Extras = if ($null -ne $env:SORA_EXTRAS) { $env:SORA_EXTRAS } else { $DefaultExtras }
+    $Mode = $env:SORA_MODE
     $Source = $env:SORA_SOURCE
     $InstallDir = $env:SORA_INSTALL_DIR
     $BinDir = $env:SORA_BIN_DIR
     $Uninstall = $false
     $Purge = $false
     $NoPath = $false
+    $NoSetup = $false
     $Help = $false
 
     function Get-OptionValue {
@@ -70,6 +76,12 @@
                 if (-not $inline) { $i++ }
                 break
             }
+            '^(--?mode|-m)$' {
+                $Mode = Get-OptionValue -Option $option -InlineValue $inline -Index $i -Arguments $argList
+                if (-not $inline) { $i++ }
+                break
+            }
+            '^(--?no-setup)$' { $NoSetup = $true; break }
             '^(--?source)$' {
                 $Source = Get-OptionValue -Option $option -InlineValue $inline -Index $i -Arguments $argList
                 if (-not $inline) { $i++ }
@@ -138,6 +150,8 @@ Options:
   -Extras EXTRAS     Comma-separated extras, e.g. "openai,memory,cli,files",
                      or "none" for the dependency-free core
                      (default: $DefaultExtras)
+  -Mode MODE         Start setup after installing: recommended or advanced
+  -NoSetup           Install only; do not launch the setup wizard
   -Source PATH       Install from a local checkout instead of GitHub
   -InstallDir DIR    Install root (default: $InstallDir)
   -BinDir DIR        Directory for command wrappers (default: $BinDir)
@@ -147,13 +161,15 @@ Options:
   -Help              Show this help
 
 Environment variables:
-  SORA_VERSION, SORA_EXTRAS, SORA_SOURCE, SORA_INSTALL_DIR, SORA_BIN_DIR,
-  SORA_PYTHON, SORA_REPO
+  SORA_VERSION, SORA_EXTRAS, SORA_MODE, SORA_SOURCE, SORA_INSTALL_DIR,
+  SORA_BIN_DIR, SORA_PYTHON, SORA_REPO
 
 Examples:
-  irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.ps1 | iex
+  irm .../install.ps1 | iex
+  & ([scriptblock]::Create((irm .../install.ps1))) -Mode recommended
+  & ([scriptblock]::Create((irm .../install.ps1))) -Mode advanced
   $env:SORA_EXTRAS = "none"; irm .../install.ps1 | iex
-  & ([scriptblock]::Create((irm .../install.ps1))) -Version main
+  & ([scriptblock]::Create((irm .../install.ps1))) -Version main -NoSetup
   & ([scriptblock]::Create((irm .../install.ps1))) -Uninstall
 "@ | Write-Host
     }
@@ -313,6 +329,21 @@ Examples:
     Assert-SafeDirectory $InstallDir "InstallDir"
     Assert-SafeDirectory $BinDir "BinDir"
 
+    if ($Mode) { $Mode = ([string]$Mode).Trim().ToLowerInvariant() }
+    if ($Mode -and $Mode -notin @("recommended", "advanced")) {
+        throw "-Mode must be 'recommended' or 'advanced'"
+    }
+    $ModeExplicit = [bool]$Mode
+    if ($ModeExplicit -and -not $NoSetup) {
+        $modeExtras = @()
+        if ($Extras -and $Extras -ne "none") {
+            $modeExtras = @($Extras -split "," | ForEach-Object { $_.Trim() })
+        }
+        if (-not ($modeExtras -contains "cli")) {
+            throw "-Mode requires the 'cli' extra (current SORA_EXTRAS=$Extras)"
+        }
+    }
+
     if ($Uninstall) {
         Uninstall-SoraAgent
         return
@@ -426,15 +457,68 @@ Examples:
     Write-Host ""
     Write-Host "SoraAgent installed."
     Write-Host ""
-    Write-Host "  sora setup"
+    Write-Host "Install root: $InstallDir"
+    Write-Host "Commands:     $BinDir"
+
+    $extrasList = @()
+    if ($Extras -and $Extras -ne "none") {
+        $extrasList = @($Extras -split "," | ForEach-Object { $_.Trim() })
+    }
+    $cliInstalled = $extrasList -contains "cli"
+    if (-not $NoSetup -and $cliInstalled) {
+        if (-not $ModeExplicit -and (Test-Path (Join-Path $HOME ".sora_agent/config.json"))) {
+            Write-Host ""
+            Write-Host "Existing configuration found; leaving it unchanged."
+            Write-Host "Run: sora setup (or pass -Mode to reconfigure now)"
+        } else {
+            if (-not $Mode) {
+                Write-Host ""
+                Write-Host "SoraAgent needs one setup choice:"
+                Write-Host "  1) Recommended Setup (default) — everything on"
+                Write-Host "  2) Advanced Setup — every optional subsystem starts off"
+                $promptFailed = $false
+                try {
+                    $choice = Read-Host "Choose [1]"
+                } catch {
+                    $promptFailed = $true
+                    $choice = ""
+                }
+                if ($promptFailed) {
+                    Write-Warn "no console available for setup prompts; run: sora setup"
+                    $Mode = ""
+                } elseif ($choice -eq "2" -or $choice -match "^(a|advanced)$") {
+                    $Mode = "advanced"
+                } elseif ($choice -eq "" -or $choice -eq "1" -or $choice -match "^(r|recommended)$") {
+                    $Mode = "recommended"
+                } else {
+                    Write-Warn "unknown setup choice; skipping the wizard"
+                    $Mode = ""
+                }
+            }
+            if ($Mode) {
+                Write-Host ""
+                Write-Host "Starting $Mode setup..."
+                Write-Host ""
+                & $venvPython -m sora_agent.cli setup --mode $Mode
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Warn "setup did not finish; run: sora setup --mode $Mode"
+                }
+            }
+        }
+    } elseif (-not $NoSetup -and -not $cliInstalled) {
+        Write-Host ""
+        Write-Host "The CLI extra is not installed, so the setup wizard cannot run."
+        Write-Host "Re-run the installer with the default extras to configure Sora."
+    }
+
+    Write-Host ""
+    Write-Host "Next steps:"
+    Write-Host "  sora chat"
     Write-Host "  sora --help"
     Write-Host "  sora-gateway --help"
     Write-Host "  sora-memory doctor"
     Write-Host ""
-    Write-Host "Install root: $InstallDir"
-    Write-Host "Commands:     $BinDir"
-    Write-Host ""
-    if ($Extras -and $Extras -ne "none" -and (($Extras -split ",") -contains "cli")) {
+    if ($cliInstalled) {
         Write-Host "To upgrade later, run: sora update"
     } else {
         Write-Host "To upgrade later, re-run this installer (the CLI extra is not installed)."
