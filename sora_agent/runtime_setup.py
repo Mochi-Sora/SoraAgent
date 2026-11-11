@@ -63,8 +63,7 @@ def desktop_settings() -> Settings:
     The desktop app should feel like an assistant even before ``sora setup``:
     memory, identity, files, sessions, the clock/calendar, and streaming are on,
     while the provider stays offline (``mock``) until the user configures a real
-    model.  The demo order tools are deliberately left out because they are
-    fixtures, not desktop capabilities.
+    model.  No business tools are registered; the desktop registers its own.
     """
     settings = legacy_settings()
     settings.features.memory = MemorySettings()
@@ -74,7 +73,6 @@ def desktop_settings() -> Settings:
     settings.features.calendar = True
     settings.features.sessions = True
     settings.features.streaming = True
-    settings.features.tools = "none"
     settings.features.approval = "ask"
     settings.features.quality = True
     return settings
@@ -242,13 +240,14 @@ def build_sessions(settings: Settings) -> Any:
 
 
 def build_registry(settings: Settings) -> Any:
+    """Return the runtime tool registry.
+
+    SoraAgent ships no built-in business tools; callers register their own on
+    the returned registry.  Calendar tools are added by ``Agent`` when the
+    calendar feature is enabled.
+    """
     from .tools import ToolRegistry
 
-    kind = (os.getenv("SORA_TOOLS", "").strip() or settings.features.tools or "none").lower()
-    if kind == "demo":
-        from .tools import registry as demo_tools
-
-        return demo_tools.copy()
     return ToolRegistry()
 
 

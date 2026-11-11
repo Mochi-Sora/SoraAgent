@@ -20,11 +20,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _demo_memory import DemoMemory
+from po_tools import registry
 
 from sora_agent import Agent, MockProvider, POStateMachine
 from sora_agent.approval import ApprovalGate
 from sora_agent.providers import default_provider
-from sora_agent.tools import registry
 
 
 class AutoApproveGate(ApprovalGate):

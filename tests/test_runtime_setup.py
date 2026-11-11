@@ -128,7 +128,6 @@ def test_load_runtime_accepts_caller_fallback(tmp_path):
     assert settings.provider.kind == "mock"
     assert settings.features.memory.enabled is True
     assert settings.features.identity is True
-    assert settings.features.tools == "none"
     assert secrets == {}
 
 
@@ -143,7 +142,6 @@ def test_desktop_settings_enable_local_features_only():
     assert settings.features.calendar is True
     assert settings.features.streaming is True
     assert settings.features.quality is True
-    assert settings.features.tools == "none"
     assert settings.provider.kind == "mock"
 
 
@@ -336,14 +334,9 @@ def test_identity_respects_settings_and_environment(monkeypatch, tmp_path):
     assert store.config.root == tmp_path / "identity"
 
 
-def test_registry_can_be_empty_or_the_demo_pack(monkeypatch, tmp_path):
+def test_registry_starts_empty():
     settings = advanced_settings()
-    monkeypatch.delenv("SORA_TOOLS", raising=False)
     assert build_registry(settings).all() == []
-
-    settings.features.tools = "demo"
-    names = {tool.name for tool in build_registry(settings).all()}
-    assert "lookup_order" in names
 
 
 def test_sessions_can_be_disabled_or_pointed_at_a_directory(monkeypatch, tmp_path):

@@ -66,7 +66,6 @@ def test_recommended_preset_turns_everything_on():
     assert features.clock is True
     assert features.calendar is True
     assert features.sessions is True
-    assert features.tools == "demo"
     assert features.approval == "ask"
     assert features.quality is True
 
@@ -91,7 +90,6 @@ def test_advanced_preset_turns_optional_features_off():
     assert features.clock is False
     assert features.calendar is False
     assert features.sessions is False
-    assert features.tools == "none"
     assert features.approval == "off"
     assert features.quality is False
 
@@ -106,7 +104,6 @@ def test_legacy_preset_matches_the_environment_only_gateway():
     assert settings.features.clock is True
     assert settings.features.calendar is True
     assert settings.features.sessions is True
-    assert settings.features.tools == "none"
     assert settings.features.approval == "ask"
     assert settings.features.quality is True
     assert settings.limits.max_steps == 8
@@ -229,10 +226,6 @@ def test_invalid_settings_values_are_rejected(factory):
 
 
 def test_feature_validation_rejects_unknown_policy_values():
-    with pytest.raises(SettingsError):
-        Settings.from_dict(
-            {"setup": {"mode": "advanced"}, "features": {"tools": "shell"}}
-        )
     with pytest.raises(SettingsError):
         Settings.from_dict(
             {"setup": {"mode": "advanced"}, "features": {"approval": "maybe"}}

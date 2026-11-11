@@ -256,7 +256,6 @@ def _show_recommended_settings(
             ("Clock", "On"),
             ("Calendar", "On"),
             ("Sessions", "On"),
-            ("Tools", "Demo pack"),
             ("Streaming", "On"),
             ("Approvals", "Ask before consequential tools"),
             ("Quality gate", "On"),
@@ -286,7 +285,7 @@ def _advanced_flow(settings: Settings, secrets: dict[str, str]) -> None:
     _configure_identity(settings)
     _configure_clock_calendar(settings)
     _configure_sessions(settings)
-    _configure_tools_and_limits(settings)
+    _configure_limits(settings)
     _configure_streaming(settings)
     _configure_approval(settings)
     _configure_quality(settings)
@@ -305,7 +304,7 @@ def _advanced_warning() -> None:
             "  • memory (including the CortexDB sidecar)",
             "  • identity (USER.md / SOUL.md)",
             "  • file understanding, clock, calendar, and session persistence",
-            "  • tools, streaming, approval prompts, and quality evaluation",
+            "  • streaming, approval prompts, and quality evaluation",
             "",
             "Consequential tools can execute without confirmation.",
             "Runs will produce no quality report.",
@@ -361,7 +360,7 @@ def _advanced_review(settings: Settings, secrets: dict[str, str]) -> None:
                 ("Identity", "identity"),
                 ("Clock and calendar", "clock"),
                 ("Sessions", "sessions"),
-                ("Tools and limits", "tools"),
+                ("Limits", "limits"),
                 ("Streaming", "streaming"),
                 ("Approval", "approval"),
                 ("Quality evaluation", "quality"),
@@ -384,7 +383,7 @@ def _advanced_review(settings: Settings, secrets: dict[str, str]) -> None:
             "identity": lambda: _configure_identity(settings),
             "clock": lambda: _configure_clock_calendar(settings),
             "sessions": lambda: _configure_sessions(settings),
-            "tools": lambda: _configure_tools_and_limits(settings),
+            "limits": lambda: _configure_limits(settings),
             "streaming": lambda: _configure_streaming(settings),
             "approval": lambda: _configure_approval(settings),
             "quality": lambda: _configure_quality(settings),
@@ -964,16 +963,10 @@ def _configure_sessions(settings: Settings) -> None:
         settings.paths.sessions_root = root.strip() or None
 
 
-def _configure_tools_and_limits(settings: Settings) -> None:
+def _configure_limits(settings: Settings) -> None:
     ui.section(
-        "Tools and limits",
-        "The demo pack is only for trying the approval and quality gates; it "
-        "is not a real order system.",
-    )
-    settings.features.tools = prompts.select(
-        "Tool set",
-        [("None", "none"), ("Demo order tools", "demo")],
-        default=settings.features.tools,
+        "Limits",
+        "Bound tool steps, conversation history, and tool execution time.",
     )
     settings.limits.max_steps = _ask_int(
         "Maximum tool steps per turn", settings.limits.max_steps, 1
@@ -1124,7 +1117,6 @@ def _show_advanced_settings(
             ("Clock", "On" if settings.features.clock else "Off"),
             ("Calendar", "On" if settings.features.calendar else "Off"),
             ("Sessions", "On" if settings.features.sessions else "In-memory only"),
-            ("Tools", settings.features.tools),
             ("Streaming", "On" if settings.features.streaming else "Off"),
             (
                 "Approval",

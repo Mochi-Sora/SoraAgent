@@ -246,12 +246,12 @@ The first screen offers exactly two paths:
 | Mode | What it does |
 | --- | --- |
 | **Recommended Setup** | Everything on and tuned for daily use. Asks only for the channel, main model, agent name/icon, temperature, and personality, then shows a review you can edit. |
-| **Advanced Setup (tinker with caution)** | Every optional subsystem starts **off**, including memory, file understanding, identity, clock, calendar, sessions, tools, streaming, approval prompts, and quality evaluation. Each section can be edited individually and ends with an explicit save confirmation. |
+| **Advanced Setup (tinker with caution)** | Every optional subsystem starts **off**, including memory, file understanding, identity, clock, calendar, sessions, streaming, approval prompts, and quality evaluation. Each section can be edited individually and ends with an explicit save confirmation. |
 
 Recommended Setup writes full long-term memory (including the CortexDB
-sidecar), file understanding, identity, clock, calendar, sessions, the demo
-tool pack, streaming, approval prompts, quality evaluation, and limits of 12
-steps / 80 turns / 60 s timeouts / 3 retries.
+sidecar), file understanding, identity, clock, calendar, sessions, streaming,
+approval prompts, quality evaluation, and limits of 12 steps / 80 turns / 60 s
+timeouts / 3 retries.
 
 Advanced Setup starts with temperature `0.1` and safety features disabled. It
 shows warning panels and requires typing `I understand` before continuing and
@@ -281,13 +281,30 @@ command-line flag  >  environment variable  >  config file  >  built-in default
 ### An offline agent with approval and a quality report
 
 The `mock` provider returns canned turns so everything below runs without an API
-key. The demo order tools ship in `sora_agent/tools.py`, registered at import
-time by the `@tool` decorator.
+key. SoraAgent ships no business tools, so the example registers one locally.
 
 ```python
+from typing import Annotated
+
 from sora_agent import Agent, MockProvider, POStateMachine
 from sora_agent.approval import ApprovalGate
-from sora_agent.tools import registry
+from sora_agent.tools import Tool, ToolRegistry
+
+
+def expedite_order(
+    order_id: Annotated[str, "Purchase order id, e.g. PO-1234"],
+) -> str:
+    return f"PO {order_id}: marked expedited"
+
+
+tools = ToolRegistry()
+tools.add(Tool(
+    expedite_order,
+    name="expedite_order",
+    description="Expedite a purchase order.",
+    needs_approval=True,
+    aliases=("rush", "speed up", "late order"),
+))
 
 
 class AutoApprove(ApprovalGate):
@@ -298,7 +315,7 @@ class AutoApprove(ApprovalGate):
 
 agent = Agent(
     provider=MockProvider(),
-    registry=registry.copy(),          # keep the demo's global registry pristine
+    registry=tools,
     approval=AutoApprove(),
     memory=False,                      # keep the sample dependency-free
     identity=False,
@@ -1238,7 +1255,7 @@ Start it with:
 export SORA_TELEGRAM_TOKEN=123456:ABC...
 export SORA_TELEGRAM_ALLOW_FROM=98765432   # your numeric user id
 
-sora-gateway --provider mock --tools demo --memory --identity
+sora-gateway --provider mock --memory --identity
 ```
 
 ### Running the gateway in the background
@@ -1424,7 +1441,6 @@ The config file is deliberately plain JSON:
     "clock": true,
     "calendar": true,
     "sessions": true,
-    "tools": "demo",
     "streaming": true,
     "approval": "ask",
     "quality": true
@@ -1449,7 +1465,7 @@ variables always override the file at runtime, even when setup saves a value.
 sora-gateway [--channel CHANNEL] [--provider KIND] [--model ID]
              [--temperature F] [--max-steps N] [--max-turns N]
              [--no-sessions] [--provider-timeout S] [--provider-retries N]
-             [--tool-timeout S] [--tools none|demo]
+             [--tool-timeout S]
              [--memory] [--identity] [--approval off|ask]
              [--approval-timeout S] [--no-quality] [--no-streaming]
              [--no-clock] [--no-calendar] [--calendar-db PATH]
@@ -1472,7 +1488,6 @@ deployments behave exactly as before. Flags and `SORA_*` variables still win.
 | `--provider-timeout` | `30` | Provider request timeout (s). |
 | `--provider-retries` | `2` | Provider retries. |
 | `--tool-timeout` | `30` | Isolated tool process timeout (s). |
-| `--tools` | `none` | `demo` registers the sample order tools. |
 | `--memory` | off | Enable the CortexDB memory hook. |
 | `--identity` | off | Inject the persistent USER.md/SOUL.md identity. |
 | `--approval` | `ask` | `off` auto-approves consequential tools but still audits them. |
@@ -1525,7 +1540,6 @@ Every saved setting is a default. These variables override it:
 | `SORA_CLOCK` | `1`/`0` for the current-time prompt section. |
 | `SORA_CALENDAR` | `1`/`0` for native calendar tools. |
 | `SORA_SESSIONS` | `1`/`0` for on-disk conversation history. |
-| `SORA_TOOLS` | `none` or `demo`. |
 | `SORA_PROVIDER_TIMEOUT` | Provider request timeout in seconds. |
 | `SORA_FILES` | `1`/`0` for attachment-to-markdown understanding. |
 | `SORA_FILES_MAX_BYTES` | Maximum attachment size in bytes. |
@@ -1573,7 +1587,8 @@ SoraAgent/
 ├── LICENSE                     # AGPL-3.0-only
 ├── README.md
 ├── examples/
-│   ├── po_workflow.py          # interactive PO exception demo
+│   ├── po_workflow.py          # interactive PO exception example
+│   ├── po_tools.py             # sample purchase-order tools for the examples
 │   ├── copilot_function.py     # Azure Function-style entry point
 │   └── _demo_memory.py         # offline memory stand-in used by the examples
 ├── tests/                      # pytest suite (core, CLI, gateway)

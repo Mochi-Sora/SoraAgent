@@ -28,7 +28,6 @@ def _clear_runtime_overrides(monkeypatch):
         "SORA_CALENDAR",
         "SORA_SESSIONS",
         "SORA_SESSIONS_ROOT",
-        "SORA_TOOLS",
         "SORA_MEMORY",
         "SORA_IDENTITY",
         "SORA_TELEGRAM_TOKEN",

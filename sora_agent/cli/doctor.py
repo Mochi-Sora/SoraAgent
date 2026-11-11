@@ -109,7 +109,6 @@ def run_doctor(settings: Settings | None, secrets: dict[str, str]) -> int:
                 "Sessions",
                 "On" if settings.features.sessions else "In-memory only",
             ),
-            ("Tools", settings.features.tools),
             ("Streaming", "On" if streaming_enabled(settings) else "Off"),
             ("Approval", approval_mode(settings)),
             ("Quality", "On" if quality_enabled(settings) else "Off"),

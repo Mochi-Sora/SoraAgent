@@ -41,7 +41,6 @@ PERSONALITY_BASES = (
 )
 WARMTH_LEVELS = ("very_cold", "cold", "neutral", "warm", "very_warm")
 APPROVAL_MODES = ("off", "ask")
-TOOL_SETS = ("none", "demo")
 
 
 class SettingsError(ValueError):
@@ -335,15 +334,10 @@ class FeatureSettings:
     calendar: bool = True
     sessions: bool = True
     streaming: bool = True
-    tools: str = "demo"
     approval: str = "ask"
     quality: bool = True
 
     def __post_init__(self) -> None:
-        tools = str(self.tools or "none").strip().lower()
-        if tools not in TOOL_SETS:
-            raise SettingsError(f"features.tools must be one of {TOOL_SETS}")
-        self.tools = tools
         approval = str(self.approval or "ask").strip().lower()
         if approval not in APPROVAL_MODES:
             raise SettingsError(
@@ -363,7 +357,6 @@ class FeatureSettings:
             calendar=_as_bool(raw.get("calendar"), base.calendar),
             sessions=_as_bool(raw.get("sessions"), base.sessions),
             streaming=_as_bool(raw.get("streaming"), base.streaming),
-            tools=_as_str(raw.get("tools"), base.tools),
             approval=_as_str(raw.get("approval"), base.approval),
             quality=_as_bool(raw.get("quality"), base.quality),
         )
@@ -615,7 +608,6 @@ def recommended_settings() -> Settings:
             calendar=True,
             sessions=True,
             streaming=True,
-            tools="demo",
             approval="ask",
             quality=True,
         ),
@@ -656,7 +648,6 @@ def advanced_settings() -> Settings:
             calendar=False,
             sessions=False,
             streaming=False,
-            tools="none",
             approval="off",
             quality=False,
         ),
@@ -700,7 +691,6 @@ def legacy_settings() -> Settings:
             calendar=True,
             sessions=True,
             streaming=True,
-            tools="none",
             approval="ask",
             quality=True,
         ),

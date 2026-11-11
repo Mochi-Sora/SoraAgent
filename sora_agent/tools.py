@@ -18,7 +18,6 @@ import types
 from dataclasses import dataclass
 from enum import Enum
 from typing import (
-    Annotated,
     Any,
     Callable,
     Literal,
@@ -394,41 +393,3 @@ def tool(
         return fn
 
     return deco
-
-
-# --- example tools -----------------------------------------------------------
-
-
-@tool(
-    "lookup_order",
-    "Return a purchase order's status and details.",
-    aliases=("status", "check order", "order details"),
-)
-def lookup_order(
-    order_id: Annotated[str, "Purchase order id, e.g. PO-1234"],
-) -> str:
-    return f"PO {order_id}: status=open, supplier=ACME, ship_date=2026-09-01"
-
-
-@tool(
-    "expedite_order",
-    "Expedite a purchase order.",
-    needs_approval=True,
-    aliases=("rush", "speed up", "late order"),
-)
-def expedite_order(
-    order_id: Annotated[str, "Purchase order id, e.g. PO-1234"],
-) -> str:
-    return f"PO {order_id}: marked expedited + rescheduled ship_date to 2026-08-25"
-
-
-@tool(
-    "cancel_order",
-    "Cancel a purchase order.",
-    needs_approval=True,
-    aliases=("void", "remove order"),
-)
-def cancel_order(
-    order_id: Annotated[str, "Purchase order id, e.g. PO-1234"],
-) -> str:
-    return f"PO {order_id}: cancelled"

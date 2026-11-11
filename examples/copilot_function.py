@@ -16,13 +16,13 @@ from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _demo_memory import DemoMemory
+from po_tools import registry
 
 from sora_agent import Agent
 from sora_agent.approval import ApprovalGate
 from sora_agent.eval import QualityGate
 from sora_agent.providers import default_provider
 from sora_agent.state_machine import POStateMachine
-from sora_agent.tools import registry
 
 
 def run_copilot_step(user_message: str, po_id: str = "PO-1234", auto_approve: bool = False) -> dict[str, Any]:

@@ -191,7 +191,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 channel_cls,
                 config,
                 provider=provider,
-                registry=_registry(settings, args.tools),
+                registry=build_registry(settings),
                 memory=memory,
                 identity=identity,
                 sessions=sessions,
@@ -402,12 +402,6 @@ def _parser() -> argparse.ArgumentParser:
         help="seconds before an isolated tool process is killed",
     )
     parser.add_argument(
-        "--tools",
-        choices=("none", "demo"),
-        default=None,
-        help="tool set to expose (demo registers the sample order tools)",
-    )
-    parser.add_argument(
         "--memory",
         action="store_true",
         default=None,
@@ -509,18 +503,6 @@ def _print_channels() -> None:
     for name, plugin in sorted(plugins.items()):
         deps = ", ".join(plugin.dependencies) or "none"
         print(f"{name:<12} {plugin.display_name:<14} dependencies: {deps}")
-
-
-def _registry(settings, kind: str | None):
-    if kind is not None:
-        from ..tools import ToolRegistry
-
-        if kind == "demo":
-            from ..tools import registry as demo_tools
-
-            return demo_tools.copy()
-        return ToolRegistry()
-    return build_registry(settings)
 
 
 if __name__ == "__main__":
