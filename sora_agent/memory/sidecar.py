@@ -9,6 +9,7 @@ import os
 import platform
 import re
 import secrets
+import signal
 import socket
 import subprocess
 import sys
@@ -99,30 +100,47 @@ class SidecarManager:
         self._grpc_addr = ""
         self._token = ""
         self._lock_handle: Any = None
+        # True when this manager connected to a sidecar started by another
+        # process.  Closing an adopted sidecar must not kill the owner's child.
+        self._adopted = False
+        self._adopted_pid = 0
 
     @property
     def client(self) -> CortexDBClient | None:
         return self._client
 
     def ensure_running(self) -> CortexDBClient:
-        if self._client is not None and self._client.health():
+        if self._client is not None and self._healthy(self._client):
             return self._client
         self.config.ensure_directories()
         if self._process is not None and self._process.poll() is not None:
             self._process = None
             self._client = None
         if self._client is not None:
-            if self._client.health():
+            if self._healthy(self._client):
                 return self._client
             self._client = None
             if self._process is not None and self._process.poll() is None:
                 self.stop()
-        self._acquire_lock()
+        if self._adopt_running():
+            assert self._client is not None
+            return self._client
+        try:
+            self._acquire_lock()
+        except SidecarError:
+            # Another process may be starting the sidecar right now.  Give it
+            # a moment to publish its endpoint before giving up.
+            if self._wait_for_adoption():
+                assert self._client is not None
+                return self._client
+            raise
         try:
             binary = self._ensure_binary()
             self._token = self.config.token or self._load_or_create_token()
             self._http_addr = self._resolve_addr(self.config.http_addr)
             self._grpc_addr = self._resolve_addr(self.config.grpc_addr)
+            self._adopted = False
+            self._adopted_pid = 0
             env = self._child_env()
             log_path = self.config.sidecar_log_path
             log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -158,6 +176,7 @@ class SidecarManager:
                     + (": " + message if message else "")
                 )
             if client.health():
+                self._write_state()
                 return client
             time.sleep(0.1)
         self.stop()
@@ -165,12 +184,19 @@ class SidecarManager:
             "cortexdb-grpc did not become healthy at " + self._http_addr
         )
 
-    def stop(self) -> None:
+    def stop(self, *, force: bool = False) -> None:
         process = self._process
         self._process = None
         self._client = None
+        adopted_pid = self._adopted_pid if self._adopted else 0
+        self._adopted = False
+        self._adopted_pid = 0
         if process is None or process.poll() is not None:
             self._release_lock()
+            if force:
+                if adopted_pid:
+                    self._terminate_pid(adopted_pid)
+                self._clear_state()
             return
         try:
             process.terminate()
@@ -182,20 +208,26 @@ class SidecarManager:
             pass
         finally:
             self._release_lock()
+            self._clear_state()
 
     def health(self) -> bool:
         if self._client is None:
             return False
-        return self._client.health()
+        return self._healthy(self._client)
 
     def doctor(self) -> dict[str, Any]:
+        if self._client is None:
+            self._adopt_running()
         binary = self.config.sidecar_path
+        running = self._process is not None and self._process.poll() is None
+        if not running and self._adopted and self._client is not None:
+            running = self._healthy(self._client)
         return {
             "enabled": self.config.enabled,
             "binary": str(binary),
             "binary_present": binary.exists(),
             "binary_verified": self._binary_verified(binary),
-            "running": self._process is not None and self._process.poll() is None,
+            "running": running,
             "healthy": self.health(),
             "http_addr": self._http_addr,
             "grpc_addr": self._grpc_addr,
@@ -204,6 +236,209 @@ class SidecarManager:
             "version": self.config.sidecar_version,
             "log": str(self.config.sidecar_log_path),
         }
+
+    # -- endpoint discovery ----------------------------------------------------
+
+    @staticmethod
+    def _healthy(client: CortexDBClient) -> bool:
+        try:
+            return bool(client.health())
+        except Exception:  # noqa: BLE001 - a broken probe is a dead sidecar
+            return False
+
+    def _read_token(self) -> str:
+        if self.config.token:
+            return self.config.token
+        try:
+            return self.config.token_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+
+    def _read_state(self) -> dict[str, Any] | None:
+        try:
+            raw = json.loads(
+                self.config.sidecar_state_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            return None
+        if not isinstance(raw, dict):
+            return None
+        if str(raw.get("db_path") or "") != str(self.config.db_path):
+            return None
+        http_addr = str(raw.get("http_addr") or "").strip()
+        if not http_addr:
+            return None
+        return {
+            "http_addr": http_addr,
+            "grpc_addr": str(raw.get("grpc_addr") or "").strip(),
+            "pid": int(raw.get("pid") or 0),
+        }
+
+    def _write_state(self) -> None:
+        if not self._http_addr:
+            return
+        payload = {
+            "version": self.config.sidecar_version,
+            "db_path": str(self.config.db_path),
+            "http_addr": self._http_addr,
+            "grpc_addr": self._grpc_addr,
+            "pid": self._adopted_pid
+            or (self._process.pid if self._process is not None else 0),
+            "updated_at": time.time(),
+        }
+        target = self.config.sidecar_state_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=str(target.parent),
+                delete=False,
+            ) as handle:
+                handle.write(json.dumps(payload, sort_keys=True) + "\n")
+                temporary = Path(handle.name)
+            try:
+                temporary.chmod(0o600)
+            except OSError:
+                pass
+            os.replace(str(temporary), str(target))
+        except OSError:
+            pass
+
+    def _clear_state(self) -> None:
+        try:
+            self.config.sidecar_state_path.unlink()
+        except OSError:
+            pass
+
+    def _adopt_running(self) -> bool:
+        candidates: list[dict[str, Any]] = []
+        state = self._read_state()
+        if state is not None:
+            token = self._read_token()
+            if token:
+                candidates.append({**state, "token": token})
+            elif state.get("pid") and not self._pid_alive(int(state["pid"])):
+                self._clear_state()
+        candidates.extend(self._linux_candidates())
+        for candidate in candidates:
+            http_addr = str(candidate.get("http_addr") or "").strip()
+            token = str(candidate.get("token") or "").strip()
+            if not http_addr or not token:
+                continue
+            client = CortexDBClient(
+                http_addr, token, timeout=self.config.request_timeout
+            )
+            if not self._healthy(client):
+                continue
+            self._client = client
+            self._token = token
+            self._http_addr = http_addr
+            self._grpc_addr = str(candidate.get("grpc_addr") or "").strip()
+            self._adopted = True
+            self._adopted_pid = int(candidate.get("pid") or 0)
+            self._write_state()
+            return True
+        return False
+
+    def _wait_for_adoption(self, timeout: float = 5.0) -> bool:
+        deadline = time.monotonic() + max(0.1, timeout)
+        while time.monotonic() < deadline:
+            if self._adopt_running():
+                return True
+            time.sleep(0.1)
+        return False
+
+    def _linux_candidates(
+        self, proc_root: Path | None = None
+    ) -> list[dict[str, Any]]:
+        if proc_root is None and sys.platform != "linux":
+            return []
+        root = proc_root or Path("/proc")
+        target = str(self.config.db_path)
+        out: list[dict[str, Any]] = []
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            return out
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            try:
+                comm = (entry / "comm").read_text(
+                    encoding="utf-8", errors="replace"
+                ).strip()
+            except OSError:
+                continue
+            if comm not in {"cortexdb-grpc", "cortexdb-grpc.exe"}:
+                continue
+            try:
+                raw = (entry / "environ").read_bytes()
+            except OSError:
+                continue
+            env: dict[str, str] = {}
+            for item in raw.split(b"\0"):
+                if b"=" not in item:
+                    continue
+                key, value = item.split(b"=", 1)
+                env[key.decode("utf-8", "replace")] = value.decode(
+                    "utf-8", "replace"
+                )
+            if env.get("CORTEXDB_PATH") != target:
+                continue
+            http_addr = env.get("CORTEXDB_HTTP_ADDR", "").strip()
+            token = env.get("CORTEXDB_GRPC_TOKEN", "").strip()
+            if not http_addr or not token:
+                continue
+            out.append(
+                {
+                    "http_addr": http_addr,
+                    "grpc_addr": env.get("CORTEXDB_GRPC_ADDR", "").strip(),
+                    "token": token,
+                    "pid": int(entry.name),
+                }
+            )
+        return out
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+
+    @staticmethod
+    def _terminate_pid(pid: int) -> None:
+        if pid <= 0 or not SidecarManager._is_sidecar_pid(pid):
+            return
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            return
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if not SidecarManager._pid_alive(pid):
+                return
+            time.sleep(0.1)
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _is_sidecar_pid(pid: int) -> bool:
+        if sys.platform != "linux":
+            return True
+        try:
+            comm = Path(f"/proc/{pid}/comm").read_text(
+                encoding="utf-8", errors="replace"
+            ).strip()
+        except OSError:
+            return False
+        return comm in {"cortexdb-grpc", "cortexdb-grpc.exe"}
 
     def _binary_verified(self, path: Path) -> bool:
         if not path.exists():

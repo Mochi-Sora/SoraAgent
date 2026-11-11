@@ -1114,6 +1114,71 @@ def test_sidecar_single_instance_lock(tmp_path: Path) -> None:
     second._release_lock()
 
 
+def test_sidecar_adopts_a_persisted_endpoint(tmp_path: Path, monkeypatch) -> None:
+    config = config_for(tmp_path)
+    config.ensure_directories()
+    config.token_path.write_text("token-123\n", encoding="utf-8")
+
+    writer = SidecarManager(config)
+    writer._http_addr = "127.0.0.1:4321"
+    writer._grpc_addr = "127.0.0.1:4322"
+    writer._write_state()
+
+    class FakeClient:
+        def __init__(self, http_addr: str, token: str, timeout: float = 10.0):
+            self.http_addr = http_addr
+            self.token = token
+            self.timeout = timeout
+
+        def health(self) -> bool:
+            return self.http_addr == "127.0.0.1:4321" and self.token == "token-123"
+
+    monkeypatch.setattr(
+        "sora_agent.memory.sidecar.CortexDBClient", FakeClient
+    )
+
+    reader = SidecarManager(config)
+    assert reader._adopt_running() is True
+    assert reader._http_addr == "127.0.0.1:4321"
+    assert reader._grpc_addr == "127.0.0.1:4322"
+    assert reader._adopted is True
+
+    doctor = reader.doctor()
+    assert doctor["running"] is True
+    assert doctor["healthy"] is True
+
+    reader.stop()
+    assert config.sidecar_state_path.exists()
+    reader.stop(force=True)
+    assert not config.sidecar_state_path.exists()
+
+
+def test_sidecar_discovers_a_linux_child_environment(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    proc = tmp_path / "proc"
+    entry = proc / "1234"
+    entry.mkdir(parents=True)
+    (entry / "comm").write_text("cortexdb-grpc\n", encoding="utf-8")
+    env = (
+        f"CORTEXDB_PATH={config.db_path}\0"
+        "CORTEXDB_HTTP_ADDR=127.0.0.1:9999\0"
+        "CORTEXDB_GRPC_ADDR=127.0.0.1:9998\0"
+        "CORTEXDB_GRPC_TOKEN=env-token\0"
+    )
+    (entry / "environ").write_bytes(env.encode("utf-8"))
+
+    candidates = SidecarManager(config)._linux_candidates(proc)
+
+    assert candidates == [
+        {
+            "http_addr": "127.0.0.1:9999",
+            "grpc_addr": "127.0.0.1:9998",
+            "token": "env-token",
+            "pid": 1234,
+        }
+    ]
+
+
 def test_hook_replaces_a_dead_sidecar_client(tmp_path: Path) -> None:
     class FlakyBackend(FakeBackend):
         def __init__(self) -> None:

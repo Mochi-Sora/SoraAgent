@@ -151,6 +151,10 @@ class MemoryConfig:
         return self.memory_dir / "grpc.token"
 
     @property
+    def sidecar_state_path(self) -> Path:
+        return self.memory_dir / "sidecar.json"
+
+    @property
     def sidecar_path(self) -> Path:
         if self.sidecar_binary is not None:
             return self.sidecar_binary

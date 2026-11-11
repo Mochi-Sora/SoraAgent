@@ -95,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
                 pass
             return 0
         if args.command == "stop":
-            hook.sidecar.stop()
+            hook.sidecar.stop(force=True)
             print("stopped")
             return 0
         if args.command == "optimize":
@@ -145,7 +145,9 @@ def _restore(hook: MemoryHook, args: argparse.Namespace) -> int:
         if answer.strip().lower() not in {"y", "yes"}:
             print("aborted")
             return 1
-    result = hook.backup.restore(snapshot, stop=hook.sidecar.stop)
+    result = hook.backup.restore(
+        snapshot, stop=lambda: hook.sidecar.stop(force=True)
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
     try:
         hook.sidecar.ensure_running()
@@ -156,7 +158,7 @@ def _restore(hook: MemoryHook, args: argparse.Namespace) -> int:
 
 
 def _optimize(hook: MemoryHook, args: argparse.Namespace) -> int:
-    hook.sidecar.stop()
+    hook.sidecar.stop(force=True)
     if hook.config.db_path.exists():
         hook.backup.snapshot_active()
     result = optimize_active(hook.config, vacuum=args.vacuum)

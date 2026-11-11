@@ -1038,9 +1038,14 @@ decay → expire → mark → sweep expired → report → artifact cleanup
   plaintext HTTP to non-loopback hosts (including redirects) and each install
   is protected by a single-instance lock. Existing binaries must match the
   checksum recorded at download time (or `SORA_MEMORY_SIDECAR_SHA256`) before
-  they are executed. A dead client is probed and restarted every few seconds
-  instead of being cached forever. `sora-memory download|start|stop|doctor`
-  exposes the lifecycle.
+  they are executed. The chosen endpoint is written to
+  `~/.sora_agent/memory/sidecar.json` (0600); after a gateway or CLI restart a
+  new process adopts the healthy running sidecar instead of trying to start a
+  second one. On Linux it also discovers an already-running child through
+  `/proc/<pid>/environ`, which recovers sidecars started before this state file
+  existed. A dead client is probed and restarted every few seconds instead of
+  being cached forever. `sora-memory download|start|stop|doctor` exposes the
+  lifecycle; `stop` force-stops an adopted sidecar.
 - **Fail-open**: if the sidecar is unavailable, long-term recall degrades to
   daily results with an explicit note and the backend is retried at most every
   30 seconds. A broken memory hook never breaks a run.
