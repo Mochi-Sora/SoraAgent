@@ -10,7 +10,7 @@ a clock section is already present it stays last, behind the state.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any
 
 from .clock import append_clock, extract_clock, strip_clock
 from .providers import (
@@ -59,18 +59,15 @@ class StatefulProvider:
         *,
         should_stop: Callable[[], bool] | None = None,
     ) -> ModelTurn:
+        # State edits are internal protocol text.  Streaming the raw provider
+        # output would show the `<state_edit>` block to the user before the
+        # deterministic monitor can strip it, so a state-aware turn settles the
+        # full response first and emits only the visible text.
         augmented = self._augment(messages)
-        stream = getattr(self.inner, "stream_turn", None)
-        if callable(stream):
-            turn = cast(
-                ModelTurn,
-                stream(augmented, tools, on_delta, should_stop=should_stop),
-            )
-        else:
-            turn = provider_turn(self.inner, augmented, tools)
-            if turn.text:
-                on_delta(turn.text)
+        turn = provider_turn(self.inner, augmented, tools)
         text = self._settle(turn.text, augmented, tools)
+        if text and (should_stop is None or not should_stop()):
+            on_delta(text)
         return ModelTurn(
             text=text,
             tool_calls=list(turn.tool_calls),

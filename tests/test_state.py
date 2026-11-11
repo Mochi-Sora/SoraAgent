@@ -417,6 +417,26 @@ def test_wrapper_accepts_valid_edit(config: StateConfig) -> None:
     assert manager.path.read_text(encoding="utf-8") == edit
 
 
+def test_wrapper_streams_only_the_visible_answer(config: StateConfig) -> None:
+    edit = valid_state(current="Expedite approved and executed.")
+    response = f"Done.\n<state_edit>\n{edit}</state_edit>"
+    inner = ScriptedProvider([response])
+    manager = StateManager("s", config)
+    provider = StatefulProvider(inner, manager)
+    chunks: list[str] = []
+
+    turn = provider.stream_turn(
+        [Message("system", "S"), Message("user", "Ship it")],
+        [],
+        chunks.append,
+    )
+
+    assert turn.text == "Done."
+    assert chunks == ["Done."]
+    assert "<state_edit>" not in "".join(chunks)
+    assert manager.path.read_text(encoding="utf-8") == edit
+
+
 def test_wrapper_repairs_rejected_edit(config: StateConfig) -> None:
     bad = "## Goal\nShip it.\n"
     good = valid_state(goal="Ship it.", current="Expedited.")

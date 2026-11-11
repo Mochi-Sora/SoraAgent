@@ -167,3 +167,7 @@ def _optimize(hook: MemoryHook, args: argparse.Namespace) -> int:
         print("optimized; sidecar did not restart: " + str(exc), file=sys.stderr)
         return 1
     return 0 if result.get("ok") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

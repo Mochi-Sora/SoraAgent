@@ -122,15 +122,16 @@ _PHONE_RE = re.compile(
     r"(?![\d-])"
 )
 
+# Explicit identifiers and PII are removed from memory. Preferences and
+# ordinary "remember that..." statements are deliberately kept: they are the
+# conversation context daily memory exists to recall. Once a preference is
+# captured in USER.md, the known-term pass above removes it from memory too.
 _PROFILE_PATTERNS = (
     re.compile(r"(?i)\bmy name is\s+[^.!?\n]{1,80}"),
     re.compile(r"(?i)\bcall me\s+[^.!?\n]{1,40}"),
     re.compile(r"(?i)\bi(?:'m| am)\s+\d{1,3}\s*(?:years?\s*old|yo)\b"),
     re.compile(r"(?i)\bi live in\s+[^.!?\n]{1,80}"),
     re.compile(r"(?i)\bi work (?:as|at)\s+[^.!?\n]{1,80}"),
-    re.compile(r"(?i)\bi (?:like|love|hate|prefer)\s+[^.!?\n]{1,80}"),
-    re.compile(r"(?i)\bmy favou?rite\s+[^.!?\n]{1,80}\s+is\s+[^.!?\n]{1,80}"),
-    re.compile(r"(?i)\bremember (?:that )?i\s+[^.!?\n]{1,120}"),
     re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b"),
     _PHONE_RE,
 )
@@ -1418,9 +1419,11 @@ class IdentityStore:
     def redact_for_memory(self, text: str, source: str = "user") -> str:
         """Return ``text`` with USER profile facts removed.
 
-        This is the memory firewall.  It is intentionally conservative: known
-        USER.md values and full bullets are always removed, and user messages
-        are additionally checked for common explicit profile/PII patterns.
+        This is the memory firewall.  Known USER.md values and full bullets are
+        always removed, and user messages are additionally checked for explicit
+        PII patterns (names, ages, locations, employers, email, phone).  Personal
+        preferences that are not yet in USER.md are kept so daily memory can
+        recall them; once captured in USER.md, the known-term pass removes them.
         """
         if not isinstance(text, str):
             text = str(text)

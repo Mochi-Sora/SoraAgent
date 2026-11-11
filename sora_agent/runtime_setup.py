@@ -8,7 +8,7 @@ and import optional subsystems lazily.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,8 @@ from .model_catalog import (
 )
 from .providers import default_provider
 from .settings import (
+    FileSettings,
+    MemorySettings,
     Settings,
     env_flag,
     env_float,
@@ -38,16 +40,44 @@ _OPENAI_COMPATIBLE = frozenset({"openai", "azure", "deepseek", "ds", "qwen", "da
 def load_runtime(
     path: str | Path | None = None,
     secrets_path: str | Path | None = None,
+    *,
+    fallback: Callable[[], Settings] | None = None,
 ) -> tuple[Settings, dict[str, str], bool]:
     """Return ``(settings, secrets, configured)``.
 
     With no config file the legacy gateway defaults are returned and
     ``configured`` is ``False``.  That is what keeps an environment-only
-    install behaving exactly as before.
+    install behaving exactly as before.  A caller that needs different
+    first-run defaults (the desktop bridge) can pass a ``fallback`` factory.
     """
     settings = load_settings(path)
     configured = settings is not None
-    return settings or legacy_settings(), load_secrets(secrets_path), configured
+    if settings is None:
+        settings = fallback() if fallback is not None else legacy_settings()
+    return settings, load_secrets(secrets_path), configured
+
+
+def desktop_settings() -> Settings:
+    """First-run defaults for the SoraDesk bridge.
+
+    The desktop app should feel like an assistant even before ``sora setup``:
+    memory, identity, files, sessions, the clock/calendar, and streaming are on,
+    while the provider stays offline (``mock``) until the user configures a real
+    model.  The demo order tools are deliberately left out because they are
+    fixtures, not desktop capabilities.
+    """
+    settings = legacy_settings()
+    settings.features.memory = MemorySettings()
+    settings.features.files = FileSettings()
+    settings.features.identity = True
+    settings.features.clock = True
+    settings.features.calendar = True
+    settings.features.sessions = True
+    settings.features.streaming = True
+    settings.features.tools = "none"
+    settings.features.approval = "ask"
+    settings.features.quality = True
+    return settings
 
 
 def provider_kind(settings: Settings) -> str:

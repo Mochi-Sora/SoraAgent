@@ -465,6 +465,17 @@ def test_redaction_matches_profile_patterns_without_a_profile(
     assert "24 years old" not in redacted
 
 
+def test_redaction_keeps_preferences_not_yet_in_the_profile(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    store.ensure("user")
+
+    text = "Remember that my favourite colour is blue."
+
+    assert store.redact_for_memory(text) == text
+
+
 def test_redaction_strips_edit_blocks_and_withholds_empty_text(
     tmp_path: Path,
 ) -> None:

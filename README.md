@@ -870,6 +870,12 @@ agent's cumulative working memory for one conversation. It uses only the
 standard library and knows nothing about the loop; `state_provider.py` is the
 single adapter.
 
+State is deliberately **opt-in**: `Agent` and `ChatHandler` do not create a
+`StateManager` on their own. Wrap the provider as shown below (or pass an
+already wrapped provider) when a deployment wants persistent session state.
+State-aware streaming settles the complete response before emitting visible
+text, so `<state_edit>` blocks are never shown to the user.
+
 - **Storage**: `<session_id>.state.md` inside a caller-supplied root (there is
   deliberately no default root). Writes are atomic (`fsync` + `os.replace`,
   0600 files, 0700 root); the previous valid document is kept as
@@ -967,9 +973,12 @@ files fall back to the active backup and are never overwritten; there is an OS
 file lock per document; retention defaults to 3 payloads per document.
 
 The **memory firewall** lives here: `IdentityStore.redact_for_memory(text)`
-removes known profile terms/bullets and (for user messages) common explicit
-profile/PII patterns before anything is written to memory or returned from
-recall, replacing them with `[profile]` / `[profile details withheld]`.
+removes known profile terms/bullets and (for user messages) explicit PII
+patterns before anything is written to memory or returned from recall,
+replacing them with `[profile]` / `[profile details withheld]`. Preferences
+that are not yet in USER.md are deliberately kept so daily memory can recall
+them; once the model records a preference in USER.md, the known-term pass
+removes it from memory and identity becomes the authoritative copy.
 Credentials are removed for every source, including assistant output: OpenAI
 and Stripe keys, GitHub tokens, AWS and Google keys, Slack tokens, bearer
 tokens, JWTs, PEM private keys, and `password: ...` / `token = ...`

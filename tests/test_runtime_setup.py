@@ -17,6 +17,7 @@ from sora_agent.runtime_setup import (
     build_sessions,
     clock_enabled,
     context_window,
+    desktop_settings,
     feature_enabled,
     load_runtime,
     memory_enabled,
@@ -114,6 +115,36 @@ def test_load_runtime_without_a_config_uses_legacy_defaults(tmp_path):
     assert settings.provider.kind == "mock"
     assert settings.features.memory.enabled is False
     assert secrets == {}
+
+
+def test_load_runtime_accepts_caller_fallback(tmp_path):
+    settings, secrets, configured = load_runtime(
+        tmp_path / "missing.json",
+        tmp_path / "missing.env",
+        fallback=desktop_settings,
+    )
+
+    assert configured is False
+    assert settings.provider.kind == "mock"
+    assert settings.features.memory.enabled is True
+    assert settings.features.identity is True
+    assert settings.features.tools == "none"
+    assert secrets == {}
+
+
+def test_desktop_settings_enable_local_features_only():
+    settings = desktop_settings()
+
+    assert settings.features.memory.enabled is True
+    assert settings.features.files.enabled is True
+    assert settings.features.identity is True
+    assert settings.features.sessions is True
+    assert settings.features.clock is True
+    assert settings.features.calendar is True
+    assert settings.features.streaming is True
+    assert settings.features.quality is True
+    assert settings.features.tools == "none"
+    assert settings.provider.kind == "mock"
 
 
 def test_load_runtime_reads_a_saved_config_and_secrets(tmp_path):
