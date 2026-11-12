@@ -7,6 +7,7 @@ import os
 from ..model_catalog import format_tokens, provider_info
 from ..runtime_setup import (
     approval_mode,
+    feature_enabled,
     files_enabled,
     memory_enabled,
     provider_kind,
@@ -27,12 +28,8 @@ def run_doctor(settings: Settings | None, secrets: dict[str, str]) -> int:
 
     kind = provider_kind(settings)
     info = provider_info(kind)
-    env_key = (
-        os.getenv(info.key_env, "").strip() if info and info.key_env else ""
-    )
-    saved_key = (
-        secrets.get(info.key_env, "").strip() if info and info.key_env else ""
-    )
+    env_key = os.getenv(info.key_env, "").strip() if info and info.key_env else ""
+    saved_key = secrets.get(info.key_env, "").strip() if info and info.key_env else ""
     token_env = os.getenv("SORA_TELEGRAM_TOKEN", "").strip()
     token_saved = secrets.get("SORA_TELEGRAM_TOKEN", "").strip()
 
@@ -61,9 +58,7 @@ def run_doctor(settings: Settings | None, secrets: dict[str, str]) -> int:
                 "(not required)"
                 if kind in {"mock", "demo"}
                 else (
-                    "environment"
-                    if env_key
-                    else ("saved" if saved_key else "MISSING")
+                    "environment" if env_key else ("saved" if saved_key else "MISSING")
                 ),
             ),
         ],
@@ -73,9 +68,7 @@ def run_doctor(settings: Settings | None, secrets: dict[str, str]) -> int:
         [
             (
                 "Telegram token",
-                "environment"
-                if token_env
-                else ("saved" if token_saved else "MISSING"),
+                "environment" if token_env else ("saved" if token_saved else "MISSING"),
             ),
             (
                 "Allowed users",
@@ -91,16 +84,16 @@ def run_doctor(settings: Settings | None, secrets: dict[str, str]) -> int:
             ("Memory", "On" if memory_enabled(settings) else "Off"),
             ("Files", "On" if files_enabled(settings) else "Off"),
             (
+                "Core tools",
+                "On" if feature_enabled(settings, "tools", "SORA_TOOLPACK") else "Off",
+            ),
+            (
                 "Vision",
                 settings.features.files.vision_model or "auto / OCR fallback",
             ),
             (
                 "CortexDB sidecar",
-                (
-                    "configured"
-                    if memory.enabled and memory.sidecar
-                    else "off"
-                ),
+                ("configured" if memory.enabled and memory.sidecar else "off"),
             ),
             ("Identity", "On" if settings.features.identity else "Off"),
             ("Clock", "On" if settings.features.clock else "Off"),
@@ -139,9 +132,7 @@ def _warnings(settings: Settings, secrets: dict[str, str]) -> None:
             "Telegram allow list is empty; the gateway will ignore everyone."
         )
     if approval_mode(settings) == "off":
-        problems.append(
-            "Approval is OFF: consequential tools execute without asking."
-        )
+        problems.append("Approval is OFF: consequential tools execute without asking.")
     if not quality_enabled(settings):
         problems.append("Quality evaluation is OFF: /eval has no report.")
     if not problems:

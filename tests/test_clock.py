@@ -82,8 +82,8 @@ def test_extract_strip_and_append_clock_round_trip() -> None:
     assert stripped[0].content == "BASE"
 
     rebuilt = append_clock(stripped, clock_section(NOW))
-    assert [message.role for message in rebuilt] == ["system", "system", "user"]
-    assert rebuilt[1].content.startswith(CLOCK_HEADING)
+    assert [message.role for message in rebuilt] == ["system", "user", "system"]
+    assert rebuilt[-1].content.startswith(CLOCK_HEADING)
 
 
 def test_with_clock_replaces_an_existing_section() -> None:
@@ -125,14 +125,15 @@ def test_clock_stays_behind_state_and_identity_in_either_wrapper_order(
         assert [message.role for message in sent] == [
             "system",
             "system",
-            "system",
-            "system",
             "user",
+            "system",
+            "system",
         ]
         assert sent[0].content == "BASE"
         assert sent[1].content.startswith("## PERSISTENT USER PROFILE")
-        assert sent[2].content.startswith("## SESSION STATE PROTOCOL")
-        assert sent[3].content.startswith(CLOCK_HEADING)
+        assert sent[2].content == "goal"
+        assert sent[3].content.startswith("## SESSION STATE PROTOCOL")
+        assert sent[4].content.startswith(CLOCK_HEADING)
 
 
 def test_clock_provider_refreshes_the_section_each_turn() -> None:
@@ -148,9 +149,9 @@ def test_clock_provider_refreshes_the_section_each_turn() -> None:
     provider.complete([Message("system", "BASE"), Message("user", "a")], [])
     provider.complete([Message("system", "BASE"), Message("user", "b")], [])
 
-    assert inner.calls[0][-2].content.startswith(CLOCK_HEADING)
-    assert "09:00:00" in inner.calls[0][-2].content
-    assert "09:01:00" in inner.calls[1][-2].content
+    assert inner.calls[0][-1].content.startswith(CLOCK_HEADING)
+    assert "09:00:00" in inner.calls[0][-1].content
+    assert "09:01:00" in inner.calls[1][-1].content
 
 
 def test_wrap_clock_is_idempotent_and_can_be_disabled() -> None:
@@ -202,6 +203,7 @@ def test_agent_clock_lands_after_state_when_a_state_wrapper_is_used(
     system = [m for m in inner.calls[0] if m.role == "system"]
     assert system[-2].content.startswith("## SESSION STATE PROTOCOL")
     assert system[-1].content.startswith(CLOCK_HEADING)
+    assert inner.calls[0][-1].content.startswith(CLOCK_HEADING)
 
 
 def test_chat_handler_injects_clock_by_default() -> None:
@@ -215,3 +217,24 @@ def test_chat_handler_injects_clock_by_default() -> None:
     ]
     assert len(system) == 2
     assert system[1].content.startswith(CLOCK_HEADING)
+
+
+def test_clock_is_trailing_after_conversation_history() -> None:
+    messages = [
+        Message("system", "BASE"),
+        Message("user", "goal"),
+        Message("assistant", "working"),
+        Message("tool", "result", tool_call_id="1", name="lookup"),
+    ]
+
+    rebuilt = with_clock(messages, NOW)
+
+    assert [message.role for message in rebuilt] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "system",
+    ]
+    assert rebuilt[:-1] == messages
+    assert rebuilt[-1].content.startswith(CLOCK_HEADING)

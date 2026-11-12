@@ -14,6 +14,7 @@ from typing import Any, cast
 import pytest  # pyright: ignore[reportMissingImports]
 
 from sora_agent.agent import Agent
+from sora_agent.clock import strip_clock
 from sora_agent.memory.backup import BackupError, BackupManager
 from sora_agent.memory.client import CortexDBClient, CortexDBError
 from sora_agent.memory.config import MemoryConfig
@@ -119,8 +120,7 @@ def test_config_clamps_invalid_dream_hour(tmp_path: Path) -> None:
     assert MemoryConfig(root=tmp_path, dream_hour_utc=99).dream_hour_utc == 0
     assert MemoryConfig(root=tmp_path, dream_hour_utc=-1).dream_hour_utc == 0
     assert (
-        MemoryConfig(root=tmp_path, recall_retrieval_mode="bogus")
-        .recall_retrieval_mode
+        MemoryConfig(root=tmp_path, recall_retrieval_mode="bogus").recall_retrieval_mode
         == "auto"
     )
 
@@ -193,7 +193,9 @@ def test_backup_retention_keeps_daily_weekly_monthly(tmp_path: Path) -> None:
     conn.execute("CREATE TABLE t(x)")
     conn.commit()
     conn.close()
-    manager = BackupManager(config, clock=lambda: datetime(2026, 10, 27, tzinfo=timezone.utc))
+    manager = BackupManager(
+        config, clock=lambda: datetime(2026, 10, 27, tzinfo=timezone.utc)
+    )
     for offset in range(6):
         day = date(2026, 9, 1) + timedelta(days=offset * 7)
         manager.snapshot_daily(source, day)
@@ -257,9 +259,7 @@ def test_backup_prune_skips_symlinks_that_escape(tmp_path: Path) -> None:
     assert link.is_symlink()
 
 
-def test_backup_reports_missing_zstd_support(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_backup_reports_missing_zstd_support(tmp_path: Path, monkeypatch) -> None:
     from sora_agent.memory import backup as backup_module
 
     config = config_for(tmp_path)
@@ -360,7 +360,9 @@ def test_cortexdb_client_rest_and_pagination() -> None:
         port = server.server_address[1]
         client = CortexDBClient("127.0.0.1:" + str(port), token="secret")
         assert client.health() is True
-        assert client.save_memory({"memory_id": "m1", "content": "x"})["created"] is True
+        assert (
+            client.save_memory({"memory_id": "m1", "content": "x"})["created"] is True
+        )
         memories = client.list_memories(limit=10)
         assert [item["id"] for item in memories] == ["m1", "m2"]
         client.update_memory("m1", importance=0.4)
@@ -398,7 +400,10 @@ def test_recall_merges_daily_and_longterm(tmp_path: Path) -> None:
             return {
                 "memories": [
                     {
-                        "memory": {"id": "long-1", "content": "The deploy moved to Monday."},
+                        "memory": {
+                            "id": "long-1",
+                            "content": "The deploy moved to Monday.",
+                        },
                         "score": 0.9,
                     }
                 ]
@@ -438,9 +443,7 @@ class _GraphBackend(FakeBackend):
         assert name == "extract_conversation"
         return {
             "entities": ["Alice", "Apollo"],
-            "relations": [
-                {"from": "Alice", "to": "Apollo", "type": "co_occurs"}
-            ],
+            "relations": [{"from": "Alice", "to": "Apollo", "type": "co_occurs"}],
         }
 
     def recall(self, query: str, top_k: int = 8, **options: Any) -> dict[str, Any]:
@@ -451,9 +454,7 @@ class _GraphBackend(FakeBackend):
 def test_graph_hints_prefer_cortexdb_extraction() -> None:
     entities, relations = graph_hints(_GraphBackend(), "Alice deployed Apollo.")
     assert entities == ["Alice", "Apollo"]
-    assert relations == [
-        {"from": "Alice", "to": "Apollo", "type": "co_occurs"}
-    ]
+    assert relations == [{"from": "Alice", "to": "Apollo", "type": "co_occurs"}]
 
 
 def test_graph_hints_fall_back_without_cortexdb_tools() -> None:
@@ -521,7 +522,9 @@ def test_recall_fails_open_without_backend(tmp_path: Path) -> None:
     moment = datetime(2026, 10, 26, 12, tzinfo=timezone.utc)
     daily = DailyStore(tmp_path, clock=lambda: moment)
     daily.append("user", "The deploy is on Friday.")
-    service = MemoryRecallService(daily, lambda: (_ for _ in ()).throw(RuntimeError("down")))
+    service = MemoryRecallService(
+        daily, lambda: (_ for _ in ()).throw(RuntimeError("down"))
+    )
     text = service.recall("deploy")
     assert "Friday" in text
     assert "unavailable" in text
@@ -529,16 +532,10 @@ def test_recall_fails_open_without_backend(tmp_path: Path) -> None:
 
 def test_dream_scheduler_next_run_uses_configured_hour() -> None:
     now = datetime(2026, 10, 27, 23, 30, tzinfo=timezone.utc)
-    assert next_dream_at(now, 0) == datetime(
-        2026, 10, 28, 0, 0, tzinfo=timezone.utc
-    )
-    assert next_dream_at(now, 23) == datetime(
-        2026, 10, 28, 23, 0, tzinfo=timezone.utc
-    )
+    assert next_dream_at(now, 0) == datetime(2026, 10, 28, 0, 0, tzinfo=timezone.utc)
+    assert next_dream_at(now, 23) == datetime(2026, 10, 28, 23, 0, tzinfo=timezone.utc)
     early = datetime(2026, 10, 27, 1, 0, tzinfo=timezone.utc)
-    assert next_dream_at(early, 3) == datetime(
-        2026, 10, 27, 3, 0, tzinfo=timezone.utc
-    )
+    assert next_dream_at(early, 3) == datetime(2026, 10, 27, 3, 0, tzinfo=timezone.utc)
 
 
 def test_dream_scheduler_runs_startup_catch_up(tmp_path: Path) -> None:
@@ -634,7 +631,10 @@ def test_dream_transfers_marks_and_deletes_daily(tmp_path: Path) -> None:
     assert (config.backup_dir / "latest.json").exists()
     assert report["report_path"]
     second = DreamRunner(
-        config, daily, backend, clock=lambda: datetime(2026, 10, 28, 0, 0, 1, tzinfo=timezone.utc)
+        config,
+        daily,
+        backend,
+        clock=lambda: datetime(2026, 10, 28, 0, 0, 1, tzinfo=timezone.utc),
     )
     second_report = second.run()
     assert second_report["errors"] == []
@@ -649,7 +649,10 @@ def test_dream_keeps_daily_when_transfer_fails(tmp_path: Path) -> None:
     daily.append("user", "Remember this.")
     backend.fail_save = True
     runner = DreamRunner(
-        config, daily, backend, clock=lambda: datetime(2026, 10, 27, 0, 0, 1, tzinfo=timezone.utc)
+        config,
+        daily,
+        backend,
+        clock=lambda: datetime(2026, 10, 27, 0, 0, 1, tzinfo=timezone.utc),
     )
     report = runner.run()
     assert daily.path_for(day.date()).exists()
@@ -674,9 +677,7 @@ def test_dream_keeps_messages_appended_during_transfer(
             result = super().save_memory(payload)
             if not self.appended:
                 self.appended = True
-                daily.append(
-                    "user", "Arrived during transfer.", ts=day
-                )
+                daily.append("user", "Arrived during transfer.", ts=day)
             return result
 
     backend = AppendingBackend()
@@ -684,9 +685,7 @@ def test_dream_keeps_messages_appended_during_transfer(
         config,
         daily,
         backend,
-        clock=lambda: datetime(
-            2026, 10, 27, 0, 0, 1, tzinfo=timezone.utc
-        ),
+        clock=lambda: datetime(2026, 10, 27, 0, 0, 1, tzinfo=timezone.utc),
     )
 
     report = runner.run()
@@ -791,8 +790,7 @@ def test_dream_creates_merge_and_conflict_records(tmp_path: Path) -> None:
     assert report["conflicts"]
     assert report["artifacts_cleanup"]["removed"] >= 2
     assert not any(
-        record["metadata"].get("sora_kind")
-        in {"merged", "conflict", "inferred_link"}
+        record["metadata"].get("sora_kind") in {"merged", "conflict", "inferred_link"}
         for record in backend.memories.values()
     )
 
@@ -902,7 +900,7 @@ def test_agent_voluntary_recall_feeds_result_back(tmp_path: Path) -> None:
     agent = Agent(provider=provider, memory=hook)
     result = agent.run("When is the deploy?")
     assert result.proposal == "The deploy is Monday."
-    tool_message = provider.calls[1][-1]
+    tool_message = strip_clock(provider.calls[1])[-1]
     assert tool_message.role == "tool"
     assert tool_message.name == "memory_recall"
     assert "The deploy is Monday." in tool_message.content
@@ -993,9 +991,7 @@ def test_sidecar_download_verifies_checksum(tmp_path: Path) -> None:
             info.size = len(binary)
             archive.addfile(info, io.BytesIO(binary))
         _DownloadHandler.payload = replacement.getvalue()
-        _DownloadHandler.checksum = hashlib.sha256(
-            _DownloadHandler.payload
-        ).hexdigest()
+        _DownloadHandler.checksum = hashlib.sha256(_DownloadHandler.payload).hexdigest()
         with pytest.raises(SidecarError, match="checksum mismatch"):
             SidecarManager(config).download()
     finally:
@@ -1093,9 +1089,7 @@ def test_sidecar_plaintext_remote_download_is_rejected(tmp_path: Path) -> None:
 
 def test_sidecar_download_url_rejects_embedded_credentials() -> None:
     with pytest.raises(SidecarError, match="credentials"):
-        SidecarManager._open(
-            "https://user:secret@example.test/file", timeout=1
-        )
+        SidecarManager._open("https://user:secret@example.test/file", timeout=1)
 
 
 def test_sidecar_single_instance_lock(tmp_path: Path) -> None:
@@ -1133,9 +1127,7 @@ def test_sidecar_adopts_a_persisted_endpoint(tmp_path: Path, monkeypatch) -> Non
         def health(self) -> bool:
             return self.http_addr == "127.0.0.1:4321" and self.token == "token-123"
 
-    monkeypatch.setattr(
-        "sora_agent.memory.sidecar.CortexDBClient", FakeClient
-    )
+    monkeypatch.setattr("sora_agent.memory.sidecar.CortexDBClient", FakeClient)
 
     reader = SidecarManager(config)
     assert reader._adopt_running() is True
@@ -1203,9 +1195,7 @@ def test_hook_replaces_a_dead_sidecar_client(tmp_path: Path) -> None:
     first = FlakyBackend()
     replacement = FakeBackend()
     sidecar = RestartingSidecar(replacement)
-    hook = MemoryHook(
-        config_for(tmp_path), client=first, sidecar=cast(Any, sidecar)
-    )
+    hook = MemoryHook(config_for(tmp_path), client=first, sidecar=cast(Any, sidecar))
 
     assert hook._backend() is first
     first.alive = False
@@ -1213,3 +1203,14 @@ def test_hook_replaces_a_dead_sidecar_client(tmp_path: Path) -> None:
     assert hook._backend() is replacement
     assert sidecar.calls == 1
     assert hook._backend() is replacement
+
+
+def test_daily_search_ignores_stopwords_and_returns_no_answer(tmp_path: Path) -> None:
+    now = datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)
+    store = DailyStore(tmp_path / "daily", clock=lambda: now)
+    store.append("user", "My badge number is BADGE-7781.", ts=now)
+    store.append("user", "The vendor project is codenamed ORCHID-2741.", ts=now)
+
+    assert store.search("What is the CEO's shoe size?", days=1) == []
+    hits = store.search("What is my badge number?", days=1)
+    assert hits and "BADGE-7781" in hits[0].content

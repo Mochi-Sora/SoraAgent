@@ -9,6 +9,7 @@ import pytest  # pyright: ignore[reportMissingImports]
 
 from sora_agent.agent import Agent
 from sora_agent.approval import ApprovalGate
+from sora_agent.clock import strip_clock
 from sora_agent.identity import IdentityConfig, IdentityStore
 from sora_agent.identity_provider import IdentityProvider
 from sora_agent.providers import (
@@ -443,7 +444,7 @@ def test_agent_adapts_text_actions_at_the_provider_edge() -> None:
     assert result.final_answer == "The order is open."
     assert result.proposal == "The order is open."
     assert len(result.steps) == 2
-    assert provider.calls[1][-1].role == "tool"
+    assert strip_clock(provider.calls[1])[-1].role == "tool"
 
 
 def test_agent_runs_native_calls_and_transitions_state() -> None:

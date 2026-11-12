@@ -14,6 +14,10 @@ deliberately tiny; the production concerns live in explicit gates around it:
 - **Lazy tool discovery** — only `find_tools` (plus `memory_recall`) is visible
   at the start of a run; other tools stay hidden until the model previews and
   loads what it needs, keeping the prompt small and the tool list bounded.
+- **Built-in core tool pack** — file read/write/patch/search, terminal and
+  background processes, web search/extract, a task list, clarification, Python
+  execution, and subagent delegation. Every tool is hidden behind
+  `find_tools`, and consequential tools keep the approval gate.
 - **Predictable failure modes** — safety paths (approval, tool validation) fail
   closed; optional conveniences (memory, identity, clock, calendar, observers)
   fail open and never break a run.
@@ -30,7 +34,7 @@ deliberately tiny; the production concerns live in explicit gates around it:
 
 The core imports only the Python standard library; optional integrations
 (`openai`, `zstandard`) are extras. Requires Python **3.9+**. Current version:
-**0.1.1**.
+**0.1.2**.
 
 ---
 
@@ -43,22 +47,23 @@ The core imports only the Python standard library; optional integrations
 5. [The model/tool loop (Runner)](#the-modeltool-loop-runner)
 6. [Providers](#providers)
 7. [Tools](#tools)
-8. [Lazy tool discovery](#lazy-tool-discovery)
-9. [Human approval](#human-approval)
-10. [Quality gate and evaluation](#quality-gate-and-evaluation)
-11. [Optional trajectory judge](#optional-trajectory-judge)
-12. [Clock](#clock)
-13. [Calendar](#calendar)
-14. [Session state](#session-state)
-15. [Identity (USER.md / SOUL.md)](#identity-usermd--soulmd)
-16. [Memory (CortexDB)](#memory-cortexdb)
-17. [Chat channels and the gateway](#chat-channels-and-the-gateway)
-18. [Command-line interfaces](#command-line-interfaces)
-19. [Environment variables](#environment-variables)
-20. [Project layout](#project-layout)
-21. [Development](#development)
-22. [SoraPlatform](#soraplatform)
-23. [License](#license)
+8. [Built-in core tool pack](#built-in-core-tool-pack)
+9. [Lazy tool discovery](#lazy-tool-discovery)
+10. [Human approval](#human-approval)
+11. [Quality gate and evaluation](#quality-gate-and-evaluation)
+12. [Optional trajectory judge](#optional-trajectory-judge)
+13. [Clock](#clock)
+14. [Calendar](#calendar)
+15. [Session state](#session-state)
+16. [Identity (USER.md / SOUL.md)](#identity-usermd--soulmd)
+17. [Memory (CortexDB)](#memory-cortexdb)
+18. [Chat channels and the gateway](#chat-channels-and-the-gateway)
+19. [Command-line interfaces](#command-line-interfaces)
+20. [Environment variables](#environment-variables)
+21. [Project layout](#project-layout)
+22. [Development](#development)
+23. [SoraPlatform](#soraplatform)
+24. [License](#license)
 
 ---
 
@@ -281,7 +286,9 @@ command-line flag  >  environment variable  >  config file  >  built-in default
 ### An offline agent with approval and a quality report
 
 The `mock` provider returns canned turns so everything below runs without an API
-key. SoraAgent ships no business tools, so the example registers one locally.
+key. SoraAgent ships a core tool pack (file, shell, web, planning, code, and
+delegation tools); the example registers a domain-specific purchase-order tool
+locally to show the extension path.
 
 ```python
 from typing import Annotated
@@ -444,6 +451,7 @@ The layers are intentionally separable:
 | Pure loop | `sora_agent/runner.py` | Ask the provider, execute tool calls, feed observations back, stop on answer / budget / policy. Knows nothing about sessions, files, or the CLI. |
 | Providers | `sora_agent/providers.py` | `Message`, `ModelTurn`, `ToolCall`, `MockProvider`, `OpenAIChatProvider`, text-`ACTION:` parsing. |
 | Tools | `sora_agent/tools.py` | `Tool`, `ToolRegistry`, `ToolExecutor`, `ToolResult`, schema generation, the `@tool` decorator. |
+| Core tool pack | `sora_agent/toolpack/` | Hermes-style file, shell, web, planning, code-execution, and delegation tools. |
 | Attachments | `sora_agent/files.py` | Convert files and images into untrusted markdown carried in a user turn. |
 | Untrusted framing | `sora_agent/untrusted.py` | Random per-turn boundaries for attachment and vision text. |
 | Discovery | `sora_agent/tool_search.py` | `ToolGate`, `FindToolsTool`, two-tier lexical ranking with aliases and IDF weights. |
@@ -476,6 +484,7 @@ channel use.
 | `clock` | on (`default_clock`) | Current-time prompt section; `False` disables it. |
 | `calendar` | on (`default_calendar`) | Calendar store and tools; `False` disables them. |
 | `calendar_db` | `~/.sora_agent/calendar.db` | Calendar database path override. |
+| `delegate` | `True` | Wire a registered `delegate_task` tool to isolated child agents. |
 
 `memory`, `identity`, `clock`, and `calendar` are resolved at construction and
 fail open: a missing optional dependency, corrupt file, or bad configuration
@@ -691,6 +700,55 @@ result, in this order:
 `approved`, `executed`, `stopped`, `stop_reason`, `report`, `skipped`,
 `isolated`.
 
+## Built-in core tool pack
+
+`build_registry()` registers a small Hermes-style core pack when the `tools`
+feature is enabled.  Nothing in the pack is visible at the start of a run:
+`AgentRuntime` still exposes only `find_tools` (and `memory_recall` when memory
+is enabled), so every pack tool is reached through lexical tool search.
+
+| Tool | Purpose | Approval |
+| --- | --- | --- |
+| `read_file` | Read text with line numbers, `offset`, and `limit` | no |
+| `write_file` | Write a complete file, creating parents | yes |
+| `patch` | Targeted exact-text replacement | yes |
+| `search_files` | Regex content search or glob file search | no |
+| `terminal` | Run a shell command with timeout and capped output | yes |
+| `process_manage` | List/poll/log/wait/kill/write background processes | yes |
+| `web_search` | Search via Tavily, Brave, or `SORA_WEB_SEARCH_URL` | no |
+| `web_extract` | Fetch a public HTTP(S) page as readable text | no |
+| `todo_list` | Per-session task list | no |
+| `clarify` | Ask the user 1-5 questions when blocked | no |
+| `execute_code` | Run Python with a timeout | yes |
+| `delegate_task` | Run isolated child agents and return summaries | no |
+
+Behavior details:
+
+- `SORA_TOOLPACK=0` disables the pack; `features.tools` in the config file is
+  the persistent equivalent.  Recommended setup enables it; Advanced setup
+  leaves it off.
+- `SORA_TOOLPACK_ROOT` (or `SORA_WORKSPACE`) sets the workspace for file and
+  shell tools; the default is the process working directory.  File tools refuse
+  paths outside it unless `SORA_TOOLPACK_RESTRICT=0`.
+- `SORA_TOOLPACK_TERMINAL_TIMEOUT`, `SORA_TOOLPACK_CODE_TIMEOUT`,
+  `SORA_TOOLPACK_MAX_READ_BYTES`, `SORA_TOOLPACK_MAX_READ_CHARS`,
+  `SORA_TOOLPACK_MAX_WRITE_BYTES`, `SORA_TOOLPACK_MAX_TERMINAL_OUTPUT`,
+  `SORA_TOOLPACK_WEB_TIMEOUT`, `SORA_TOOLPACK_WEB_MAX_CHARS`, and
+  `SORA_TOOLPACK_ALLOW_PRIVATE_NETWORK` tune limits.
+- `web_extract` rejects loopback/private/reserved destinations and re-checks
+  redirects; `web_search` supports Tavily (`TAVILY_API_KEY`), Brave
+  (`BRAVE_SEARCH_API_KEY`), or a custom JSON endpoint (`SORA_WEB_SEARCH_URL`).
+- `clarify` uses a `ClarificationGate`: the terminal gets a simple prompt; chat
+  channels and headless library callers fail soft with an actionable
+  `undelivered` result until the caller supplies a gate.
+- `delegate_task` is wired by `Agent` (disable with `delegate=False`).  A child
+  agent gets the same provider and approval gate but no memory, identity,
+  clock, calendar, or delegation tool, so it cannot recurse or read the parent
+  conversation.
+- The pack never weakens the memory-recall-first rule or the approval gate.
+  Consequential tools are still marked `needs_approval`, and tool validation,
+  timeouts, truncation, and audit logging are unchanged.
+
 ## Lazy tool discovery
 
 The initial tool list is intentionally partial. At the start of a run the model
@@ -868,9 +926,12 @@ Treat this as the authoritative current time. ...
 ```
 
 - Enabled by default for `Agent` and `ChatHandler`; disable with `clock=False`.
-- The section is always ordered last: after the base prompt, identity, and
-  state. The identity/state wrappers use `extract_clock`/`append_clock` to
-  preserve that ordering no matter which order wrappers are composed in.
+- The section is always the final message: the order is base prompt, identity,
+  conversation, state, then the clock.  The identity/state wrappers use
+  `extract_clock`/`append_clock` to preserve that ordering no matter which order
+  wrappers are composed in.  Keeping the dynamic clock after the conversation
+  (instead of before the user turn) preserves the provider prefix cache for the
+  static prompt and all prior turns.
 - `resolve_clock` accepts `False`, `True`/`None`/`"default"`, a fixed
   `datetime` (useful in tests), or any callable returning a datetime. A broken
   clock fails open and never breaks a turn.
@@ -1566,6 +1627,7 @@ Command-line flags override all of these. The same precedence applies to
 | `SORA_MEMORY`, `SORA_MEMORY_ROOT`, and all `SORA_MEMORY_*` knobs | Memory | on, `~/.sora_agent` |
 | `SORA_CALENDAR_DB` | Calendar | `~/.sora_agent/calendar.db` |
 | `SORA_SESSIONS_ROOT` | Chat sessions | `~/.sora_agent/sessions` |
+| `SORA_TOOLPACK`, `SORA_TOOLPACK_ROOT`, and all `SORA_TOOLPACK_*` knobs | Core tool pack | on, process cwd |
 | `SORA_TELEGRAM_*` | Telegram channel | token required; deny-all allow list |
 | `SORA_TELEGRAM_DOWNLOAD_FILES`, `SORA_TELEGRAM_MAX_ATTACHMENT_BYTES` | Telegram attachments | on, 20 MB |
 
@@ -1606,6 +1668,7 @@ SoraAgent/
     ├── net.py                  # shared HTTPS/CA-bundle helper
     ├── tools.py                # Tool, ToolRegistry, ToolExecutor, ToolResult, @tool
     ├── tool_search.py          # ToolGate, FindToolsTool, two-tier lexical ranking
+    ├── toolpack/               # core file, shell, web, planning, code, delegation tools
     ├── isolation.py            # spawned-process tool isolation with real timeouts
     ├── approval.py             # ApprovalGate + AuditEntry
     ├── eval.py                 # Trajectory, EvalReport, QualityGate, structural grader

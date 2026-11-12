@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ..agent import MEMORY_POLICY, TOOLS_POLICY
+from ..approval import ApprovalGate
 from ..calendar import register_calendar_tools, resolve_calendar
 from ..clock import wrap_clock
 from ..context import trim_messages
@@ -36,6 +37,14 @@ from .types import (
 )
 
 log = logging.getLogger(__name__)
+
+
+class _DenyApprovalGate(ApprovalGate):
+    """Fail closed for a child agent with no chat approval surface."""
+
+    def request(self, action: str, detail: str) -> bool:
+        return False
+
 
 CHAT_SYSTEM_PROMPT = (
     "You are a careful assistant talking with a user over a chat channel. "
@@ -186,13 +195,13 @@ class ChatHandler:
         context_window: int | None = None,
         streaming: bool = True,
         file_understander: Any = None,
+        delegate: bool = True,
     ) -> None:
         self.provider = provider
         self.registry = registry or ToolRegistry()
         if self.registry.has(FIND_TOOLS_NAME):
             raise ValueError(
-                f"the tool name {FIND_TOOLS_NAME!r} is reserved for lazy "
-                "tool discovery"
+                f"the tool name {FIND_TOOLS_NAME!r} is reserved for lazy tool discovery"
             )
         self.memory = memory
         self.identity = None if identity is False else identity
@@ -207,9 +216,7 @@ class ChatHandler:
             self.quality = quality
         self.file_understander = file_understander
         self.context_window = (
-            max(1_000, int(context_window))
-            if context_window is not None
-            else None
+            max(1_000, int(context_window)) if context_window is not None else None
         )
         self.max_steps = max(1, int(max_steps))
         self.max_turns = max(0, int(max_turns))
@@ -225,6 +232,10 @@ class ChatHandler:
             self._attach_identity(self.identity, memory)
             self.provider = wrap_identity(self.identity, provider)
         self.provider = wrap_clock(self.provider, clock)
+        self.delegate = bool(delegate)
+        self._delegate_context = threading.local()
+        if self.delegate:
+            self._wire_delegation()
         self.calendar = self._resolve_calendar(calendar, calendar_db)
         if self.calendar is not None:
             try:
@@ -335,9 +346,7 @@ class ChatHandler:
         report = None
         efficiency = None
         if self.quality is not None:
-            trajectory = trajectory_from_run(
-                inbound.content, run, final_answer=reply
-            )
+            trajectory = trajectory_from_run(inbound.content, run, final_answer=reply)
             report = self.quality.evaluate(trajectory)
             efficiency = trajectory_metrics(trajectory)
         with self._lock:
@@ -439,9 +448,7 @@ class ChatHandler:
                 f"{efficiency.attempted_tool_calls}"
             )
             if efficiency.redundant_call_rate:
-                extras.append(
-                    f"redundant {efficiency.redundant_call_rate:.0%}"
-                )
+                extras.append(f"redundant {efficiency.redundant_call_rate:.0%}")
         if report is not None:
             if report.error:
                 extras.append("eval error")
@@ -463,9 +470,7 @@ class ChatHandler:
     def reset(self, session_key: str) -> None:
         """Forget one conversation, on disk as well as in memory."""
         with self._lock:
-            self._generations[session_key] = (
-                self._generations.get(session_key, 0) + 1
-            )
+            self._generations[session_key] = self._generations.get(session_key, 0) + 1
         self.cancel(session_key)
         with self._lock:
             self._history.pop(session_key, None)
@@ -546,6 +551,51 @@ class ChatHandler:
             context[:limit]
             + "\n\n[... attachment context truncated to fit the context window ...]"
         )
+
+    def _wire_delegation(self) -> None:
+        if not self.registry.has("delegate_task"):
+            return
+        tool = self.registry.get("delegate_task")
+        runtime = getattr(tool, "delegation_runtime", None)
+        if runtime is not None:
+            runtime.runner = self._delegate_task
+
+    def _delegate_task(self, goal: str) -> str:
+        if not str(goal or "").strip():
+            return "error: delegation goal must not be empty"
+        inbound = getattr(self._delegate_context, "inbound", None)
+        if self.approval_gate is not None:
+            approval = self.approval_gate
+        elif self.approvals is not None and inbound is not None:
+            approval = self.approvals.gate(inbound)
+        else:
+            approval = _DenyApprovalGate()
+        child_registry = ToolRegistry()
+        for tool in self.registry.all():
+            if tool.name == "delegate_task":
+                continue
+            child_registry.add(tool)
+        from ..agent import Agent
+
+        child = Agent(
+            provider=self.provider,
+            registry=child_registry,
+            approval=approval,
+            memory=False,
+            identity=False,
+            clock=False,
+            calendar=False,
+            max_steps=max(1, min(8, self.max_steps)),
+            max_tool_result_chars=self.max_tool_result_chars,
+            tool_timeout=self.tool_timeout,
+            provider_retries=self.provider_retries,
+            delegate=False,
+        )
+        try:
+            result = child.run(str(goal))
+        except Exception as exc:  # noqa: BLE001 - delegation is best effort
+            return f"error: subagent failed: {exc}"
+        return result.final_answer or result.proposal or "subagent produced no answer"
 
     @staticmethod
     def _resolve_calendar(calendar: Any, calendar_db: Any = None) -> Any:

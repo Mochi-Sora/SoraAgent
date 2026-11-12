@@ -310,5 +310,5 @@ def test_identity_and_state_wrappers_compose_in_either_order(
         sent = base.calls[-1]
         assert sent[0].content == "BASE"
         assert sent[1].content.startswith("## PERSISTENT USER PROFILE")
-        assert sent[2].content.startswith("## SESSION STATE PROTOCOL")
-        assert sent[3].content == "goal"
+        assert sent[2].content == "goal"
+        assert sent[3].content.startswith("## SESSION STATE PROTOCOL")

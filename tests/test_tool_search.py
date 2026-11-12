@@ -8,6 +8,7 @@ import pytest
 
 from sora_agent.agent import Agent
 from sora_agent.approval import ApprovalGate
+from sora_agent.clock import strip_clock
 from sora_agent.eval import EvalReport, QualityGate
 from sora_agent.providers import Message, MockProvider, ModelTurn, ToolCall
 from sora_agent.runner import Runner, RunSpec
@@ -77,9 +78,7 @@ class RecordingProvider:
     def complete_turn(self, messages, tools) -> ModelTurn:
         self.calls.append(list(messages))
         self.tools.append([getattr(tool, "name", "") for tool in tools])
-        self.schemas.append(
-            [getattr(tool, "schema", {}) for tool in tools]
-        )
+        self.schemas.append([getattr(tool, "schema", {}) for tool in tools])
         return self.turns.pop(0)
 
 
@@ -153,7 +152,7 @@ def test_gate_hides_everything_except_always_visible() -> None:
     assert gate.unlock(["expedite_order"]) == []
 
 
-def test_catalog_shrinks_after_unlock() -> None:
+def test_catalog_stays_stable_after_unlock() -> None:
     registry = order_registry()
     gate, _find = discovery_gate(registry)
 
@@ -164,7 +163,8 @@ def test_catalog_shrinks_after_unlock() -> None:
     gate.unlock(["expedite_order"])
     after = gate.catalog()
 
-    assert "`expedite_order`" not in after
+    assert after == before
+    assert "`expedite_order`" in after
     assert "`lookup_order`" in after
 
 
@@ -183,20 +183,21 @@ def test_ranking_uses_tool_aliases() -> None:
     ranked = LexicalRanker().rank("book a meeting", registry.all(), 8)
 
     assert ranked and ranked[0].tool.name == "calendar_add_event"
-    assert score_need(
-        "book a meeting",
-        "calendar_add_event",
-        "Add an event to the calendar.",
-        aliases=("meeting", "appointment"),
-    ) >= MIN_SCORE
+    assert (
+        score_need(
+            "book a meeting",
+            "calendar_add_event",
+            "Add an event to the calendar.",
+            aliases=("meeting", "appointment"),
+        )
+        >= MIN_SCORE
+    )
 
 
 def test_catalog_is_capped() -> None:
     registry = ToolRegistry()
     for index in range(65):
-        registry.add(
-            Tool(lambda: "", f"tool_{index:02d}", f"Tool number {index}.")
-        )
+        registry.add(Tool(lambda: "", f"tool_{index:02d}", f"Tool number {index}."))
     gate = ToolGate(registry)
     catalog = gate.catalog()
 
@@ -310,7 +311,7 @@ def test_catalog_lives_only_in_find_tools_schema() -> None:
 
     schemas = {tool.name: tool.schema for tool in visible}
     assert "`lookup_order`" in schemas[FIND_TOOLS_NAME]["description"]
-    assert "Not loaded yet" in schemas[FIND_TOOLS_NAME]["description"]
+    assert "Tool catalog" in schemas[FIND_TOOLS_NAME]["description"]
     for name, schema in schemas.items():
         if name != FIND_TOOLS_NAME:
             assert "Not loaded yet" not in schema["description"]
@@ -370,14 +371,13 @@ def test_agent_exposes_only_find_tools_and_memory_recall_first() -> None:
     assert result.steps[0].results[0].call.name == "memory_recall"
     # Memory content arrives only through the tool result, never preloaded.
     assert not any(
-        "memory for PO-1" in message.content
-        for message in provider.calls[0]
+        "memory for PO-1" in message.content for message in provider.calls[0]
     )
-    assert provider.calls[1][-1].role == "tool"
-    assert "memory for PO-1" in provider.calls[1][-1].content
+    assert strip_clock(provider.calls[1])[-1].role == "tool"
+    assert "memory for PO-1" in strip_clock(provider.calls[1])[-1].content
 
 
-def test_agent_catalog_shrinks_in_the_next_schema() -> None:
+def test_agent_catalog_stays_stable_in_the_next_schema() -> None:
     memory = FakeMemory()
     registry = order_registry()
     registry.add(
@@ -420,19 +420,16 @@ def test_agent_catalog_shrinks_in_the_next_schema() -> None:
     agent.run("Expedite PO-1.")
 
     first_find = next(
-        schema
-        for schema in provider.schemas[0]
-        if schema["name"] == FIND_TOOLS_NAME
+        schema for schema in provider.schemas[0] if schema["name"] == FIND_TOOLS_NAME
     )
     next_find = next(
-        schema
-        for schema in provider.schemas[2]
-        if schema["name"] == FIND_TOOLS_NAME
+        schema for schema in provider.schemas[2] if schema["name"] == FIND_TOOLS_NAME
     )
     assert "`expedite_order`" in first_find["description"]
     assert "`memory_recall`" not in first_find["description"]
     assert "`find_tools`" not in first_find["description"]
-    assert "`expedite_order`" not in next_find["description"]
+    assert "`expedite_order`" in next_find["description"]
+    assert first_find["description"] == next_find["description"]
     assert "`send_email`" in next_find["description"]
 
 
@@ -546,8 +543,8 @@ def test_agent_rejects_direct_answer_and_stops_after_two_corrections() -> None:
     assert len(result.steps) == 3
     assert len(provider.calls) == 3
     for call in provider.calls[1:]:
-        assert call[-1].role == "user"
-        assert "first action must be `memory_recall`" in call[-1].content
+        assert strip_clock(call)[-1].role == "user"
+        assert "first action must be `memory_recall`" in strip_clock(call)[-1].content
     assert all(step.tools[:1] == ["memory_recall"] for step in result.steps)
 
 
@@ -652,9 +649,7 @@ def test_agent_executes_recall_and_skips_other_calls_in_the_same_turn() -> None:
     assert result.steps[0].results[0].executed is True
     assert result.steps[0].results[1].executed is False
     assert result.steps[0].results[1].skipped is True
-    assert "must complete before other tools" in (
-        result.steps[0].results[1].content
-    )
+    assert "must complete before other tools" in (result.steps[0].results[1].content)
     assert result.action == "memory_recall"
 
 
@@ -750,9 +745,7 @@ def test_runner_skips_extra_calls_after_required_recall() -> None:
         "business",
     ]
     assert run.steps[0].results[1].skipped is True
-    assert "must complete before other tools" in (
-        run.steps[0].results[1].content
-    )
+    assert "must complete before other tools" in (run.steps[0].results[1].content)
 
 
 def test_step_records_the_visible_tool_set_from_the_provider() -> None:
@@ -946,9 +939,7 @@ def test_explicit_load_is_capped_per_call() -> None:
         )
     gate, find = discovery_gate(registry)
 
-    result = find.call(
-        load=[f"order_tool_{index:02d}" for index in range(5)]
-    )
+    result = find.call(load=[f"order_tool_{index:02d}" for index in range(5)])
 
     assert len(gate.visible_names()) == LOAD_LIMIT + 1
     assert f"Not loaded (max {LOAD_LIMIT} per call)" in result
@@ -957,9 +948,7 @@ def test_explicit_load_is_capped_per_call() -> None:
 def test_visible_tool_budget_caps_the_run() -> None:
     registry = ToolRegistry()
     for index in range(20):
-        registry.add(
-            Tool(lambda: "", f"tool_{index:02d}", f"Tool number {index}.")
-        )
+        registry.add(Tool(lambda: "", f"tool_{index:02d}", f"Tool number {index}."))
     gate, find = discovery_gate(registry)
 
     result = ""
@@ -975,11 +964,7 @@ def test_visible_tool_budget_caps_the_run() -> None:
 
 
 def test_quality_report_does_not_block_business_actions_after_recall() -> None:
-    quality = QualityGate(
-        lambda trajectory: EvalReport(
-            False, 0.0, ["advisory only"]
-        )
-    )
+    quality = QualityGate(lambda trajectory: EvalReport(False, 0.0, ["advisory only"]))
     provider = RecordingProvider(
         [
             ModelTurn(

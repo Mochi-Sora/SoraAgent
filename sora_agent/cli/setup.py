@@ -252,6 +252,7 @@ def _show_recommended_settings(
         [
             ("Memory", "Full architecture, including CortexDB sidecar"),
             ("Files", "On — attachments become markdown (20 MB max)"),
+            ("Core tools", "On — file, shell, web, planning, code, delegation"),
             ("Identity", "On"),
             ("Clock", "On"),
             ("Calendar", "On"),
@@ -357,6 +358,7 @@ def _advanced_review(settings: Settings, secrets: dict[str, str]) -> None:
                 ("Agent name, icon, personality, temperature", "agent"),
                 ("Memory", "memory"),
                 ("Files and images", "files"),
+                ("Core tool pack", "tools"),
                 ("Identity", "identity"),
                 ("Clock and calendar", "clock"),
                 ("Sessions", "sessions"),
@@ -380,6 +382,7 @@ def _advanced_review(settings: Settings, secrets: dict[str, str]) -> None:
             "agent": lambda: _configure_agent(settings, minimal=False),
             "memory": lambda: _configure_memory(settings),
             "files": lambda: _configure_files(settings),
+            "tools": lambda: _configure_tools(settings),
             "identity": lambda: _configure_identity(settings),
             "clock": lambda: _configure_clock_calendar(settings),
             "sessions": lambda: _configure_sessions(settings),
@@ -400,6 +403,7 @@ def _advanced_final_confirmation(settings: Settings) -> None:
             f"Quality:  {'OFF' if not settings.features.quality else 'ON'}",
             f"Memory:   {'ON' if settings.features.memory.enabled else 'OFF'}",
             f"Files:    {'ON' if settings.features.files.enabled else 'OFF'}",
+            f"Tools:    {'ON' if settings.features.tools else 'OFF'}",
             f"Identity: {'ON' if settings.features.identity else 'OFF'}",
             "",
             "This is the configuration that will be written to disk.",
@@ -900,6 +904,23 @@ def _configure_files(settings: Settings) -> None:
     files.vision_model = model.strip() or None
 
 
+def _configure_tools(settings: Settings) -> None:
+    ui.section(
+        "Core tool pack",
+        "File, shell, web, planning, code-execution, and delegation tools. "
+        "Every tool is hidden behind find_tools. Writes, shell commands, and "
+        "code execution still require approval.",
+    )
+    settings.features.tools = prompts.confirm(
+        "Enable the built-in core tool pack?", default=settings.features.tools
+    )
+    if not settings.features.tools:
+        ui.warning(
+            "Core tools are off. The agent will only have tools that your "
+            "deployment registers itself."
+        )
+
+
 def _configure_identity(settings: Settings) -> None:
     ui.section(
         "Identity",
@@ -1113,6 +1134,7 @@ def _show_advanced_settings(
     ui.kv_table(
         "Subsystems",
         [
+            ("Core tools", "On" if settings.features.tools else "Off"),
             ("Identity", "On" if settings.features.identity else "Off"),
             ("Clock", "On" if settings.features.clock else "Off"),
             ("Calendar", "On" if settings.features.calendar else "Off"),

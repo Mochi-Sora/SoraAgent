@@ -34,7 +34,9 @@ from .settings import (
     load_settings,
 )
 
-_OPENAI_COMPATIBLE = frozenset({"openai", "azure", "deepseek", "ds", "qwen", "dashscope", "custom"})
+_OPENAI_COMPATIBLE = frozenset(
+    {"openai", "azure", "deepseek", "ds", "qwen", "dashscope", "custom"}
+)
 
 
 def load_runtime(
@@ -63,7 +65,7 @@ def desktop_settings() -> Settings:
     The desktop app should feel like an assistant even before ``sora setup``:
     memory, identity, files, sessions, the clock/calendar, and streaming are on,
     while the provider stays offline (``mock``) until the user configures a real
-    model.  No business tools are registered; the desktop registers its own.
+    model.  The core tool pack is enabled; the desktop may register more.
     """
     settings = legacy_settings()
     settings.features.memory = MemorySettings()
@@ -143,9 +145,7 @@ def build_provider(
         timeout
         if timeout is not None
         else (
-            env_timeout
-            if env_timeout is not None
-            else settings.limits.provider_timeout
+            env_timeout if env_timeout is not None else settings.limits.provider_timeout
         )
     )
 
@@ -201,11 +201,7 @@ def resolve_api_key(
         "dashscope": "qwen",
     }.get(kind, kind)
     env_name = key_env(catalog_kind)
-    return (
-        os.getenv(env_name, "").strip()
-        or secrets.get(env_name, "").strip()
-        or ""
-    )
+    return os.getenv(env_name, "").strip() or secrets.get(env_name, "").strip() or ""
 
 
 def build_identity(settings: Settings, *, enabled: bool | None = None) -> Any:
@@ -213,9 +209,7 @@ def build_identity(settings: Settings, *, enabled: bool | None = None) -> Any:
     from .identity import default_identity
 
     return default_identity(
-        enabled=(
-            bool(settings.features.identity) if enabled is None else enabled
-        ),
+        enabled=(bool(settings.features.identity) if enabled is None else enabled),
         root=settings.paths.identity_root,
     )
 
@@ -239,16 +233,42 @@ def build_sessions(settings: Settings) -> Any:
     return SessionStore(Path(root).expanduser() if root else None)
 
 
-def build_registry(settings: Settings) -> Any:
+def build_registry(
+    settings: Settings,
+    *,
+    clarify_gate: Any = None,
+    delegate_runner: Any = None,
+) -> Any:
     """Return the runtime tool registry.
 
-    SoraAgent ships no built-in business tools; callers register their own on
-    the returned registry.  Calendar tools are added by ``Agent`` when the
-    calendar feature is enabled.
+    The built-in Hermes-style core pack is registered when the ``tools``
+    feature is enabled (``SORA_TOOLPACK=0`` overrides it).  Every pack tool is
+    a hidden registry entry: ``AgentRuntime`` still exposes only
+    ``find_tools`` first, so the model reaches them through tool search.
+    Calendar tools are added later by ``Agent`` when calendar is enabled.
     """
     from .tools import ToolRegistry
 
-    return ToolRegistry()
+    registry = ToolRegistry()
+    if not feature_enabled(settings, "tools", "SORA_TOOLPACK"):
+        return registry
+    from .toolpack import ToolPackConfig, register_core_tools
+
+    if clarify_gate is None:
+        import sys
+
+        stdin = getattr(sys, "stdin", None)
+        if stdin is not None and stdin.isatty():
+            from .toolpack.planning import ConsoleClarificationGate
+
+            clarify_gate = ConsoleClarificationGate()
+    register_core_tools(
+        registry,
+        ToolPackConfig.from_env(),
+        clarify_gate=clarify_gate,
+        delegate_runner=delegate_runner,
+    )
+    return registry
 
 
 def build_memory(
@@ -329,14 +349,10 @@ def build_file_understander(
 
     return FileUnderstander(
         enabled=True,
-        max_file_bytes=(
-            files.max_file_bytes if max_bytes is None else max_bytes
-        ),
+        max_file_bytes=(files.max_file_bytes if max_bytes is None else max_bytes),
         max_chars=files.max_chars if max_chars is None else max_chars,
         total_max_chars=(
-            files.total_max_chars
-            if total_max_chars is None
-            else total_max_chars
+            files.total_max_chars if total_max_chars is None else total_max_chars
         ),
         vision=vision,
     )
@@ -378,9 +394,7 @@ def _vision_base_url(settings: Settings, kind: str) -> str | None:
     return None
 
 
-def _vision_api_key(
-    settings: Settings, secrets: Mapping[str, str], kind: str
-) -> str:
+def _vision_api_key(settings: Settings, secrets: Mapping[str, str], kind: str) -> str:
     explicit = os.getenv("SORA_VISION_API_KEY", "").strip()
     if explicit:
         return explicit

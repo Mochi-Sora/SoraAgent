@@ -22,10 +22,12 @@ from .tool_search import (
     ToolGate,
     ToolRanker,
 )
+from .toolpack import CORE_TOOL_NAMES, ToolPackConfig, register_core_tools
 from .tools import ToolExecutor, ToolRegistry, ToolResult
 
 __all__ = [
     "CLOCK_HEADING",
+    "CORE_TOOL_NAMES",
     "FIND_TOOLS_NAME",
     "IMPORTANCE_LEVELS",
     "Agent",
@@ -49,6 +51,7 @@ __all__ = [
     "ToolCall",
     "ToolExecutor",
     "ToolGate",
+    "ToolPackConfig",
     "ToolRanker",
     "ToolRegistry",
     "ToolResult",
@@ -56,6 +59,7 @@ __all__ = [
     "default_calendar",
     "default_identity",
     "register_calendar_tools",
+    "register_core_tools",
     "wrap_clock",
 ]
-__version__ = "0.1.1"
+__version__ = "0.1.2"

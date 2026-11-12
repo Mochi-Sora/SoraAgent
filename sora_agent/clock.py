@@ -5,9 +5,12 @@ timestamps are transport metadata rather than model context.  This module
 appends one small, per-turn ``## CURRENT TIME`` section to the system prompt so
 the model can resolve "today", "tomorrow", and relative deadlines.
 
-The section is appended *after* every other system section.  The identity and
-state wrappers use :func:`extract_clock` / :func:`append_clock` to keep that
-ordering even when wrappers are composed in a different order.
+The section is appended as the **final** message, after the conversation
+history, rather than between the static system prompt and the user turn.  This
+keeps the whole static prefix and every previous turn byte-for-byte stable for
+provider prefix caching; only the trailing clock changes between calls.  The
+identity and state wrappers use :func:`extract_clock` / :func:`append_clock` to
+keep the clock last no matter which order wrappers are composed in.
 """
 
 from __future__ import annotations
@@ -100,21 +103,21 @@ def strip_clock(messages: Sequence[Any]) -> list[Any]:
 
 
 def append_clock(messages: Sequence[Any], section: str) -> list[Any]:
-    """Append a clock section after the leading system-message block."""
+    """Append the clock as the final message.
+
+    Dynamic content belongs at the tail of the request.  Inserting it before
+    the user turn would make the entire conversation history a different token
+    prefix on every call, defeating provider prompt caching.
+    """
     if not section:
         return list(messages)
     augmented = list(messages)
-    insert_at = 0
-    for index, message in enumerate(augmented):
-        if getattr(message, "role", "") != "system":
-            break
-        insert_at = index + 1
-    augmented.insert(insert_at, Message("system", section))
+    augmented.append(Message("system", section))
     return augmented
 
 
 def with_clock(messages: Sequence[Any], now: datetime | None = None) -> list[Any]:
-    """Replace any existing clock and append a fresh section at the end."""
+    """Replace any existing clock and append a fresh trailing section."""
     return append_clock(strip_clock(messages), clock_section(now))
 
 

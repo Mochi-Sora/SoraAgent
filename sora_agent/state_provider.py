@@ -1,10 +1,10 @@
 """Optional adapter that makes any ModelProvider state-aware.
 
 This is the only file that connects the self-contained state subsystem to the
-rest of SoraAgent. It wraps a provider, appends the session state to the *end*
-of the system prompt (preserving the static prefix for prompt caching), extracts
-state edits from responses, and runs the bounded deterministic repair loop.  If
-a clock section is already present it stays last, behind the state.
+rest of SoraAgent. It wraps a provider, appends the session state after the
+conversation history (preserving the cached prefix), extracts state edits from
+responses, and runs the bounded deterministic repair loop.  The clock remains
+the final message, behind the state, so the cached prefix stays stable.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .clock import append_clock, extract_clock, strip_clock
+from .identity import STATE_HEADING
 from .providers import (
     Message,
     ModelProvider,
@@ -144,20 +145,23 @@ class StatefulProvider:
     def _with_state(
         messages: list[Message], section: str
     ) -> list[Message]:
-        """Insert the state as the final system message, before the clock.
+        """Append the state after the conversation, before the clock.
 
-        The original system messages are left byte-for-byte untouched so their
-        cached prefix remains valid. Later static system content can be added
-        before this trailing state message. If a clock section is already
-        present it is moved behind the state so it stays last.
+        Dynamic sections belong at the tail of the request.  Inserting state
+        before the user turn would make the entire conversation a different
+        token prefix on every state change, defeating provider prompt caching.
         """
         clock = extract_clock(messages)
         augmented = strip_clock(messages)
-        insert_at = 0
-        for index, message in enumerate(augmented):
-            if getattr(message, "role", "") == "system":
-                insert_at = index + 1
-            else:
-                break
-        augmented.insert(insert_at, Message("system", section))
-        return append_clock(augmented, clock)
+        cleaned: list[Message] = []
+        for message in augmented:
+            if (
+                getattr(message, "role", "") == "system"
+                and str(getattr(message, "content", "")).startswith(
+                    STATE_HEADING
+                )
+            ):
+                continue
+            cleaned.append(message)
+        cleaned.append(Message("system", section))
+        return append_clock(cleaned, clock)

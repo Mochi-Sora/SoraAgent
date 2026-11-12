@@ -104,8 +104,8 @@ def test_chat_history_survives_a_new_handler(tmp_path):
     assert second.handle(_inbound("two")) == "ok"
 
     roles = [message.role for message in provider.calls[-1]]
-    assert roles == ["system", "system", "user", "assistant", "user"]
-    assert provider.calls[-1][2].content == "one"
+    assert roles == ["system", "user", "assistant", "user", "system"]
+    assert provider.calls[-1][1].content == "one"
 
 
 def test_reset_clears_persisted_history(tmp_path):

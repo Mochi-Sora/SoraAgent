@@ -18,6 +18,63 @@ from typing import Any, Callable
 
 _DAY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.db$")
 _TOKEN_RE = re.compile(r"\w{2,}", re.UNICODE)
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "about",
+        "all",
+        "an",
+        "and",
+        "any",
+        "are",
+        "as",
+        "at",
+        "be",
+        "can",
+        "could",
+        "did",
+        "do",
+        "does",
+        "for",
+        "from",
+        "get",
+        "give",
+        "how",
+        "i",
+        "in",
+        "is",
+        "it",
+        "me",
+        "my",
+        "need",
+        "of",
+        "on",
+        "or",
+        "our",
+        "please",
+        "should",
+        "show",
+        "some",
+        "tell",
+        "that",
+        "the",
+        "this",
+        "to",
+        "was",
+        "we",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "with",
+        "would",
+        "you",
+        "your",
+    }
+)
 _FTS_VERSION = 1
 
 _SCHEMA = """
@@ -127,7 +184,7 @@ class DailyStore:
             return int(row_id)
 
     def search(self, query: str, k: int = 8, days: int = 2) -> list[DailyHit]:
-        tokens = _tokens(query)[:16]
+        tokens = [token for token in _tokens(query) if token not in _STOPWORDS][:16]
         if not tokens:
             return []
         limit = max(1, min(int(k), 50))
@@ -149,35 +206,39 @@ class DailyStore:
     ) -> list[DailyHit]:
         path = self.path_for(day)
         with self._open(path) as conn:
-            if self._has_fts(conn) and all(
-                token.isascii() for token in tokens
-            ):
-                expr = " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens[:16])
-                try:
-                    rows = conn.execute(
-                        """
-                        SELECT m.id, m.ts, m.role, m.content, bm25(messages_fts) AS rank
-                        FROM messages_fts
-                        JOIN messages m ON m.id = messages_fts.rowid
-                        WHERE messages_fts MATCH ?
-                        ORDER BY rank
-                        LIMIT ?
-                        """,
-                        (expr, limit),
-                    ).fetchall()
-                    return [
-                        DailyHit(
-                            day=day,
-                            message_id=int(row[0]),
-                            ts=str(row[1]),
-                            role=str(row[2]),
-                            content=str(row[3]),
-                            score=-float(row[4]),
-                        )
-                        for row in rows
-                    ]
-                except sqlite3.OperationalError:
-                    pass
+            if self._has_fts(conn) and all(token.isascii() for token in tokens):
+                quoted = ['"' + token.replace('"', '""') + '"' for token in tokens[:16]]
+                expressions = [
+                    " AND ".join(quoted),
+                    " OR ".join(quoted),
+                ]
+                for expr in expressions:
+                    try:
+                        rows = conn.execute(
+                            """
+                            SELECT m.id, m.ts, m.role, m.content, bm25(messages_fts) AS rank
+                            FROM messages_fts
+                            JOIN messages m ON m.id = messages_fts.rowid
+                            WHERE messages_fts MATCH ?
+                            ORDER BY rank
+                            LIMIT ?
+                            """,
+                            (expr, limit),
+                        ).fetchall()
+                    except sqlite3.OperationalError:
+                        continue
+                    if rows:
+                        return [
+                            DailyHit(
+                                day=day,
+                                message_id=int(row[0]),
+                                ts=str(row[1]),
+                                role=str(row[2]),
+                                content=str(row[3]),
+                                score=-float(row[4]) + day.toordinal() * 1e-6,
+                            )
+                            for row in rows
+                        ]
             return self._search_like(conn, day, tokens, limit)
 
     def _search_like(
@@ -206,7 +267,7 @@ class DailyStore:
                 ts=str(row[1]),
                 role=str(row[2]),
                 content=str(row[3]),
-                score=float(len(tokens)),
+                score=float(len(tokens)) + day.toordinal() * 1e-6,
             )
             for row in rows
         ]
@@ -313,20 +374,15 @@ class DailyStore:
         conn.executescript(_SCHEMA)
         if self.use_fts:
             try:
-                version = int(
-                    conn.execute("PRAGMA user_version").fetchone()[0]
-                )
+                version = int(conn.execute("PRAGMA user_version").fetchone()[0])
                 conn.executescript(_FTS_SCHEMA)
                 if version < _FTS_VERSION:
                     # Backfill rows written before FTS (or its triggers)
                     # existed, then remember that the index is current.
                     conn.execute(
-                        "INSERT INTO messages_fts(messages_fts) "
-                        "VALUES('rebuild')"
+                        "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')"
                     )
-                    conn.execute(
-                        f"PRAGMA user_version = {_FTS_VERSION}"
-                    )
+                    conn.execute(f"PRAGMA user_version = {_FTS_VERSION}")
             except sqlite3.OperationalError:
                 self.use_fts = False
         return conn

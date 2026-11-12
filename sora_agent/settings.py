@@ -76,7 +76,10 @@ def _as_bool(value: Any, default: bool) -> bool:
 
 
 def _as_int(
-    value: Any, default: int, *, minimum: int | None = None,
+    value: Any,
+    default: int,
+    *,
+    minimum: int | None = None,
     maximum: int | None = None,
 ) -> int:
     if value is None or value == "":
@@ -93,7 +96,10 @@ def _as_int(
 
 
 def _as_float(
-    value: Any, default: float, *, minimum: float | None = None,
+    value: Any,
+    default: float,
+    *,
+    minimum: float | None = None,
     maximum: float | None = None,
 ) -> float:
     if value is None or value == "":
@@ -193,12 +199,8 @@ class ProviderSettings:
 
     def __post_init__(self) -> None:
         self.kind = self.kind.strip().lower() or "openai"
-        self.temperature = _as_float(
-            self.temperature, 0.7, minimum=0.0, maximum=2.0
-        )
-        self.context_window = _as_int(
-            self.context_window, 272_000, minimum=1_000
-        )
+        self.temperature = _as_float(self.temperature, 0.7, minimum=0.0, maximum=2.0)
+        self.context_window = _as_int(self.context_window, 272_000, minimum=1_000)
         self.base_url = _as_optional_str(self.base_url)
 
     @classmethod
@@ -231,22 +233,14 @@ class MemorySettings:
     sidecar_start_timeout: float = 20.0
 
     def __post_init__(self) -> None:
-        self.recall_top_k = _as_int(
-            self.recall_top_k, 8, minimum=1, maximum=50
-        )
-        self.recall_max_chars = _as_int(
-            self.recall_max_chars, 6000, minimum=200
-        )
+        self.recall_top_k = _as_int(self.recall_top_k, 8, minimum=1, maximum=50)
+        self.recall_max_chars = _as_int(self.recall_max_chars, 6000, minimum=200)
         mode = str(self.retrieval_mode or "auto").strip().lower()
         if mode not in {"auto", "lexical", "graph", "ppr"}:
             mode = "auto"
         self.retrieval_mode = mode
-        self.dream_hour_utc = _as_int(
-            self.dream_hour_utc, 0, minimum=0, maximum=23
-        )
-        self.dream_rounds = _as_int(
-            self.dream_rounds, 2, minimum=1, maximum=20
-        )
+        self.dream_hour_utc = _as_int(self.dream_hour_utc, 0, minimum=0, maximum=23)
+        self.dream_rounds = _as_int(self.dream_rounds, 2, minimum=1, maximum=20)
         self.sidecar_start_timeout = _as_float(
             self.sidecar_start_timeout, 20.0, minimum=1.0
         )
@@ -259,9 +253,7 @@ class MemorySettings:
         return cls(
             enabled=_as_bool(raw.get("enabled"), base.enabled),
             sidecar=_as_bool(raw.get("sidecar"), base.sidecar),
-            auto_download=_as_bool(
-                raw.get("auto_download"), base.auto_download
-            ),
+            auto_download=_as_bool(raw.get("auto_download"), base.auto_download),
             dream=_as_bool(raw.get("dream"), base.dream),
             backup=_as_bool(raw.get("backup"), base.backup),
             wake=_as_bool(raw.get("wake"), base.wake),
@@ -269,18 +261,10 @@ class MemorySettings:
             recall_max_chars=_as_int(
                 raw.get("recall_max_chars"), base.recall_max_chars
             ),
-            retrieval_mode=_as_str(
-                raw.get("retrieval_mode"), base.retrieval_mode
-            ),
-            dream_hour_utc=_as_int(
-                raw.get("dream_hour_utc"), base.dream_hour_utc
-            ),
-            dream_rounds=_as_int(
-                raw.get("dream_rounds"), base.dream_rounds
-            ),
-            sidecar_version=_as_str(
-                raw.get("sidecar_version"), base.sidecar_version
-            ),
+            retrieval_mode=_as_str(raw.get("retrieval_mode"), base.retrieval_mode),
+            dream_hour_utc=_as_int(raw.get("dream_hour_utc"), base.dream_hour_utc),
+            dream_rounds=_as_int(raw.get("dream_rounds"), base.dream_rounds),
+            sidecar_version=_as_str(raw.get("sidecar_version"), base.sidecar_version),
             sidecar_binary=_as_optional_str(raw.get("sidecar_binary")),
             sidecar_start_timeout=_as_float(
                 raw.get("sidecar_start_timeout"), base.sidecar_start_timeout
@@ -297,9 +281,7 @@ class FileSettings:
     vision_model: str | None = None
 
     def __post_init__(self) -> None:
-        self.max_file_bytes = _as_int(
-            self.max_file_bytes, 20 * 1024 * 1024, minimum=1
-        )
+        self.max_file_bytes = _as_int(self.max_file_bytes, 20 * 1024 * 1024, minimum=1)
         self.max_chars = _as_int(self.max_chars, 20_000, minimum=500)
         self.total_max_chars = _as_int(
             self.total_max_chars, 40_000, minimum=self.max_chars
@@ -315,9 +297,7 @@ class FileSettings:
             max_file_bytes=_as_int(
                 raw.get("max_file_bytes"), base.max_file_bytes, minimum=1
             ),
-            max_chars=_as_int(
-                raw.get("max_chars"), base.max_chars, minimum=500
-            ),
+            max_chars=_as_int(raw.get("max_chars"), base.max_chars, minimum=500),
             total_max_chars=_as_int(
                 raw.get("total_max_chars"), base.total_max_chars, minimum=500
             ),
@@ -329,6 +309,7 @@ class FileSettings:
 class FeatureSettings:
     memory: MemorySettings = field(default_factory=MemorySettings)
     files: FileSettings = field(default_factory=FileSettings)
+    tools: bool = True
     identity: bool = True
     clock: bool = True
     calendar: bool = True
@@ -340,9 +321,7 @@ class FeatureSettings:
     def __post_init__(self) -> None:
         approval = str(self.approval or "ask").strip().lower()
         if approval not in APPROVAL_MODES:
-            raise SettingsError(
-                f"features.approval must be one of {APPROVAL_MODES}"
-            )
+            raise SettingsError(f"features.approval must be one of {APPROVAL_MODES}")
         self.approval = approval
 
     @classmethod
@@ -352,6 +331,7 @@ class FeatureSettings:
         return cls(
             memory=MemorySettings.from_dict(raw.get("memory")),
             files=FileSettings.from_dict(raw.get("files")),
+            tools=_as_bool(raw.get("tools"), base.tools),
             identity=_as_bool(raw.get("identity"), base.identity),
             clock=_as_bool(raw.get("clock"), base.clock),
             calendar=_as_bool(raw.get("calendar"), base.calendar),
@@ -376,22 +356,14 @@ class LimitSettings:
     def __post_init__(self) -> None:
         self.max_steps = _as_int(self.max_steps, 12, minimum=1)
         self.max_turns = _as_int(self.max_turns, 80, minimum=0)
-        self.provider_timeout = _as_float(
-            self.provider_timeout, 60.0, minimum=1.0
-        )
-        self.provider_retries = _as_int(
-            self.provider_retries, 3, minimum=0, maximum=20
-        )
+        self.provider_timeout = _as_float(self.provider_timeout, 60.0, minimum=1.0)
+        self.provider_retries = _as_int(self.provider_retries, 3, minimum=0, maximum=20)
         self.tool_timeout = _as_float(self.tool_timeout, 60.0, minimum=0.1)
-        self.approval_timeout = _as_float(
-            self.approval_timeout, 300.0, minimum=1.0
-        )
+        self.approval_timeout = _as_float(self.approval_timeout, 300.0, minimum=1.0)
         self.max_tool_result_chars = _as_int(
             self.max_tool_result_chars, 4000, minimum=0
         )
-        self.max_stream_chars = _as_int(
-            self.max_stream_chars, 3500, minimum=1
-        )
+        self.max_stream_chars = _as_int(self.max_stream_chars, 3500, minimum=1)
 
     @classmethod
     def from_dict(cls, data: Any) -> LimitSettings:
@@ -406,9 +378,7 @@ class LimitSettings:
             provider_retries=_as_int(
                 raw.get("provider_retries"), base.provider_retries
             ),
-            tool_timeout=_as_float(
-                raw.get("tool_timeout"), base.tool_timeout
-            ),
+            tool_timeout=_as_float(raw.get("tool_timeout"), base.tool_timeout),
             approval_timeout=_as_float(
                 raw.get("approval_timeout"), base.approval_timeout
             ),
@@ -439,15 +409,13 @@ class ChannelSettings:
         self.options = dict(_mapping(self.options, "channel.options"))
         self.api_base = self.api_base.strip() or "https://api.telegram.org"
         self.poll_timeout = _as_int(self.poll_timeout, 30, minimum=0)
-        self.request_timeout = _as_float(
-            self.request_timeout, 40.0, minimum=1.0
-        )
-        self.max_message_chars = _as_int(
-            self.max_message_chars, 4096, minimum=1
-        )
+        self.request_timeout = _as_float(self.request_timeout, 40.0, minimum=1.0)
+        self.max_message_chars = _as_int(self.max_message_chars, 4096, minimum=1)
         parse_mode = _as_optional_str(self.parse_mode)
         if parse_mode is not None and parse_mode not in {
-            "HTML", "Markdown", "MarkdownV2"
+            "HTML",
+            "Markdown",
+            "MarkdownV2",
         }:
             raise SettingsError(
                 "channel.parse_mode must be HTML, Markdown, or MarkdownV2"
@@ -465,12 +433,8 @@ class ChannelSettings:
             options=dict(_mapping(raw.get("options"), "channel.options")),
             parse_mode=_as_optional_str(raw.get("parse_mode")),
             api_base=_as_str(raw.get("api_base"), base.api_base),
-            poll_timeout=_as_int(
-                raw.get("poll_timeout"), base.poll_timeout
-            ),
-            request_timeout=_as_float(
-                raw.get("request_timeout"), base.request_timeout
-            ),
+            poll_timeout=_as_int(raw.get("poll_timeout"), base.poll_timeout),
+            request_timeout=_as_float(raw.get("request_timeout"), base.request_timeout),
             max_message_chars=_as_int(
                 raw.get("max_message_chars"), base.max_message_chars
             ),
@@ -533,16 +497,12 @@ class Settings:
     @classmethod
     def from_dict(cls, data: Any) -> Settings:
         raw = _mapping(data, "config")
-        mode = _as_str(
-            _mapping(raw.get("setup"), "setup").get("mode"), "recommended"
-        )
+        mode = _as_str(_mapping(raw.get("setup"), "setup").get("mode"), "recommended")
         # Missing sections inherit the preset the file claims to use.  This
         # keeps old or hand-edited files forward-compatible.
         merged = _deep_merge(base_settings(mode).to_dict(), raw)
         return cls(
-            version=_as_int(
-                merged.get("version"), CONFIG_VERSION, minimum=1
-            ),
+            version=_as_int(merged.get("version"), CONFIG_VERSION, minimum=1),
             setup=SetupSettings.from_dict(merged.get("setup")),
             agent=AgentSettings.from_dict(merged.get("agent")),
             provider=ProviderSettings.from_dict(merged.get("provider")),
@@ -553,9 +513,7 @@ class Settings:
         )
 
 
-def _deep_merge(
-    base: Mapping[str, Any], override: Mapping[str, Any]
-) -> dict[str, Any]:
+def _deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
     """Recursively merge ``override`` into ``base`` without mutating either."""
     merged: dict[str, Any] = dict(base)
     for key, value in override.items():
@@ -583,9 +541,7 @@ def recommended_settings() -> Settings:
         agent=AgentSettings(
             name="Sora",
             icon="☁️",
-            personality=PersonalitySettings(
-                base="friendly", warmth="very_warm"
-            ),
+            personality=PersonalitySettings(base="friendly", warmth="very_warm"),
         ),
         provider=ProviderSettings(
             kind="openai",
@@ -603,6 +559,7 @@ def recommended_settings() -> Settings:
                 backup=True,
                 wake=True,
             ),
+            tools=True,
             identity=True,
             clock=True,
             calendar=True,
@@ -629,9 +586,7 @@ def advanced_settings() -> Settings:
         agent=AgentSettings(
             name="Sora",
             icon="☁️",
-            personality=PersonalitySettings(
-                base="neutral", warmth="neutral"
-            ),
+            personality=PersonalitySettings(base="neutral", warmth="neutral"),
         ),
         provider=ProviderSettings(
             kind="openai",
@@ -643,6 +598,7 @@ def advanced_settings() -> Settings:
         features=FeatureSettings(
             memory=MemorySettings(enabled=False),
             files=FileSettings(enabled=False),
+            tools=False,
             identity=False,
             clock=False,
             calendar=False,
@@ -673,9 +629,7 @@ def legacy_settings() -> Settings:
         agent=AgentSettings(
             name="Sora",
             icon="☁️",
-            personality=PersonalitySettings(
-                base="neutral", warmth="neutral"
-            ),
+            personality=PersonalitySettings(base="neutral", warmth="neutral"),
         ),
         provider=ProviderSettings(
             kind="mock",
@@ -686,6 +640,7 @@ def legacy_settings() -> Settings:
         channel=ChannelSettings(),
         features=FeatureSettings(
             memory=MemorySettings(enabled=False),
+            tools=False,
             identity=False,
             clock=True,
             calendar=True,
@@ -744,9 +699,7 @@ def load_settings(path: str | Path | None = None) -> Settings | None:
     return Settings.from_dict(data)
 
 
-def save_settings(
-    settings: Settings, path: str | Path | None = None
-) -> Path:
+def save_settings(settings: Settings, path: str | Path | None = None) -> Path:
     target = config_path(path)
     # Round-trip through the parser so mutated dataclasses are validated and
     # normalized before anything touches disk.
@@ -774,7 +727,7 @@ def load_secrets(path: str | Path | None = None) -> dict[str, str]:
         if not text or text.startswith("#"):
             continue
         if text.startswith("export "):
-            text = text[len("export "):].strip()
+            text = text[len("export ") :].strip()
         if "=" not in text:
             continue
         key, value = text.split("=", 1)
@@ -785,9 +738,7 @@ def load_secrets(path: str | Path | None = None) -> dict[str, str]:
     return values
 
 
-def save_secrets(
-    values: Mapping[str, str], path: str | Path | None = None
-) -> Path:
+def save_secrets(values: Mapping[str, str], path: str | Path | None = None) -> Path:
     target = secrets_path(path)
     lines = [
         "# SoraAgent secrets. Generated by `sora setup`.",

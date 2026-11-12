@@ -374,7 +374,7 @@ def test_prompt_section_has_budget_and_format(config: StateConfig) -> None:
     assert section.rstrip().endswith("STATE>>>")
 
 
-def test_wrapper_appends_state_to_back_of_system_prompt(
+def test_wrapper_appends_state_after_the_conversation(
     config: StateConfig,
 ) -> None:
     inner = ScriptedProvider(["plain answer"])
@@ -389,10 +389,11 @@ def test_wrapper_appends_state_to_back_of_system_prompt(
 
     sent = inner.calls[0]
     assert sent[0].content == "STATIC SYSTEM PROMPT"
-    assert sent[1].role == "system"
-    assert sent[1].content.startswith("## SESSION STATE PROTOCOL")
-    assert sent[1].content.rstrip().endswith("STATE>>>")
-    assert sent[2].role == "user"
+    assert sent[1].role == "user"
+    assert sent[1].content == "Ship PO-1234"
+    assert sent[-1].role == "system"
+    assert sent[-1].content.startswith("## SESSION STATE PROTOCOL")
+    assert sent[-1].content.rstrip().endswith("STATE>>>")
     assert messages[0].content == "STATIC SYSTEM PROMPT"
 
 

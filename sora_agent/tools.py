@@ -32,9 +32,7 @@ from .providers import ToolCall
 
 log = logging.getLogger(__name__)
 
-_UNION_ORIGINS = (Union,) + (
-    (types.UnionType,) if hasattr(types, "UnionType") else ()
-)
+_UNION_ORIGINS = (Union,) + ((types.UnionType,) if hasattr(types, "UnionType") else ())
 _APPROVAL_MARKER = "[approval required] "
 _JSON_SCALARS = (str, int, float, bool)
 
@@ -49,6 +47,7 @@ class Tool:
         isolated: bool = False,
         requires: tuple[str, ...] = (),
         aliases: tuple[str, ...] = (),
+        dedupe: bool = False,
     ) -> None:
         self.fn = fn
         self.name = name
@@ -56,6 +55,7 @@ class Tool:
         self.needs_approval = needs_approval
         self.isolated = isolated
         self.requires = tuple(str(item) for item in requires)
+        self.dedupe = bool(dedupe)
         #: Extra trigger words for lexical tool search (for example
         #: ``("meeting", "appointment")`` for a calendar tool).
         self.aliases = tuple(str(item) for item in aliases)
@@ -113,9 +113,7 @@ def _json_schema(annotation: Any) -> dict[str, Any]:
         args = get_args(annotation)
         if args:
             annotation = args[0]
-        description = next(
-            (item for item in metadata if isinstance(item, str)), ""
-        )
+        description = next((item for item in metadata if isinstance(item, str)), "")
         if description:
             extras["description"] = description
 
@@ -127,9 +125,7 @@ def _json_schema(annotation: Any) -> dict[str, Any]:
         return schema
 
     if origin is Literal:
-        values = [
-            value for value in get_args(annotation) if value is not None
-        ]
+        values = [value for value in get_args(annotation) if value is not None]
         schema = _enum_schema(values)
         if not schema:
             schema = {"type": "string"}
@@ -163,9 +159,7 @@ def _json_schema(annotation: Any) -> dict[str, Any]:
 
 
 def _enum_schema(values: list[Any]) -> dict[str, Any]:
-    if not values or not all(
-        isinstance(value, _JSON_SCALARS) for value in values
-    ):
+    if not values or not all(isinstance(value, _JSON_SCALARS) for value in values):
         return {}
     schema: dict[str, Any] = {"enum": values}
     type_name = _scalar_type(values)
@@ -177,10 +171,7 @@ def _enum_schema(values: list[Any]) -> dict[str, Any]:
 def _scalar_type(values: list[Any]) -> str | None:
     if all(isinstance(value, bool) for value in values):
         return "boolean"
-    if all(
-        isinstance(value, int) and not isinstance(value, bool)
-        for value in values
-    ):
+    if all(isinstance(value, int) and not isinstance(value, bool) for value in values):
         return "integer"
     if all(
         isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -249,6 +240,7 @@ class ToolExecutor:
         self.max_result_chars = max(0, int(max_result_chars))
         self.after_execute = after_execute
         self.tool_timeout = max(0.1, float(tool_timeout))
+        self._dedupe_results: dict[str, ToolResult] = {}
 
     def execute(self, call: ToolCall) -> ToolResult:
         result = ToolResult(call=call, content="")
@@ -277,6 +269,20 @@ class ToolExecutor:
             result.is_error = True
             return result
 
+        signature = _call_signature(call)
+        if getattr(tool, "dedupe", False) and signature in self._dedupe_results:
+            previous = self._dedupe_results[signature]
+            return ToolResult(
+                call=call,
+                content=(
+                    previous.content
+                    + "\n[deduplicated: identical call already executed]"
+                ),
+                executed=False,
+                approved=previous.approved,
+                approval_required=previous.approval_required,
+            )
+
         if getattr(tool, "needs_approval", False):
             result.approval_required = True
             if self.approval is None:
@@ -286,9 +292,7 @@ class ToolExecutor:
                 result.stop_reason = "approval_rejected"
                 return result
             try:
-                approved = bool(
-                    self.approval.request(call.name, _render_call(call))
-                )
+                approved = bool(self.approval.request(call.name, _render_call(call)))
             except Exception as exc:  # noqa: BLE001 - approval must fail closed
                 result.content = f"approval gate failed: {exc}"
                 result.is_error = True
@@ -305,9 +309,7 @@ class ToolExecutor:
         result.isolated = bool(getattr(tool, "isolated", False))
         try:
             if result.isolated:
-                raw = run_isolated(
-                    tool.fn, call.arguments, self.tool_timeout
-                )
+                raw = run_isolated(tool.fn, call.arguments, self.tool_timeout)
             else:
                 raw = tool.call(**call.arguments)
         except ToolTimeout as exc:
@@ -337,6 +339,14 @@ class ToolExecutor:
                 self.approval.log(call.name, "executed", result.content)
             except Exception as exc:  # noqa: BLE001 - audit is best-effort
                 log.debug("approval audit log failed: %s", exc)
+        if getattr(tool, "dedupe", False) and result.executed and not result.is_error:
+            self._dedupe_results[signature] = ToolResult(
+                call=call,
+                content=result.content,
+                approval_required=result.approval_required,
+                approved=result.approved,
+                executed=True,
+            )
         return result
 
 
@@ -349,6 +359,10 @@ def _validate_arguments(tool: Any, arguments: dict[str, Any]) -> None:
     except (TypeError, ValueError):
         return
     signature.bind(**arguments)
+
+
+def _call_signature(call: ToolCall) -> str:
+    return f"{call.name}:{json.dumps(call.arguments, sort_keys=True, default=str)}"
 
 
 def _render_call(call: ToolCall) -> str:

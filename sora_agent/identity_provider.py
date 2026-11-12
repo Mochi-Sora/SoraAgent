@@ -2,9 +2,12 @@
 
 The wrapper inserts the identity section into the system prompt and removes
 ``<user_edit>`` / ``<soul_edit>`` blocks from the visible answer.  Identity is
-always inserted before the existing session-state section so the final order is:
+always inserted before the existing session-state section.  The final order is:
 
-    base system prompt -> USER -> SOUL -> state -> clock -> user message
+    base system prompt -> USER -> SOUL -> conversation -> state -> clock
+
+The clock is the final message (a trailing system section) so the static prefix
+and prior turns stay cacheable.
 """
 
 from __future__ import annotations

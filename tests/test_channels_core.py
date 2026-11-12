@@ -373,7 +373,7 @@ def test_chat_handler_keeps_history():
     assert handler.handle(_inbound("two")) == "echo:two"
 
     roles = [message.role for message in provider.calls[-1]]
-    assert roles == ["system", "system", "user", "assistant", "user"]
+    assert roles == ["system", "user", "assistant", "user", "system"]
 
 
 def test_chat_handler_reset_forgets_the_session():
@@ -384,7 +384,7 @@ def test_chat_handler_reset_forgets_the_session():
     handler.handle(_inbound("two"))
 
     roles = [message.role for message in provider.calls[-1]]
-    assert roles == ["system", "system", "user"]
+    assert roles == ["system", "user", "system"]
 
 
 def test_chat_handler_trims_old_turns():
@@ -394,7 +394,7 @@ def test_chat_handler_trims_old_turns():
         handler.handle(_inbound(text))
 
     roles = [message.role for message in provider.calls[-1]]
-    assert roles == ["system", "system", "user", "assistant", "user"]
+    assert roles == ["system", "user", "assistant", "user", "system"]
 
 
 # ---------------------------------------------------------------------------
