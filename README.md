@@ -34,7 +34,7 @@ deliberately tiny; the production concerns live in explicit gates around it:
 
 The core imports only the Python standard library; optional integrations
 (`openai`, `zstandard`) are extras. Requires Python **3.9+**. Current version:
-**0.1.2**.
+**0.1.2** — see [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -63,7 +63,8 @@ The core imports only the Python standard library; optional integrations
 21. [Project layout](#project-layout)
 22. [Development](#development)
 23. [SoraPlatform](#soraplatform)
-24. [License](#license)
+24. [Changelog](#changelog)
+25. [License](#license)
 
 ---
 
@@ -1648,6 +1649,7 @@ SoraAgent/
 ├── pyrightconfig.json          # pyright in standard mode, Python 3.9
 ├── LICENSE                     # AGPL-3.0-only
 ├── README.md
+├── CHANGELOG.md
 ├── examples/
 │   ├── po_workflow.py          # interactive PO exception example
 │   ├── po_tools.py             # sample purchase-order tools for the examples
@@ -1730,6 +1732,11 @@ open-source, independent products built against telemetry and bloat. It powers
 agent skills on Agensi; and the rest of the ten-product roadmap is in development. The
 official site lives at
 [SoraOfficialWebsite](https://github.com/Mochi-Sora/SoraOfficialWebsite).
+
+## Changelog
+
+Release notes and upgrade-relevant behavior changes are in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

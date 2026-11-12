@@ -1,8 +1,9 @@
 """Sample purchase-order tools used by the examples.
 
-These are fixtures, not a real order system. They live with the examples so the
-core package ships no business tools; register the tools your agent needs on a
-``ToolRegistry`` (or with the ``@tool`` decorator) in your own integration.
+These are fixtures, not a real order system. SoraAgent's built-in core tool
+pack covers file, shell, web, planning, code-execution, and delegation work;
+use this module as the model for registering your own domain tools on a
+``ToolRegistry`` (or with the ``@tool`` decorator).
 """
 
 from __future__ import annotations
