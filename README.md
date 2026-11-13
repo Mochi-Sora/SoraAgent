@@ -34,7 +34,7 @@ deliberately tiny; the production concerns live in explicit gates around it:
 
 The core imports only the Python standard library; optional integrations
 (`openai`, `zstandard`) are extras. Requires Python **3.9+**. Current version:
-**0.1.2** — see [CHANGELOG.md](CHANGELOG.md).
+**0.1.3** — see [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -235,6 +235,10 @@ second applies the current defaults. Passing
 `--check` exits with `0` when the install is current, `1` when an update is
 available, and `2` when the check cannot run. User data and configuration under
 `~/.sora_agent` are not touched.
+
+0.1.3 keeps pre-0.1.2 configs working after an upgrade. Legacy
+`features.tools` values (`demo` or `none`) are read as `true`/`false` at load
+time, so the config file does not need a manual edit before the first start.
 
 ## Quick start
 
@@ -727,7 +731,9 @@ Behavior details:
 
 - `SORA_TOOLPACK=0` disables the pack; `features.tools` in the config file is
   the persistent equivalent.  Recommended setup enables it; Advanced setup
-  leaves it off.
+  leaves it off.  Configs written before 0.1.2 stored a tool-set name here
+  (`demo` or `none`); 0.1.3 reads those as `true`/`false` instead of
+  rejecting the file.
 - `SORA_TOOLPACK_ROOT` (or `SORA_WORKSPACE`) sets the workspace for file and
   shell tools; the default is the process working directory.  File tools refuse
   paths outside it unless `SORA_TOOLPACK_RESTRICT=0`.

@@ -210,6 +210,19 @@ def test_unknown_setup_mode_is_rejected():
         Settings.from_dict({"setup": {"mode": "quickstart"}})
 
 
+def test_legacy_tools_setting_migrates_to_boolean():
+    # Before 0.1.2, features.tools held a tool-set name ("demo" or "none").
+    # Those configs must keep loading after the field became a boolean.
+    demo = Settings.from_dict({"features": {"tools": "demo"}})
+    none = Settings.from_dict({"features": {"tools": "none"}})
+
+    assert demo.features.tools is True
+    assert none.features.tools is False
+
+    with pytest.raises(SettingsError):
+        Settings.from_dict({"features": {"tools": "maybe"}})
+
+
 @pytest.mark.parametrize(
     "factory",
     [

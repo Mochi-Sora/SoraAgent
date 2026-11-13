@@ -75,6 +75,18 @@ def _as_bool(value: Any, default: bool) -> bool:
     raise SettingsError(f"expected a boolean, got {value!r}")
 
 
+def _as_tools_flag(value: Any, default: bool) -> bool:
+    """Read ``features.tools``, accepting the pre-0.1.2 string values.
+
+    Older configs stored a tool set name (``demo`` or ``none``) here.  The
+    bundled demo tool pack was removed in 0.1.2 and the field became a
+    boolean, so map the legacy names instead of rejecting the whole config.
+    """
+    if isinstance(value, str) and value.strip().lower() in {"demo", "none"}:
+        return value.strip().lower() == "demo"
+    return _as_bool(value, default)
+
+
 def _as_int(
     value: Any,
     default: int,
@@ -331,7 +343,7 @@ class FeatureSettings:
         return cls(
             memory=MemorySettings.from_dict(raw.get("memory")),
             files=FileSettings.from_dict(raw.get("files")),
-            tools=_as_bool(raw.get("tools"), base.tools),
+            tools=_as_tools_flag(raw.get("tools"), base.tools),
             identity=_as_bool(raw.get("identity"), base.identity),
             clock=_as_bool(raw.get("clock"), base.clock),
             calendar=_as_bool(raw.get("calendar"), base.calendar),

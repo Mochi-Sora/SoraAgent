@@ -2,6 +2,17 @@
 
 All notable changes to SoraAgent are documented here.
 
+## [0.1.3] - 2026-11-13
+
+### Fixed
+
+- Load configs written before 0.1.2, where `features.tools` held a tool-set
+  name (`demo` or `none`) instead of a boolean. Those values now map to
+  `true`/`false`, so upgrading no longer fails gateway startup with
+  `expected a boolean, got 'demo'`. Existing installs can also edit
+  `~/.sora_agent/config.json` directly; after this release no manual change
+  is required.
+
 ## [0.1.2] - 2026-11-12
 
 ### Added
