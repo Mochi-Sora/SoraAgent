@@ -1073,8 +1073,10 @@ documents over the limit.
 
 The model updates identity with exactly one full-replacement block per
 document, `<user_edit>...</user_edit>` and/or `<soul_edit>...</soul_edit>`.
-Blocks are removed from the visible answer before the user sees it; rejected
-edits go through a bounded repair loop that never rewrites the answer.
+Each key appears once; combine multi-value facts into one line. Blocks are
+removed from the visible answer — including from streamed deltas — before the
+user sees it; rejected edits go through a bounded repair loop that never
+rewrites the answer.
 
 Durability: every accepted edit archives the previous active backup and writes
 new gzip backups with a `manifest.json` carrying compressed/plaintext SHA-256

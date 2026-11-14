@@ -25,6 +25,7 @@ from .identity import (
     ExtractedIdentityEdits,
     IdentityIssue,
     IdentityStore,
+    StreamingEditFilter,
     extract_identity_edits,
 )
 from .providers import (
@@ -82,16 +83,23 @@ class IdentityProvider:
         should_stop: Callable[[], bool] | None = None,
     ) -> ModelTurn:
         augmented = self._augment(messages)
-        stream = getattr(self.inner, "stream_turn", None)
-        if callable(stream):
-            turn = cast(
-                ModelTurn,
-                stream(augmented, tools, on_delta, should_stop=should_stop),
-            )
-        else:
-            turn = provider_turn(self.inner, augmented, tools)
-            if turn.text:
-                on_delta(turn.text)
+        # The raw stream contains the internal <user_edit>/<soul_edit> block;
+        # filter deltas so it never reaches the user (and so the streamed
+        # snapshot matches the cleaned final answer).
+        visible = StreamingEditFilter(on_delta)
+        try:
+            stream = getattr(self.inner, "stream_turn", None)
+            if callable(stream):
+                turn = cast(
+                    ModelTurn,
+                    stream(augmented, tools, visible.feed, should_stop=should_stop),
+                )
+            else:
+                turn = provider_turn(self.inner, augmented, tools)
+                if turn.text:
+                    visible.feed(turn.text)
+        finally:
+            visible.finish()
         text = self._settle(turn.text, augmented, tools)
         return ModelTurn(
             text=text,
@@ -225,7 +233,8 @@ class IdentityProvider:
             f"{failed_text}. Use <user_edit>...</user_edit> and/or "
             "<soul_edit>...</soul_edit>. The block must contain the complete "
             "replacement, one fact per line as '- Key: Value', with no "
-            "headings or prose. "
+            "headings or prose. Each key may appear once; combine multiple "
+            "values into one line. "
             f"USER.md must be at most {USER_LIMIT} characters and SOUL.md at most "
             f"{SOUL_LIMIT} characters. If you cannot produce a valid replacement, "
             "omit the block."

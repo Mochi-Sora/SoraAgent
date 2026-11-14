@@ -37,7 +37,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from .audit import append_event
 
@@ -576,6 +576,167 @@ def _extract_block(
     response = close_re.sub("", response)
     response = open_re.sub("", response)
     return response, None, issues
+
+
+class StreamingEditFilter:
+    """Remove identity-edit blocks from a live token stream.
+
+    Providers stream the raw model text, but ``<user_edit>`` and
+    ``<soul_edit>`` blocks are an internal instruction to the identity
+    monitor.  Filtering them after the fact leaves the raw block on screen
+    (and makes the cleaned final answer look like a second reply), so the
+    deltas are filtered before they reach a channel.
+
+    Visible text is emitted as soon as it is safe to do so.  Trailing
+    whitespace is held until the next character or newline, and blank lines
+    are collapsed the same way as :func:`_collapse_text`, so the streamed
+    snapshot matches the final visible answer.
+    """
+
+    _OPEN_RE = re.compile(r"<(user_edit|soul_edit)\s*>", re.IGNORECASE)
+    _CLOSE_RE: ClassVar[dict[str, re.Pattern[str]]] = {
+        "user": re.compile(r"</user_edit\s*>", re.IGNORECASE),
+        "soul": re.compile(r"</soul_edit\s*>", re.IGNORECASE),
+    }
+    _STRAY_CLOSE_RE = re.compile(
+        r"</(?:user_edit|soul_edit)\s*>", re.IGNORECASE
+    )
+    _TAG_PREFIXES = (
+        "<user_edit",
+        "<soul_edit",
+        "</user_edit",
+        "</soul_edit",
+    )
+
+    def __init__(self, emit: Callable[[str], None]) -> None:
+        self._emit = emit
+        self._buffer = ""
+        self._mode: str | None = None
+        self._line = ""
+        self._line_emitted = False
+        self._started = False
+        self._blank = False
+
+    def feed(self, text: str) -> None:
+        if not text:
+            return
+        self._buffer += text
+        self._consume(final=False)
+
+    def finish(self) -> None:
+        self._consume(final=True)
+        # Any remainder is trailing whitespace; _collapse_text drops it.
+        self._line = ""
+        self._line_emitted = False
+
+    # -- block parsing -------------------------------------------------
+
+    def _consume(self, *, final: bool) -> None:
+        while True:
+            if self._mode is not None:
+                close = self._CLOSE_RE[self._mode].search(self._buffer)
+                if close:
+                    self._buffer = self._buffer[close.end() :]
+                    self._mode = None
+                    continue
+                keep = self._partial_start(self._buffer, closing=True)
+                self._buffer = self._buffer[keep:] if keep is not None else ""
+                return
+
+            open_tag = self._OPEN_RE.search(self._buffer)
+            if open_tag:
+                self._visible(self._buffer[: open_tag.start()])
+                self._mode = "user" if open_tag.group(1).lower() == "user_edit" else "soul"
+                self._buffer = self._buffer[open_tag.end() :]
+                continue
+
+            stray = self._STRAY_CLOSE_RE.search(self._buffer)
+            if stray:
+                self._visible(self._buffer[: stray.start()])
+                self._buffer = self._buffer[stray.end() :]
+                continue
+
+            if final:
+                cut = self._partial_start(self._buffer)
+                if cut is None:
+                    self._visible(self._buffer)
+                elif cut:
+                    self._visible(self._buffer[:cut])
+                self._buffer = ""
+                return
+
+            cut = self._partial_start(self._buffer)
+            if cut is None:
+                self._visible(self._buffer)
+                self._buffer = ""
+            elif cut:
+                self._visible(self._buffer[:cut])
+                self._buffer = self._buffer[cut:]
+            return
+
+    def _partial_start(self, text: str, *, closing: bool = False) -> int | None:
+        """Return the index where a split tag prefix begins, if any."""
+        index = text.rfind("<")
+        if index < 0:
+            return None
+        suffix = text[index:].lower()
+        if closing:
+            candidates = [
+                prefix for prefix in self._TAG_PREFIXES if prefix.startswith("</")
+            ]
+        else:
+            candidates = list(self._TAG_PREFIXES)
+        if any(candidate.startswith(suffix) for candidate in candidates):
+            return index
+        if re.fullmatch(r"</?(?:user_edit|soul_edit)\s*", suffix):
+            return index
+        return None
+
+    # -- visible text --------------------------------------------------
+
+    def _visible(self, text: str) -> None:
+        if not text:
+            return
+        self._line += text
+        while "\n" in self._line:
+            line, self._line = self._line.split("\n", 1)
+            self._end_line(line)
+        self._flush_partial()
+
+    def _flush_partial(self) -> None:
+        if not self._line:
+            return
+        cut = self._partial_start(self._line)
+        safe = self._line if cut is None else self._line[:cut]
+        emit_len = len(safe.rstrip(" \t"))
+        if not emit_len:
+            return
+        self._emit(safe[:emit_len])
+        self._line = self._line[emit_len:]
+        self._line_emitted = True
+
+    def _end_line(self, line: str) -> None:
+        if self._line_emitted:
+            rest = line.rstrip()
+            if rest:
+                self._emit(rest)
+            self._emit("\n")
+            self._line_emitted = False
+            self._started = True
+            self._blank = False
+            return
+
+        line = line.rstrip()
+        if not line:
+            if not self._started or self._blank:
+                return
+            self._blank = True
+            self._emit("\n")
+            return
+
+        self._started = True
+        self._blank = False
+        self._emit(line + "\n")
 
 
 def extract_identity_edits(response: str) -> ExtractedIdentityEdits:
@@ -1380,7 +1541,9 @@ class IdentityStore:
             "persona, voice, values, or boundaries. Use exactly one complete "
             "replacement block: <soul_edit>...</soul_edit>.\n\n"
             "Rules: one fact per line, exactly '- Key: Value'. No headings, prose, "
-            "code fences, or blank lines. Keep USER.md within "
+            "code fences, or blank lines. Each key may appear once; combine multiple "
+            "values into one line (for example '- Likes: potatoes, badminton'). "
+            "Keep USER.md within "
             f"{USER_LIMIT} characters and SOUL.md within {SOUL_LIMIT} characters. "
             "Do not store secrets, credentials, or transient task details. Identity "
             "blocks are removed from the visible answer before it is shown or stored. "

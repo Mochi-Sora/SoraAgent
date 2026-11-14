@@ -2,6 +2,16 @@
 
 All notable changes to SoraAgent are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- Identity edit blocks (`<user_edit>` / `<soul_edit>`) are filtered from
+  streamed deltas, so a live chat view no longer shows the raw block or
+  presents the cleaned final answer as a duplicate second message.
+- Identity prompts ask for unique bullet keys and a single line per
+  multi-value fact, reducing rejected edits and repair turns.
+
 ## [0.1.3] - 2026-11-13
 
 ### Fixed
