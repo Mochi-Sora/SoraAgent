@@ -34,7 +34,7 @@ deliberately tiny; the production concerns live in explicit gates around it:
 
 The core imports only the Python standard library; optional integrations
 (`openai`, `zstandard`) are extras. Requires Python **3.9+**. Current version:
-**0.1.3** — see [CHANGELOG.md](CHANGELOG.md).
+**0.1.4** — see [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
