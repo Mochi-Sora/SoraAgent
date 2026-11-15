@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import urllib.error
 import urllib.parse
@@ -144,6 +143,143 @@ class _HTMLText(HTMLParser):
         return value.strip()
 
 
+_DDG_HTML_URL = "https://html.duckduckgo.com/html/"
+_DDG_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+_DDG_VOID = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
+
+
+def _decode_ddg_href(href: str) -> str:
+    value = str(href or "").strip()
+    if not value:
+        return ""
+    if value.startswith("//"):
+        value = "https:" + value
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.path.startswith("/l/") and (
+        not parsed.netloc or parsed.netloc.lower().endswith("duckduckgo.com")
+    ):
+        target = urllib.parse.parse_qs(parsed.query).get("uddg", [""])[0]
+        if target:
+            return target
+    return value
+
+
+class _DuckDuckGoParser(HTMLParser):
+    """Extract ``result__a`` links and ``result__snippet`` text."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.results: list[dict[str, str]] = []
+        self._active: dict[str, str] | None = None
+        self._mode: str | None = None
+        self._depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        classes = (values.get("class") or "").split()
+        if tag == "a" and "result__a" in classes:
+            url = _decode_ddg_href(values.get("href") or "")
+            if url and "duckduckgo.com/y.js" not in url:
+                self._active = {"title": "", "url": url, "snippet": ""}
+                self.results.append(self._active)
+                self._mode = "title"
+                self._depth = 1
+            else:
+                self._active = None
+                self._mode = None
+            return
+        if (
+            self._active is not None
+            and self._mode is None
+            and "result__snippet" in classes
+        ):
+            self._mode = "snippet"
+            self._depth = 1
+            return
+        if self._mode is not None and tag not in _DDG_VOID:
+            self._depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._mode is None or tag in _DDG_VOID:
+            return
+        self._depth -= 1
+        if self._depth <= 0:
+            self._mode = None
+            self._depth = 0
+
+    def handle_data(self, data: str) -> None:
+        if self._active is None or self._mode is None:
+            return
+        if self._mode == "title":
+            self._active["title"] += data
+        else:
+            self._active["snippet"] += data
+
+
+def _parse_ddg_results(html: str, limit: int) -> list[dict[str, str]]:
+    parser = _DuckDuckGoParser()
+    parser.feed(html)
+    results: list[dict[str, str]] = []
+    for item in parser.results:
+        title = " ".join(item["title"].split())
+        snippet = " ".join(item["snippet"].split())
+        if title and item["url"]:
+            results.append(
+                {"title": title, "url": item["url"], "snippet": snippet}
+            )
+    return results[:limit]
+
+
+def _duckduckgo_search(query: str, limit: int, timeout: float) -> list[dict[str, str]]:
+    url = _DDG_HTML_URL + "?" + urllib.parse.urlencode(
+        {"q": query, "kl": "wt-wt"}
+    )
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": _DDG_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.8",
+        },
+    )
+    with urlopen(request, timeout=timeout) as response:
+        status = getattr(response, "status", 200)
+        raw = response.read(2_000_000)
+        charset = response.headers.get_content_charset() or "utf-8"
+    text = raw.decode(charset, errors="replace")
+    if status != 200:
+        raise ValueError(
+            f"DuckDuckGo returned HTTP {status} (challenge or rate limit)"
+        )
+    results = _parse_ddg_results(text, limit)
+    if not results and ("anomaly" in text.lower() or "challenge" in text.lower()):
+        raise ValueError(
+            "DuckDuckGo returned a bot challenge; use Tavily, Brave, or a "
+            "custom endpoint for this server"
+        )
+    return results
+
+
 def register_web_tools(registry: ToolRegistry, config: Any) -> list[Tool]:
     added: list[Tool] = []
 
@@ -153,22 +289,39 @@ def register_web_tools(registry: ToolRegistry, config: Any) -> list[Tool]:
     ) -> str:
         count = max(1, min(int(limit), 10, config.search_results))
         timeout = config.web_timeout
+        search = config.web_search
+        provider = search.resolved_provider()
         try:
-            tavily = os.getenv("TAVILY_API_KEY", "").strip()
-            brave = os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
-            custom = os.getenv("SORA_WEB_SEARCH_URL", "").strip()
-            if tavily:
+            if provider == "off":
+                return (
+                    "error: web_search is disabled by configuration "
+                    "(features.web_search.provider = 'off')."
+                )
+            if provider == "duckduckgo":
+                results = _duckduckgo_search(query, count, timeout)
+                return _render_results(query, results[:count])
+            if provider == "tavily":
+                if not search.tavily_api_key:
+                    return (
+                        "error: web_search provider 'tavily' is selected but "
+                        "TAVILY_API_KEY is not set (environment or secrets.env)."
+                    )
                 payload = _http_json(
                     "https://api.tavily.com/search",
                     payload={
-                        "api_key": tavily,
+                        "api_key": search.tavily_api_key,
                         "query": query,
                         "max_results": count,
                         "include_answer": False,
                     },
                     timeout=timeout,
                 )
-            elif brave:
+            elif provider == "brave":
+                if not search.brave_api_key:
+                    return (
+                        "error: web_search provider 'brave' is selected but "
+                        "BRAVE_SEARCH_API_KEY is not set (environment or secrets.env)."
+                    )
                 url = (
                     "https://api.search.brave.com/res/v1/web/search?"
                     + urllib.parse.urlencode({"q": query, "count": count})
@@ -176,29 +329,36 @@ def register_web_tools(registry: ToolRegistry, config: Any) -> list[Tool]:
                 payload = _http_json(
                     url,
                     headers={
-                        "X-Subscription-Token": brave,
+                        "X-Subscription-Token": search.brave_api_key,
                         "Accept": "application/json",
                     },
                     timeout=timeout,
                 )
-            elif custom:
+            elif provider == "custom":
+                if not search.url:
+                    return (
+                        "error: web_search provider 'custom' is selected but no "
+                        "SORA_WEB_SEARCH_URL / features.web_search.url is set."
+                    )
                 headers = {}
-                key = os.getenv("SORA_WEB_SEARCH_API_KEY", "").strip()
-                if key:
-                    headers["Authorization"] = "Bearer " + key
+                if search.api_key:
+                    headers["Authorization"] = "Bearer " + search.api_key
                 payload = _http_json(
-                    custom,
+                    search.url,
                     payload={"query": query, "limit": count},
                     headers=headers,
                     timeout=timeout,
                 )
             else:
-                return (
-                    "error: web_search is not configured. Set TAVILY_API_KEY, "
-                    "BRAVE_SEARCH_API_KEY, or SORA_WEB_SEARCH_URL."
-                )
+                return f"error: unknown web_search provider: {provider!r}"
         except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
-            return f"error: web search failed: {exc}"
+            if provider == "duckduckgo":
+                return (
+                    "error: DuckDuckGo search failed: "
+                    f"{exc}. If this server is blocked, set "
+                    "features.web_search.provider to tavily, brave, or custom."
+                )
+            return f"error: web search ({provider}) failed: {exc}"
         results = _search_results(payload)
         return _render_results(query, results[:count])
 

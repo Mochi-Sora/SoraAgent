@@ -172,6 +172,8 @@ def test_doctor_reports_a_configured_mock_install():
     assert "(not required)" in result.stdout
     assert "Approval is OFF" in result.stdout
     assert "Quality evaluation is OFF" in result.stdout
+    assert "Web search" in result.stdout
+    assert "DuckDuckGo" in result.stdout
 
 
 # ---------------------------------------------------------------------------

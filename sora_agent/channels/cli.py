@@ -191,7 +191,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 channel_cls,
                 config,
                 provider=provider,
-                registry=build_registry(settings),
+                registry=build_registry(settings, secrets=secrets),
                 memory=memory,
                 identity=identity,
                 sessions=sessions,

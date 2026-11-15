@@ -9,10 +9,11 @@ import pytest
 
 from sora_agent.agent import Agent
 from sora_agent.providers import Message, ModelTurn
-from sora_agent.runtime_setup import build_registry
+from sora_agent.runtime_setup import build_registry, resolve_web_search
 from sora_agent.settings import advanced_settings, recommended_settings
 from sora_agent.tool_search import FindToolsTool, ToolGate
 from sora_agent.toolpack import CORE_TOOL_NAMES, ToolPackConfig, register_core_tools
+from sora_agent.toolpack.config import WebSearchConfig
 from sora_agent.tools import ToolRegistry
 
 
@@ -61,9 +62,9 @@ class FakeMemory:
         return None
 
 
-def _registry(tmp_path: Path) -> ToolRegistry:
+def _registry(tmp_path: Path, **config) -> ToolRegistry:
     registry = ToolRegistry()
-    register_core_tools(registry, ToolPackConfig(root=tmp_path))
+    register_core_tools(registry, ToolPackConfig(root=tmp_path, **config))
     return registry
 
 
@@ -160,7 +161,7 @@ def test_terminal_and_background_process(tmp_path):
     assert "a" in waited and "b" in waited
 
 
-def test_web_search_unconfigured_and_private_url_rejected(monkeypatch, tmp_path):
+def test_web_search_disabled_and_private_url_rejected(monkeypatch, tmp_path):
     for name in (
         "TAVILY_API_KEY",
         "BRAVE_SEARCH_API_KEY",
@@ -168,9 +169,112 @@ def test_web_search_unconfigured_and_private_url_rejected(monkeypatch, tmp_path)
         "SORA_WEB_SEARCH_API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
-    registry = _registry(tmp_path)
-    assert "not configured" in registry.get("web_search").call(query="x")
+    registry = _registry(
+        tmp_path, web_search=WebSearchConfig(provider="off")
+    )
+    assert "disabled" in registry.get("web_search").call(query="x")
     assert "refusing" in registry.get("web_extract").call(url="http://127.0.0.1:8000/")
+
+
+class _FakeHTTPResponse:
+    def __init__(self, body: str, status: int = 200) -> None:
+        self._body = body.encode("utf-8")
+        self.status = status
+        self.headers = type(
+            "Headers",
+            (),
+            {"get_content_charset": lambda self: "utf-8"},
+        )()
+
+    def read(self, _limit: int = -1) -> bytes:
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_web_search_duckduckgo_decodes_results(monkeypatch, tmp_path):
+    html = """
+    <html><body>
+      <div class="result">
+        <a class="result__a"
+           href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Frules&amp;rut=x">
+          Badminton rules
+        </a>
+        <a class="result__snippet">The official rules of badminton.</a>
+      </div>
+      <div class="result">
+        <a class="result__a" href="https://example.org/second">Second result</a>
+        <div class="result__snippet">Another snippet.</div>
+      </div>
+    </body></html>
+    """
+    monkeypatch.setattr(
+        "sora_agent.toolpack.web.urlopen",
+        lambda request, timeout: _FakeHTTPResponse(html),
+    )
+    registry = _registry(
+        tmp_path, web_search=WebSearchConfig(provider="duckduckgo")
+    )
+
+    output = registry.get("web_search").call(query="badminton rules", limit=3)
+
+    assert "Badminton rules" in output
+    assert "https://example.com/rules" in output
+    assert "The official rules of badminton." in output
+    assert "Second result" in output
+    assert "https://example.org/second" in output
+
+
+def test_web_search_duckduckgo_challenge_is_reported(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "sora_agent.toolpack.web.urlopen",
+        lambda request, timeout: _FakeHTTPResponse("anomaly challenge", status=202),
+    )
+    registry = _registry(
+        tmp_path, web_search=WebSearchConfig(provider="duckduckgo")
+    )
+
+    output = registry.get("web_search").call(query="x")
+
+    assert "DuckDuckGo search failed" in output
+    assert "HTTP 202" in output
+
+
+def test_explicit_provider_without_key_is_reported(tmp_path):
+    registry = _registry(
+        tmp_path, web_search=WebSearchConfig(provider="tavily")
+    )
+    assert "TAVILY_API_KEY" in registry.get("web_search").call(query="x")
+
+
+def test_extra_roots_extend_the_file_sandbox(tmp_path):
+    workspace = tmp_path / "workspace"
+    extra = tmp_path / "extra"
+    workspace.mkdir()
+    extra.mkdir()
+    registry = _registry(workspace, roots=(extra,))
+
+    assert "wrote" in registry.get("write_file").call(
+        path=str(extra / "note.txt"), content="hello"
+    )
+    assert "hello" in registry.get("read_file").call(path=str(extra / "note.txt"))
+
+    with pytest.raises(ValueError, match="SORA_TOOLPACK_ROOTS"):
+        registry.get("write_file").call(
+            path=str(tmp_path / "outside" / "note.txt"), content="no"
+        )
+
+
+def test_allow_tmp_opts_the_temp_directory_in(tmp_path):
+    import tempfile
+
+    config = ToolPackConfig(root=tmp_path, allow_tmp=True)
+    target = Path(tempfile.gettempdir()) / "sora-toolpack-test.txt"
+    assert config.resolve(str(target)) == target.resolve()
 
 
 def test_todo_list_and_clarify_gate(tmp_path):
@@ -346,3 +450,66 @@ def test_static_system_prefix_stays_before_conversation(tmp_path):
     assert sent[2].content == "do work"
     assert sent[3].content.startswith("## SESSION STATE PROTOCOL")
     assert sent[4].content.startswith("## CURRENT TIME")
+
+
+def test_resolve_web_search_prefers_saved_keys_then_auto(monkeypatch):
+    for name in (
+        "SORA_WEB_SEARCH_PROVIDER",
+        "SORA_WEB_SEARCH_URL",
+        "TAVILY_API_KEY",
+        "BRAVE_SEARCH_API_KEY",
+        "SORA_WEB_SEARCH_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = recommended_settings()
+    settings.features.web_search.provider = "auto"
+    from_secrets = resolve_web_search(settings, {"TAVILY_API_KEY": "tvly-test"})
+    assert from_secrets.resolved_provider() == "tavily"
+    assert from_secrets.tavily_api_key == "tvly-test"
+
+    settings.features.web_search.provider = "duckduckgo"
+    explicit = resolve_web_search(settings, {"TAVILY_API_KEY": "tvly-test"})
+    assert explicit.resolved_provider() == "duckduckgo"
+
+
+def test_registry_passes_saved_search_key(monkeypatch):
+    settings = recommended_settings()
+    settings.features.web_search.provider = "tavily"
+    captured: dict[str, Any] = {}
+
+    def fake_http_json(url, *, payload=None, headers=None, timeout=20.0):
+        captured.update(payload or {})
+        return {
+            "results": [
+                {
+                    "title": "Rules",
+                    "url": "https://example.com/rules",
+                    "content": "The rules.",
+                }
+            ]
+        }
+
+    monkeypatch.setattr("sora_agent.toolpack.web._http_json", fake_http_json)
+    registry = build_registry(settings, secrets={"TAVILY_API_KEY": "tvly-saved"})
+
+    output = registry.get("web_search").call(query="rules")
+
+    assert "Rules" in output
+    assert captured["api_key"] == "tvly-saved"
+
+
+def test_root_environment_variables(monkeypatch, tmp_path):
+    import tempfile
+
+    workspace = tmp_path / "workspace"
+    extra = tmp_path / "extra"
+    workspace.mkdir()
+    extra.mkdir()
+    monkeypatch.setenv("SORA_TOOLPACK_ROOTS", str(extra))
+    monkeypatch.setenv("SORA_TOOLPACK_ALLOW_TMP", "1")
+
+    config = ToolPackConfig.from_env(root=workspace)
+
+    assert extra.resolve() in config.roots
+    assert Path(tempfile.gettempdir()).resolve() in config.roots

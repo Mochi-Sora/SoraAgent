@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sora-agent"
-version = "0.1.4"
+version = "0.1.5"
 description = "A model-agnostic agent harness with human-approval and quality gates."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -23,6 +23,10 @@ openai = ["openai>=1.0"]
 memory = ["zstandard>=0.22; python_version < '3.14'"]
 cli = ["typer>=0.12", "rich>=13", "questionary>=2"]
 files = ["pypdf>=4"]
+# Optional packages for execute_code. They are never installed by the
+# recommended setup; Advanced Setup or `sora update --extras ...` opt in.
+http = ["requests>=2.31"]
+scientific = ["numpy>=1.26"]
 dev = [
   "pytest>=7",
   "zstandard>=0.22; python_version < '3.14'",

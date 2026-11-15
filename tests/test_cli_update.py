@@ -92,6 +92,21 @@ def test_detected_extras_always_include_files_and_cli(monkeypatch):
     assert "files" in extras
     assert "cli" in extras
     assert "openai" not in extras
+    assert "http" not in extras
+    assert "scientific" not in extras
+
+
+def test_detected_extras_preserve_optional_code_packages(monkeypatch):
+    monkeypatch.setattr(
+        update,
+        "_module_available",
+        lambda name: name in {"numpy", "requests"},
+    )
+
+    extras = update._detected_extras()
+
+    assert "http" in extras
+    assert "scientific" in extras
 
 
 def test_resolve_target_latest_falls_back_to_main_without_a_release(

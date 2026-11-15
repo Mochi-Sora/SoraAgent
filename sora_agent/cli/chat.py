@@ -73,7 +73,7 @@ def build_handler(
     identity = build_identity(settings)
     memory = build_memory(settings, identity, secrets)
     provider = build_provider(settings, secrets)
-    registry = build_registry(settings)
+    registry = build_registry(settings, secrets=secrets)
     if sessions is ...:
         sessions = build_sessions(settings)
     calendar = build_calendar(settings)

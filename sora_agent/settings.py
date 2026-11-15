@@ -41,6 +41,7 @@ PERSONALITY_BASES = (
 )
 WARMTH_LEVELS = ("very_cold", "cold", "neutral", "warm", "very_warm")
 APPROVAL_MODES = ("off", "ask")
+WEB_SEARCH_PROVIDERS = ("auto", "duckduckgo", "tavily", "brave", "custom", "off")
 
 
 class SettingsError(ValueError):
@@ -318,6 +319,37 @@ class FileSettings:
 
 
 @dataclass
+class WebSearchSettings:
+    """Web-search provider selection.
+
+    Keys never live here; they are read from the environment or
+    ``secrets.env``.  DuckDuckGo is the keyless default; ``auto`` prefers a
+    custom endpoint, then Tavily, then Brave, then DuckDuckGo.
+    """
+
+    provider: str = "duckduckgo"
+    url: str | None = None
+
+    def __post_init__(self) -> None:
+        provider = str(self.provider or "auto").strip().lower()
+        if provider not in WEB_SEARCH_PROVIDERS:
+            raise SettingsError(
+                "features.web_search.provider must be one of "
+                f"{', '.join(WEB_SEARCH_PROVIDERS)}"
+            )
+        self.provider = provider
+        self.url = _as_optional_str(self.url)
+
+    @classmethod
+    def from_dict(cls, data: Any) -> WebSearchSettings:
+        raw = _mapping(data, "features.web_search")
+        return cls(
+            provider=_as_str(raw.get("provider"), "duckduckgo"),
+            url=_as_optional_str(raw.get("url")),
+        )
+
+
+@dataclass
 class FeatureSettings:
     memory: MemorySettings = field(default_factory=MemorySettings)
     files: FileSettings = field(default_factory=FileSettings)
@@ -329,6 +361,7 @@ class FeatureSettings:
     streaming: bool = True
     approval: str = "ask"
     quality: bool = True
+    web_search: WebSearchSettings = field(default_factory=WebSearchSettings)
 
     def __post_init__(self) -> None:
         approval = str(self.approval or "ask").strip().lower()
@@ -351,6 +384,7 @@ class FeatureSettings:
             streaming=_as_bool(raw.get("streaming"), base.streaming),
             approval=_as_str(raw.get("approval"), base.approval),
             quality=_as_bool(raw.get("quality"), base.quality),
+            web_search=WebSearchSettings.from_dict(raw.get("web_search")),
         )
 
 

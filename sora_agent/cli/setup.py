@@ -9,8 +9,11 @@ the safety implications.
 from __future__ import annotations
 
 import copy
+import importlib.util
 import json
 import os
+import subprocess
+import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -36,6 +39,7 @@ from ..settings import (
     save_secrets,
     save_settings,
     secrets_path,
+    update_secrets,
 )
 from . import prompts, ui
 from .prompts import WizardCancelled
@@ -57,6 +61,14 @@ _WARMTH_LABELS = {
 _APPROVAL_LABELS = {
     "off": "Off — consequential tools execute without asking",
     "ask": "Ask — prompt before consequential tools",
+}
+_WEB_SEARCH_LABELS = {
+    "auto": "Auto (DuckDuckGo fallback)",
+    "duckduckgo": "DuckDuckGo (no key)",
+    "tavily": "Tavily",
+    "brave": "Brave",
+    "custom": "Custom endpoint / SearXNG",
+    "off": "Off",
 }
 
 
@@ -253,6 +265,7 @@ def _show_recommended_settings(
             ("Memory", "Full architecture, including CortexDB sidecar"),
             ("Files", "On — attachments become markdown (20 MB max)"),
             ("Core tools", "On — file, shell, web, planning, code, delegation"),
+            ("Web search", "DuckDuckGo (no key)"),
             ("Identity", "On"),
             ("Clock", "On"),
             ("Calendar", "On"),
@@ -283,6 +296,8 @@ def _advanced_flow(settings: Settings, secrets: dict[str, str]) -> None:
     _configure_agent(settings, minimal=False)
     _configure_memory(settings)
     _configure_files(settings)
+    _configure_web_search(settings, secrets)
+    _configure_code_packages(settings)
     _configure_identity(settings)
     _configure_clock_calendar(settings)
     _configure_sessions(settings)
@@ -359,6 +374,8 @@ def _advanced_review(settings: Settings, secrets: dict[str, str]) -> None:
                 ("Memory", "memory"),
                 ("Files and images", "files"),
                 ("Core tool pack", "tools"),
+                ("Web search", "web_search"),
+                ("Optional Python packages", "code_packages"),
                 ("Identity", "identity"),
                 ("Clock and calendar", "clock"),
                 ("Sessions", "sessions"),
@@ -383,6 +400,8 @@ def _advanced_review(settings: Settings, secrets: dict[str, str]) -> None:
             "memory": lambda: _configure_memory(settings),
             "files": lambda: _configure_files(settings),
             "tools": lambda: _configure_tools(settings),
+            "web_search": lambda: _configure_web_search(settings, secrets),
+            "code_packages": lambda: _configure_code_packages(settings),
             "identity": lambda: _configure_identity(settings),
             "clock": lambda: _configure_clock_calendar(settings),
             "sessions": lambda: _configure_sessions(settings),
@@ -921,6 +940,134 @@ def _configure_tools(settings: Settings) -> None:
         )
 
 
+def _configure_web_search(settings: Settings, secrets: dict[str, str]) -> None:
+    search = settings.features.web_search
+    ui.section(
+        "Web search",
+        "DuckDuckGo works without a key and is the default. Tavily and Brave "
+        "use a saved API key; Custom points at a SearXNG or compatible JSON "
+        "endpoint. Keys are written to secrets.env, never config.json.",
+    )
+    current = search.provider if search.provider != "auto" else "duckduckgo"
+    provider = prompts.select(
+        "Search provider",
+        [
+            ("DuckDuckGo (no key)", "duckduckgo"),
+            ("Auto (custom > Tavily > Brave > DuckDuckGo)", "auto"),
+            ("Tavily", "tavily"),
+            ("Brave", "brave"),
+            ("Custom endpoint / SearXNG", "custom"),
+            ("Off", "off"),
+        ],
+        default=current,
+    )
+    search.provider = provider
+    if provider in {"tavily", "brave"}:
+        env_name = (
+            "TAVILY_API_KEY" if provider == "tavily" else "BRAVE_SEARCH_API_KEY"
+        )
+        value = prompts.password(
+            f"{env_name} (blank = keep the saved key)", allow_blank=True
+        )
+        if value.strip():
+            update_secrets({env_name: value.strip()})
+            secrets[env_name] = value.strip()
+            ui.success(f"Saved {env_name} to {secrets_path()}")
+    elif provider == "custom":
+        url = prompts.text(
+            "Search endpoint URL",
+            search.url or "",
+            validate=lambda value: (
+                True
+                if value.strip().startswith(("http://", "https://"))
+                else "enter an http:// or https:// URL"
+            ),
+        )
+        search.url = url.strip() or None
+        token = prompts.password(
+            "Bearer token for the endpoint (blank = keep the saved token/none)",
+            allow_blank=True,
+        )
+        if token.strip():
+            update_secrets({"SORA_WEB_SEARCH_API_KEY": token.strip()})
+            secrets["SORA_WEB_SEARCH_API_KEY"] = token.strip()
+            ui.success("Saved SORA_WEB_SEARCH_API_KEY to secrets.env")
+    elif provider in {"duckduckgo", "off"}:
+        ui.info(
+            "DuckDuckGo needs no key."
+            if provider == "duckduckgo"
+            else "Web search is off; the web_search tool will return an error."
+        )
+
+
+def _code_package_state() -> list[str]:
+    installed = []
+    for package in ("requests", "numpy"):
+        try:
+            found = importlib.util.find_spec(package) is not None
+        except (ImportError, ValueError):
+            found = False
+        if found:
+            installed.append(package)
+    return installed
+
+
+def _configure_code_packages(settings: Settings) -> None:
+    ui.section(
+        "Python packages for execute_code",
+        "The core environment is standard-library-only. Installing optional "
+        "packages is never done by Recommended Setup; this opt-in only runs "
+        "here in Advanced Setup.",
+    )
+    installed = _code_package_state()
+    if installed:
+        ui.info("Already importable: " + ", ".join(installed))
+    choice = prompts.select(
+        "Install optional code packages?",
+        [
+            ("Keep standard-library-only", "none"),
+            ("requests (HTTP client)", "http"),
+            ("numpy (numeric)", "scientific"),
+            ("Both requests and numpy", "both"),
+        ],
+        default="none",
+    )
+    packages = {
+        "http": ["requests"],
+        "scientific": ["numpy"],
+        "both": ["requests", "numpy"],
+    }.get(choice, [])
+    missing = [item for item in packages if item not in installed]
+    if not missing:
+        return
+    command = f"{sys.executable} -m pip install " + " ".join(missing)
+    ui.info("This will run: " + command)
+    if not prompts.confirm(
+        "Install these packages into the SoraAgent environment now?", default=False
+    ):
+        ui.info("Skipped. You can install them later with pip or `sora update --extras`.")
+        return
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", *missing],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        ui.warning(f"Package installation failed: {exc}")
+        return
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        ui.warning(
+            "Package installation failed"
+            + (": " + detail[-1] if detail else ".")
+        )
+        return
+    ui.success("Installed: " + ", ".join(missing))
+
+
 def _configure_identity(settings: Settings) -> None:
     ui.section(
         "Identity",
@@ -1135,6 +1282,13 @@ def _show_advanced_settings(
         "Subsystems",
         [
             ("Core tools", "On" if settings.features.tools else "Off"),
+            (
+                "Web search",
+                _WEB_SEARCH_LABELS.get(
+                    settings.features.web_search.provider,
+                    settings.features.web_search.provider,
+                ),
+            ),
             ("Identity", "On" if settings.features.identity else "Off"),
             ("Clock", "On" if settings.features.clock else "Off"),
             ("Calendar", "On" if settings.features.calendar else "Off"),

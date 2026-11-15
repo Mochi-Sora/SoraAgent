@@ -24,12 +24,14 @@ def resolve_path(config: Any, value: str, *, must_exist: bool = False) -> Path:
         candidate = config.root / candidate
     resolved = candidate.resolve(strict=False)
     if config.restrict_to_root:
-        try:
-            resolved.relative_to(config.root)
-        except ValueError as exc:
+        roots = tuple(getattr(config, "allowed_roots", lambda: (config.root,))())
+        if not any(resolved == root or root in resolved.parents for root in roots):
+            allowed = ", ".join(str(root) for root in roots)
             raise ValueError(
-                f"path is outside the configured workspace: {resolved}"
-            ) from exc
+                f"path is outside the configured workspace: {resolved} "
+                f"(allowed roots: {allowed}); set SORA_TOOLPACK_ROOTS to add "
+                "another directory"
+            )
     if must_exist and not resolved.exists():
         raise FileNotFoundError(str(resolved))
     return resolved

@@ -233,9 +233,42 @@ def build_sessions(settings: Settings) -> Any:
     return SessionStore(Path(root).expanduser() if root else None)
 
 
+def resolve_web_search(settings: Settings, secrets: Mapping[str, str] | None) -> Any:
+    from .toolpack.config import WebSearchConfig
+
+    secrets = secrets or {}
+    configured = settings.features.web_search
+    provider = (
+        os.getenv("SORA_WEB_SEARCH_PROVIDER", "").strip()
+        or configured.provider
+        or "auto"
+    )
+    url = os.getenv("SORA_WEB_SEARCH_URL", "").strip() or (configured.url or "")
+    tavily = (
+        os.getenv("TAVILY_API_KEY", "").strip()
+        or secrets.get("TAVILY_API_KEY", "").strip()
+    )
+    brave = (
+        os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
+        or secrets.get("BRAVE_SEARCH_API_KEY", "").strip()
+    )
+    api_key = (
+        os.getenv("SORA_WEB_SEARCH_API_KEY", "").strip()
+        or secrets.get("SORA_WEB_SEARCH_API_KEY", "").strip()
+    )
+    return WebSearchConfig(
+        provider=provider,
+        url=url,
+        tavily_api_key=tavily,
+        brave_api_key=brave,
+        api_key=api_key,
+    )
+
+
 def build_registry(
     settings: Settings,
     *,
+    secrets: Mapping[str, str] | None = None,
     clarify_gate: Any = None,
     delegate_runner: Any = None,
 ) -> Any:
@@ -262,9 +295,11 @@ def build_registry(
             from .toolpack.planning import ConsoleClarificationGate
 
             clarify_gate = ConsoleClarificationGate()
+    pack = ToolPackConfig.from_env()
+    pack.web_search = resolve_web_search(settings, secrets)
     register_core_tools(
         registry,
-        ToolPackConfig.from_env(),
+        pack,
         clarify_gate=clarify_gate,
         delegate_runner=delegate_runner,
     )

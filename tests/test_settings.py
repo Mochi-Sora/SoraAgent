@@ -238,6 +238,30 @@ def test_invalid_settings_values_are_rejected(factory):
         factory()
 
 
+def test_web_search_settings_round_trip_and_validation():
+    loaded = Settings.from_dict(
+        {
+            "features": {
+                "web_search": {
+                    "provider": "custom",
+                    "url": "https://search.example.test/api",
+                }
+            }
+        }
+    )
+    assert loaded.features.web_search.provider == "custom"
+    assert loaded.features.web_search.url == "https://search.example.test/api"
+
+    with pytest.raises(SettingsError):
+        Settings.from_dict({"features": {"web_search": {"provider": "bing"}}})
+
+
+def test_missing_web_search_section_inherits_duckduckgo():
+    loaded = Settings.from_dict({"setup": {"mode": "recommended"}})
+    assert loaded.features.web_search.provider == "duckduckgo"
+    assert loaded.features.web_search.url is None
+
+
 def test_feature_validation_rejects_unknown_policy_values():
     with pytest.raises(SettingsError):
         Settings.from_dict(

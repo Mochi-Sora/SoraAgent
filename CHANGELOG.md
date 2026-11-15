@@ -2,6 +2,33 @@
 
 All notable changes to SoraAgent are documented here.
 
+## [0.1.5] - 2026-11-15
+
+### Added
+
+- Keyless DuckDuckGo search as the default `web_search` provider, with
+  `duckduckgo`, `auto`, `tavily`, `brave`, `custom`, and `off` choices in
+  `sora setup` and config.  Tavily and Brave keys are read from the
+  environment or `secrets.env`, so daemon-launched gateways and bridges no
+  longer need exported keys.
+- Multiple workspace roots for the file tools (`SORA_TOOLPACK_ROOTS`) and an
+  opt-in OS temp directory (`SORA_TOOLPACK_ALLOW_TMP`).
+
+### Added
+
+- Optional `http` (`requests`) and `scientific` (`numpy`) extras for
+  `execute_code`. Recommended Setup never installs them; Advanced Setup asks
+  before running pip, and `sora update --extras http,scientific` is the
+  non-interactive path. `sora update` preserves them once present.
+
+### Changed
+
+- `build_registry()` accepts the secrets mapping; `sora doctor` now reports the
+  workspace roots, web-search provider, Python version, optional code packages,
+  and registered file tools.
+- Workspace-boundary errors name the allowed roots and the variable that adds
+  another directory.
+
 ## [0.1.4] - 2026-11-14
 
 ### Fixed

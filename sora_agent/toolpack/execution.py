@@ -75,7 +75,9 @@ def register_execution_tools(registry: ToolRegistry, config: Any) -> list[Tool]:
     definition = Tool(
         execute_code,
         "execute_code",
-        "Run a Python script with a timeout. Use when a task needs several tool calls or data processing.",
+        "Run a Python script with a timeout. The core environment is "
+        "standard-library-only; requests/numpy are optional installs. Use "
+        "urllib.request for HTTP.",
         needs_approval=True,
         aliases=("run python", "python script", "code", "program"),
     )

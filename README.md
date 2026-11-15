@@ -34,7 +34,7 @@ deliberately tiny; the production concerns live in explicit gates around it:
 
 The core imports only the Python standard library; optional integrations
 (`openai`, `zstandard`) are extras. Requires Python **3.9+**. Current version:
-**0.1.4** — see [CHANGELOG.md](CHANGELOG.md).
+**0.1.5** — see [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -176,6 +176,12 @@ parameters:
 | local source checkout | `SORA_SOURCE` | — |
 | fork/repository | `SORA_REPO` | `Mochi-Sora/SoraAgent` |
 
+`http` (`requests`) and `scientific` (`numpy`) are optional extras for
+`execute_code`. They are not part of the installer or Recommended Setup
+defaults. Advanced Setup asks before installing them; non-interactive installs
+can use `SORA_EXTRAS=openai,memory,cli,files,http,scientific` or
+`sora update --extras http,scientific`.
+
 ### From a checkout (contributors)
 
 ```bash
@@ -211,6 +217,7 @@ sora update --check      # only report whether an update is available
 sora update --version main
 sora update --extras none
 sora update --extras openai,memory,cli,files   # add PDF support to an old install
+sora update --extras http,scientific           # optional execute_code packages
 ```
 
 If the repository has no published GitHub release, `sora update` follows
@@ -260,15 +267,18 @@ The first screen offers exactly two paths:
 
 Recommended Setup writes full long-term memory (including the CortexDB
 sidecar), file understanding, identity, clock, calendar, sessions, streaming,
-approval prompts, quality evaluation, and limits of 12 steps / 80 turns / 60 s
-timeouts / 3 retries.
+approval prompts, quality evaluation, keyless DuckDuckGo web search, and limits
+of 12 steps / 80 turns / 60 s timeouts / 3 retries.
 
 Advanced Setup starts with temperature `0.1` and safety features disabled. It
-shows warning panels and requires typing `I understand` before continuing and
-`save` before writing the file. With approval off, consequential tools execute
-without asking (an audit entry is still recorded). With quality off, `/eval`
-reports that evaluation is disabled. Low-level validation, timeouts, process
-isolation, and audit logging always remain active.
+also exposes the web-search provider (DuckDuckGo, Tavily, Brave, a custom
+endpoint, or off) and an opt-in installer for the `requests`/`numpy` code
+extras. It shows warning panels and requires typing `I understand` before
+continuing and `save` before writing the file. With approval off,
+consequential tools execute without asking (an audit entry is still recorded).
+With quality off, `/eval` reports that evaluation is disabled. Low-level
+validation, timeouts, process isolation, and audit logging always remain
+active.
 
 After setup:
 
@@ -720,11 +730,11 @@ is enabled), so every pack tool is reached through lexical tool search.
 | `search_files` | Regex content search or glob file search | no |
 | `terminal` | Run a shell command with timeout and capped output | yes |
 | `process_manage` | List/poll/log/wait/kill/write background processes | yes |
-| `web_search` | Search via Tavily, Brave, or `SORA_WEB_SEARCH_URL` | no |
+| `web_search` | Search via DuckDuckGo (default), Tavily, Brave, or a custom endpoint | no |
 | `web_extract` | Fetch a public HTTP(S) page as readable text | no |
 | `todo_list` | Per-session task list | no |
 | `clarify` | Ask the user 1-5 questions when blocked | no |
-| `execute_code` | Run Python with a timeout | yes |
+| `execute_code` | Run Python with a timeout (stdlib core; optional `requests`/`numpy`) | yes |
 | `delegate_task` | Run isolated child agents and return summaries | no |
 
 Behavior details:
@@ -736,7 +746,16 @@ Behavior details:
   rejecting the file.
 - `SORA_TOOLPACK_ROOT` (or `SORA_WORKSPACE`) sets the workspace for file and
   shell tools; the default is the process working directory.  File tools refuse
-  paths outside it unless `SORA_TOOLPACK_RESTRICT=0`.
+  paths outside it unless `SORA_TOOLPACK_RESTRICT=0`.  Add more directories with
+  `SORA_TOOLPACK_ROOTS` (path-separator list), or opt the OS temp directory in
+  with `SORA_TOOLPACK_ALLOW_TMP=1`.
+- `features.web_search.provider` selects `duckduckgo` (the keyless default),
+  `auto`, `tavily`, `brave`, `custom`, or `off`.  `SORA_WEB_SEARCH_PROVIDER` and
+  `SORA_WEB_SEARCH_URL` override it.  Tavily and Brave keys are read from the
+  environment or `~/.sora_agent/secrets.env`; they no longer need to be exported
+  in the gateway or bridge service.  DuckDuckGo can be challenged from
+  datacenter IPs; switch to Tavily, Brave, or a custom SearXNG endpoint if that
+  happens.
 - `SORA_TOOLPACK_TERMINAL_TIMEOUT`, `SORA_TOOLPACK_CODE_TIMEOUT`,
   `SORA_TOOLPACK_MAX_READ_BYTES`, `SORA_TOOLPACK_MAX_READ_CHARS`,
   `SORA_TOOLPACK_MAX_WRITE_BYTES`, `SORA_TOOLPACK_MAX_TERMINAL_OUTPUT`,
@@ -1636,7 +1655,7 @@ Command-line flags override all of these. The same precedence applies to
 | `SORA_MEMORY`, `SORA_MEMORY_ROOT`, and all `SORA_MEMORY_*` knobs | Memory | on, `~/.sora_agent` |
 | `SORA_CALENDAR_DB` | Calendar | `~/.sora_agent/calendar.db` |
 | `SORA_SESSIONS_ROOT` | Chat sessions | `~/.sora_agent/sessions` |
-| `SORA_TOOLPACK`, `SORA_TOOLPACK_ROOT`, and all `SORA_TOOLPACK_*` knobs | Core tool pack | on, process cwd |
+| `SORA_TOOLPACK`, `SORA_TOOLPACK_ROOT`, `SORA_TOOLPACK_ROOTS`, `SORA_TOOLPACK_ALLOW_TMP`, and all other `SORA_TOOLPACK_*` knobs | Core tool pack | on, process cwd |
 | `SORA_TELEGRAM_*` | Telegram channel | token required; deny-all allow list |
 | `SORA_TELEGRAM_DOWNLOAD_FILES`, `SORA_TELEGRAM_MAX_ATTACHMENT_BYTES` | Telegram attachments | on, 20 MB |
 
