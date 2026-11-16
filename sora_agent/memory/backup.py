@@ -63,7 +63,30 @@ class BackupManager:
         label = (day or date.fromisoformat(Path(source).stem)).isoformat()
         return self.snapshot(source, "daily", label)
 
-    def snapshot(self, source: Path, kind: str, label: str) -> dict[str, Any]:
+    def snapshot_specialist_daily(
+        self, agent_id: str, source: Path, day: date | None = None
+    ) -> dict[str, Any]:
+        label = (day or date.fromisoformat(Path(source).stem)).isoformat()
+        directory = self.config.specialist_backup_dir / _safe_label(agent_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        try:
+            directory.chmod(0o700)
+        except OSError:
+            pass
+        manifest = self.snapshot(
+            source, "daily", label, directory=directory
+        )
+        self._prune_specialist(directory)
+        return manifest
+
+    def snapshot(
+        self,
+        source: Path,
+        kind: str,
+        label: str,
+        *,
+        directory: Path | None = None,
+    ) -> dict[str, Any]:
         if not zstd_available():
             raise BackupError(
                 "memory snapshots require zstd support: install the optional "
@@ -73,13 +96,15 @@ class BackupManager:
         if not source.exists():
             raise BackupError("database does not exist: " + str(source))
         stamp = self.now().strftime("%Y-%m-%dT%H%M%S%fZ")
+        directory = Path(directory) if directory is not None else self.config.backup_dir
+        directory.mkdir(parents=True, exist_ok=True)
         filename = f"{stamp}-{_safe_label(kind)}-{_safe_label(label)}.db.zst"
-        target = self.config.backup_dir / filename
+        target = directory / filename
         if target.exists():
             filename = f"{stamp}-{_safe_label(kind)}-{_safe_label(label)}-{os.getpid()}.db.zst"
-            target = self.config.backup_dir / filename
+            target = directory / filename
         with tempfile.TemporaryDirectory(
-            prefix=".snapshot-", dir=str(self.config.backup_dir)
+            prefix=".snapshot-", dir=str(directory)
         ) as tmp:
             raw = Path(tmp) / "snapshot.db"
             self._vacuum_into(source, raw)
@@ -103,8 +128,9 @@ class BackupManager:
             "bytes": target.stat().st_size,
         }
         self._write_json(Path(str(target) + ".json"), manifest)
-        self._update_latest(manifest)
-        self.prune()
+        self._update_latest(manifest, directory)
+        if directory == self.config.backup_dir:
+            self.prune()
         return manifest
 
     def restore(
@@ -302,8 +328,10 @@ class BackupManager:
             pass
         os.replace(str(temp), str(path))
 
-    def _update_latest(self, manifest: dict[str, Any]) -> None:
-        path = self.config.backup_dir / "latest.json"
+    def _update_latest(
+        self, manifest: dict[str, Any], directory: Path | None = None
+    ) -> None:
+        path = (directory or self.config.backup_dir) / "latest.json"
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -313,8 +341,33 @@ class BackupManager:
         data[str(manifest.get("kind", "active"))] = manifest
         self._write_json(path, data)
 
-    def _refresh_latest(self) -> None:
-        path = self.config.backup_dir / "latest.json"
+    def _prune_specialist(self, directory: Path) -> list[Path]:
+        manifests: list[dict[str, Any]] = []
+        for path in sorted(directory.glob("*.db.zst.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and data.get("file"):
+                manifests.append(data)
+        manifests.sort(key=lambda item: str(item.get("created_at", "")))
+        keep = max(1, self.config.backup_keep_daily)
+        removed: list[Path] = []
+        for manifest in manifests[:-keep]:
+            for candidate in (
+                directory / str(manifest.get("file", "")),
+                directory / (str(manifest.get("file", "")) + ".json"),
+            ):
+                try:
+                    candidate.unlink()
+                    removed.append(candidate)
+                except (FileNotFoundError, OSError):
+                    pass
+        self._refresh_latest(directory)
+        return removed
+
+    def _refresh_latest(self, directory: Path | None = None) -> None:
+        path = (directory or self.config.backup_dir) / "latest.json"
         current: dict[str, Any] = {}
         for kind in ("active", "daily"):
             manifest = self.latest(kind)

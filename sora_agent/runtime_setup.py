@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +71,7 @@ def desktop_settings() -> Settings:
     settings = legacy_settings()
     settings.features.memory = MemorySettings()
     settings.features.files = FileSettings()
+    settings.features.tools = True
     settings.features.identity = True
     settings.features.clock = True
     settings.features.calendar = True
@@ -271,6 +273,10 @@ def build_registry(
     secrets: Mapping[str, str] | None = None,
     clarify_gate: Any = None,
     delegate_runner: Any = None,
+    delegation_store: Any = None,
+    specialist_runner: Any = None,
+    allow_create: bool | None = None,
+    pack: Any = None,
 ) -> Any:
     """Return the runtime tool registry.
 
@@ -295,13 +301,24 @@ def build_registry(
             from .toolpack.planning import ConsoleClarificationGate
 
             clarify_gate = ConsoleClarificationGate()
-    pack = ToolPackConfig.from_env()
+    pack = pack or ToolPackConfig.from_env()
     pack.web_search = resolve_web_search(settings, secrets)
+    delegation = settings.features.delegation
+    if allow_create is None:
+        allow_create = bool(
+            delegation.enabled and delegation.create_mode == "auto"
+        )
     register_core_tools(
         registry,
         pack,
         clarify_gate=clarify_gate,
         delegate_runner=delegate_runner,
+        delegation_store=delegation_store,
+        specialist_runner=specialist_runner,
+        allow_create=allow_create and delegation.enabled,
+        max_agents=delegation.max_agents,
+        max_per_day=delegation.max_per_day,
+        enable_specialists=delegation.enabled,
     )
     return registry
 
@@ -310,6 +327,8 @@ def build_memory(
     settings: Settings,
     identity: Any,
     secrets: Mapping[str, str] | None = None,
+    *,
+    auto_dream: bool | None = None,
 ) -> Any:
     """Build the memory hook from settings, or return ``None``."""
     from .memory.config import MemoryConfig
@@ -335,12 +354,22 @@ def build_memory(
         wake_base_url=wake_base_url,
         wake_api_key=wake_api_key,
     )
-    if not config.enabled:
+    env_memory = os.getenv("SORA_MEMORY", "")
+    if env_memory.strip() and env_memory.strip().lower() not in {
+        "1", "true", "yes", "on"
+    }:
         return None
+    if not config.enabled:
+        config = replace(
+            config,
+            enabled=True,
+            daily_only=True,
+            auto_download=False,
+        )
     return MemoryHook(
         config,
         identity=identity,
-        auto_dream=config.dream_auto,
+        auto_dream=config.dream_auto if auto_dream is None else auto_dream,
     )
 
 

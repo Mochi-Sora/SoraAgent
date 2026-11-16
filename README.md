@@ -34,7 +34,7 @@ deliberately tiny; the production concerns live in explicit gates around it:
 
 The core imports only the Python standard library; optional integrations
 (`openai`, `zstandard`) are extras. Requires Python **3.9+**. Current version:
-**0.1.5** — see [CHANGELOG.md](CHANGELOG.md).
+**0.2.0** — see [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -263,7 +263,7 @@ The first screen offers exactly two paths:
 | Mode | What it does |
 | --- | --- |
 | **Recommended Setup** | Everything on and tuned for daily use. Asks only for the channel, main model, agent name/icon, temperature, and personality, then shows a review you can edit. |
-| **Advanced Setup (tinker with caution)** | Every optional subsystem starts **off**, including memory, file understanding, identity, clock, calendar, sessions, streaming, approval prompts, and quality evaluation. Each section can be edited individually and ends with an explicit save confirmation. |
+| **Advanced Setup (tinker with caution)** | Every optional subsystem starts **off**, including long-term memory (daily-only consolidation remains available), file understanding, identity, clock, calendar, sessions, streaming, approval prompts, and quality evaluation. Each section can be edited individually and ends with an explicit save confirmation. |
 
 Recommended Setup writes full long-term memory (including the CortexDB
 sidecar), file understanding, identity, clock, calendar, sessions, streaming,
@@ -500,6 +500,7 @@ channel use.
 | `calendar` | on (`default_calendar`) | Calendar store and tools; `False` disables them. |
 | `calendar_db` | `~/.sora_agent/calendar.db` | Calendar database path override. |
 | `delegate` | `True` | Wire a registered `delegate_task` tool to isolated child agents. |
+| `system_prompt` | built-in Sora prompt | Replace the base system prompt; tool/memory policies are still appended. |
 
 `memory`, `identity`, `clock`, and `calendar` are resolved at construction and
 fail open: a missing optional dependency, corrupt file, or bad configuration
@@ -718,9 +719,12 @@ result, in this order:
 ## Built-in core tool pack
 
 `build_registry()` registers a small Hermes-style core pack when the `tools`
-feature is enabled.  Nothing in the pack is visible at the start of a run:
-`AgentRuntime` still exposes only `find_tools` (and `memory_recall` when memory
-is enabled), so every pack tool is reached through lexical tool search.
+feature is enabled. Most pack tools are hidden at the start of a run:
+`AgentRuntime` exposes only `find_tools` (and `memory_recall` when memory is
+enabled), so ordinary tools are reached through lexical tool search.
+`ChatHandler` additionally exposes `find_delegates` and `delegate_to_agent`
+when specialists are enabled; `create_delegation_agent` remains hidden and is
+only registered when the opt-in auto-create setting is on.
 
 | Tool | Purpose | Approval |
 | --- | --- | --- |
@@ -736,6 +740,9 @@ is enabled), so every pack tool is reached through lexical tool search.
 | `clarify` | Ask the user 1-5 questions when blocked | no |
 | `execute_code` | Run Python with a timeout (stdlib core; optional `requests`/`numpy`) | yes |
 | `delegate_task` | Run isolated child agents and return summaries | no |
+| `find_delegates` | Find user-created specialists for a task | no |
+| `delegate_to_agent` | Hand a task to a user-created specialist | no |
+| `create_delegation_agent` | Create a provisional specialist (opt-in) | no |
 
 Behavior details:
 
@@ -771,9 +778,79 @@ Behavior details:
   agent gets the same provider and approval gate but no memory, identity,
   clock, calendar, or delegation tool, so it cannot recurse or read the parent
   conversation.
+- Specialists are separate from ephemeral sub-agents.  `find_delegates` and
+  `delegate_to_agent` are always visible to `ChatHandler`; `delegate_to_agent`
+  runs a persistent specialist with its own prompt, model, scoped tools, and
+  read-only memory.  A specialist may call `delegate_task` for workers, but it
+  cannot call other specialists or create new ones.  See **Specialists** below.
 - The pack never weakens the memory-recall-first rule or the approval gate.
   Consequential tools are still marked `needs_approval`, and tool validation,
   timeouts, truncation, and audit logging are unchanged.
+
+## Specialists (delegation agents)
+
+Specialists are persistent, user-created agents that sit beside the main
+orchestrator. They are not ephemeral sub-agents: they keep a prompt, model,
+tool grants, and (optionally) read-only memory across runs.
+
+```bash
+sora delegate create \
+  --name "Research Analyst" \
+  --description "Finds and cites public sources" \
+  --when "research, comparisons, literature, citations" \
+  --prompt-file research.md \
+  --tools research
+sora delegate list
+sora delegate show research-analyst
+sora delegate pause research-analyst
+sora delegate promote research-analyst   # clear a provisional flag
+sora delegate delete research-analyst --yes
+```
+
+Manifests live in `~/.sora_agent/delegations/<id>/agent.json` (override with
+`SORA_DELEGATIONS_ROOT`). Tool grants are packs (`research`, `files`, `web`,
+`planning`) or explicit safe tool names. File tools are rooted in
+`~/.sora_agent/delegations/<id>/workspace`; writes and patches there are
+approval-gated, and paths outside the specialist workspace are rejected.
+Specialists also get two durable workspace-note tools:
+`remember_daily` and `recall_daily` (one JSONL file per local calendar day,
+30-day retention). Long-term memory stays unified: specialists only get
+read-only global recall, never a separate long-term namespace. They cannot
+receive browser, delegation-control, or other-specialist tools.
+
+The main agent sees `find_delegates` and `delegate_to_agent` at the start of
+every chat turn. `find_delegates(need)` ranks specialists lexically; then
+`delegate_to_agent(agent_id, goal, context)` hands over a self-contained task
+and returns a structured summary. A specialist gets a fresh child `Agent` with
+its own provider/model, workspace-scoped registry, read-only global memory
+recall, specialist daily stores, and a child approval gate. It may spawn
+ephemeral workers with `delegate_task`, but cannot call other specialists or
+create new ones.
+
+### Opt-in creation by the main agent
+
+Advanced Setup asks:
+
+> Allow the main agent to create provisional specialists on demand?
+
+It defaults to **No**. The saved setting is
+`features.delegation.create_mode` (`user` or `auto`); Recommended Setup always
+uses `user`.
+
+When enabled, the main agent gets a hidden `create_delegation_agent` tool. It
+can only create **provisional** specialists with safe research/file/web/planning
+grants, deduplicates similar existing agents, and enforces
+`features.delegation.max_agents` (20) and `max_per_day` (3). Auto-created agents
+are marked `created_by: main` and `metadata.provisional: true`; they are
+visible to the user and can be paused or deleted. If you do not want the extra
+risk, leave this off and create specialists yourself.
+
+```bash
+sora config set features.delegation.create_mode auto   # opt in
+sora config set features.delegation.max_agents 20
+sora config set features.delegation.max_per_day 3
+sora config set features.delegation.create_mode user   # opt out
+```
 
 ## Lazy tool discovery
 
@@ -781,7 +858,9 @@ The initial tool list is intentionally partial. At the start of a run the model
 sees only:
 
 - `find_tools` — always;
-- `memory_recall` — when memory is enabled (and it must be the first action).
+- `memory_recall` — when memory is enabled (and it must be the first action);
+- `find_delegates` and `delegate_to_agent` — when specialists are enabled, so
+  the orchestrator can route specialist-shaped work without a search step.
 
 Everything else stays registered but hidden. The hidden catalog is rendered
 *inside the `find_tools` schema* (name + one-line purpose, capped at 40 entries)
@@ -1140,9 +1219,9 @@ MemoryRecallService ──► DailyStore (today/yesterday, verbatim SQLite)
 after_run ──► redact via identity firewall ──► DailyStore append
    │
    ▼ nightly (DreamScheduler) or `sora-memory dream`
-DreamRunner: backup → transfer daily→CortexDB → dedupe → conflicts →
-graph hints → Louvain communities → inferred links → optional rules →
-decay → expire → mark → sweep expired → report → artifact cleanup
+DreamRunner: backup → transfer main+specialist daily→CortexDB →
+dedupe → conflicts → graph hints → Louvain communities → inferred links →
+optional rules → decay → expire → mark → post-consolidation backup → report
 ```
 
 - **Daily verbatim memory**: one SQLite file per UTC day
@@ -1180,37 +1259,49 @@ decay → expire → mark → sweep expired → report → artifact cleanup
 - **Fail-open**: if the sidecar is unavailable, long-term recall degrades to
   daily results with an explicit note and the backend is retried at most every
   30 seconds. A broken memory hook never breaks a run.
-- **Dream consolidation**: pending day files (strictly before today) are
-  verified-saved to CortexDB with deterministic ids
-  (`daily:<date>:<row id>`), then only the transferred rows are deleted. Rows
-  appended while the transfer is running stay in the day file for the next
-  run, and a prior partial run is skipped by id instead of duplicated. The
-  dream pipeline deduplicates near-identical memories, flags conflicting
-  numeric claims (which can engage the optional wake model), builds a
-  token-overlap graph, runs a dependency-free deterministic Louvain community
-  pass, infers two-hop links, optionally applies configured rules, decays
-  importance (default ×0.98, floor 0.05), expires records, and writes a JSON
-  report to `~/.sora_agent/memory/dream/reports/<run_id>.json`. Dream artifacts
-  (merged records, conflicts, inferred links) are transient and cleaned up at
-  the end of the run. A file lock (`dream.lock`) makes concurrent dreams fail
-  fast with `DreamBusy`.
+- **Dream consolidation**: pending day files (strictly before today) from the
+  main and every specialist are verified-saved to CortexDB. Main ids are
+  `daily:<date>:<row id>`; specialist ids are
+  `specialist:<id>:daily:<date>:<row id>` and carry `source="specialist"`,
+  `specialist_id`, and the specialist name. Only successfully transferred rows
+  are deleted; rows appended during the run stay for the next dream. A row that
+  fails transfer is retried immediately, then kept for the next midnight; a
+  second nightly failure forgets it (deleted and recorded in the report). New
+  memories are marked half-done (`dream_round=1`, due next midnight); the next
+  run processes them alongside the new daily rows and marks them complete
+  (`dream_round=2`, `dream_due=null`). The pipeline deduplicates near-identical
+  memories, flags conflicting numeric claims (which can engage the optional
+  wake model), builds a token-overlap graph, runs a dependency-free
+  deterministic Louvain community pass, infers two-hop links, optionally
+  applies configured rules, decays importance (default ×0.98, floor 0.05),
+  expires records, and writes a JSON report. A file lock (`dream.lock`) makes
+  concurrent dreams fail fast.
+- **Daily-only mode**: if memory is disabled (or enabled but CortexDB is
+  unavailable), daily stores are the whole memory. No transfer, relationships,
+  fact extraction, conflicts, or decay run. A simple consolidator deduplicates
+  exact duplicate entries, compacts each day, and preserves the previous
+  snapshot losslessly in `daily/archive/` beside the consolidated store.
+  `sora doctor` reports `Daily-only` or `Daily-only fallback`; initial setup
+  runs doctor so an enabled-but-unavailable long-term store is visible.
 - **Scheduling**: when memory is enabled and `SORA_MEMORY_DREAM_AUTO` is true, a
-  daemon thread (`sora-memory-dream`) runs one dream at the configured UTC hour
-  (default midnight) and performs a startup catch-up if work is pending.
-- **Backups**: `VACUUM INTO` + `PRAGMA integrity_check`, zstd compression,
-  SHA-256 manifests, and retention of 4 active / 14 daily / 8 weekly / 12
-  monthly snapshots. Missing zstd support is reported as an actionable
-  `BackupError`. Pruning accepts only plain filenames that resolve inside the
-  backup directory, so a corrupt or malicious manifest cannot delete files
-  elsewhere (including through symlinks). Restore verifies the manifest checksum
-  and integrity, stops the sidecar, preserves the previous DB as
-  `*.pre-restore-<stamp>`, and restarts the sidecar.
+  daemon thread (`sora-memory-dream`) runs one dream/consolidation at the
+  configured UTC hour (default midnight) and performs a startup catch-up if
+  work is pending in main or specialist daily stores.
+- **Backups**: long-term snapshots use `VACUUM INTO` + `PRAGMA integrity_check`,
+  zstd compression, SHA-256 manifests, and retention of 4 active / 14 daily /
+  8 weekly / 12 monthly snapshots. A pre- and post-consolidation active
+  snapshot are written; the previous remains archived. Specialist daily
+  snapshots live under `~/.sora_agent/memory backup/specialists/<id>/` with a
+  per-specialist `latest.json`. Missing zstd support is reported as an
+  actionable `BackupError`. Pruning accepts only plain filenames that resolve
+  inside the backup directory. Restore verifies the manifest checksum and
+  integrity and preserves the previous DB as `*.pre-restore-<stamp>`.
 
 ### Key configuration
 
 | Env var | Default | Meaning |
 | --- | --- | --- |
-| `SORA_MEMORY` | `true` | Master switch (opt-out). |
+| `SORA_MEMORY` | `true` | Master switch; `0` disables memory entirely. Setting `features.memory.enabled=false` without this env switch uses daily-only mode. |
 | `SORA_MEMORY_ROOT` | `~/.sora_agent` | Root for db, daily files, backups, logs. |
 | `SORA_MEMORY_USER_ID` | `sora` | Scope used when writing/recalling memories. |
 | `SORA_MEMORY_RECALL_TOP_K` | `8` (1–50) | Recall result budget. |
@@ -1391,17 +1482,30 @@ turns and is cleared by `/reset`. With a vision model (auto-selected or
 configured) or OCR, the main model does not need to support images or file
 inputs.
 
+Conversion itself lives in `sora_agent/documents/`: a registry of adapters and
+a shared `Document`/`Block` model (headings, paragraphs, lists, tables, code,
+notes, provenance). File understanding stays the façade that enforces download
+limits, the per-turn budget, and the untrusted boundary; adapters only turn
+bytes into blocks.
+
 Supported conversions:
 
 | Input | Output |
 | --- | --- |
-| Text, Markdown, source code, JSON, XML, YAML, TOML, HTML | Fenced text or a cleaned text block; JSON is pretty-printed and HTML scripts/styles are dropped. |
-| CSV | Markdown table for small files, fenced CSV otherwise. |
-| PDF | Extracted text with the optional `files` extra (`pypdf`). |
-| DOCX, PPTX, XLSX | Paragraphs, slide text, and sheet tables using the standard library. |
-| ZIP, TAR | Entry listing with sizes; nested archives are not extracted. |
+| Text, Markdown, source code, JSON/JSONL, XML, YAML, TOML, HTML | Fenced code, pretty JSON, or structured HTML (headings, paragraphs, lists, tables). |
+| CSV/TSV | Markdown table for small files, fenced CSV otherwise. |
+| PDF | Per-page text with the optional `files` extra (`pypdf`); scanned PDFs need an OCR backend. |
+| DOCX | Headings, paragraphs, lists, tables, and embedded-image notices. |
+| PPTX | Slide headings, text, tables, speaker notes, and image notices. |
+| XLSX | Sheet names, rows/tables, formulas, and merged-cell HTML tables. |
+| ODT/ODS/ODP | Headings, paragraphs, lists, tables, sheets, and slide text. |
+| EPUB | Title plus spine chapters converted from XHTML. |
+| EML | Headers, plain-text or HTML body, and attachment names. |
+| RTF | Text paragraphs using a dependency-free RTF text extractor. |
+| ZIP, TAR, TGZ | Manifest plus bounded recursive conversion of text/document members (nested archives included). |
 | Images | A configured vision model, then OCR if available, then dimensions/hash metadata. |
 | Audio, video, voice notes | Duration/dimensions/title metadata; transcription is not enabled. |
+| Legacy `.doc/.xls/.ppt` | Detected as OLE binary; returns a clear conversion note instead of a text dump. |
 | Other binary | MIME type, size, SHA-256, and a short hex preview. |
 
 Configuration lives under `features.files`:
@@ -1430,8 +1534,15 @@ image description makes one extra model request when a vision model is used.
 Attachment and vision text is wrapped in an `<untrusted>` element with a random
 per-turn boundary token. The system prompt tells the model that this content is
 data, never instructions, and that identity/state edits may never be triggered
-by it. DOCX/PPTX/XLSX and archive parsing never executes content and never
-extracts nested archives.
+by it. Parsing never executes document content or macros. Archives are expanded
+with entry, depth, and total-byte caps; nested archives are included up to the
+limit.
+
+`sora doctor` lists the active converters, whether PDF text (`pypdf`) and image
+OCR (`pytesseract` + Pillow) are available, and which formats still need an
+external engine. “Any file” is a capability ladder, not a promise: scanned
+PDFs, images, audio/video, and legacy Office formats need an optional OCR, ASR,
+or conversion backend.
 
 ### Adding a channel
 
@@ -1481,10 +1592,12 @@ sora config list
 sora config get KEY
 sora config set KEY VALUE
 sora config unset KEY
+sora delegate list|show|create|promote|pause|resume|delete
 ```
 
 Running `sora` with no command starts the local chat. If no configuration
-exists, it offers the setup wizard first.
+exists, it offers the setup wizard first. The wizard runs `sora doctor`
+automatically after saving so unavailable features are visible immediately.
 
 | Command | Purpose |
 | --- | --- |
@@ -1497,6 +1610,7 @@ exists, it offers the setup wizard first.
 | `set-key` | Store an API key or Telegram token in `secrets.env` without re-running setup. |
 | `config list/get` | Inspect the saved configuration. `config get` uses dotted keys such as `provider.model`. |
 | `config set/unset` | Change one value or remove it so the preset default applies again. Values are validated before saving. |
+| `delegate` | Manage persistent specialists: `list`, `show`, `create`, `promote`, `pause`, `resume`, `delete`. |
 
 The config file is deliberately plain JSON:
 

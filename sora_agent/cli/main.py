@@ -25,6 +25,7 @@ from ..settings import (
     update_secrets,
 )
 from . import daemon as gateway_daemon
+from . import delegate as delegate_module
 from . import doctor as doctor_module
 from . import prompts, ui
 from . import update as update_module
@@ -38,6 +39,7 @@ app = typer.Typer(
     pretty_exceptions_show_locals=False,
     help="SoraAgent: setup, terminal chat, gateway, and configuration.",
 )
+app.add_typer(delegate_module.app, name="delegate")
 
 
 @app.callback()

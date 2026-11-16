@@ -214,3 +214,29 @@ def test_mask_never_prints_a_whole_secret():
     assert masked.endswith("7890")
 
 
+
+
+def test_setup_finish_runs_doctor(monkeypatch, tmp_path):
+    from sora_agent.cli import doctor as doctor_module
+    from sora_agent.cli import setup as setup_module
+
+    settings = advanced_settings()
+    settings.features.memory.enabled = False
+    settings.features.memory.sidecar = False
+    settings.paths.memory_root = str(tmp_path / "memory")
+    called = []
+
+    monkeypatch.setattr(setup_module, "save_settings", lambda value: tmp_path / "config.json")
+    monkeypatch.setattr(setup_module, "save_secrets", lambda value: tmp_path / "secrets.env")
+    monkeypatch.setattr(setup_module, "_next_steps", lambda value: None)
+    monkeypatch.setattr(setup_module.prompts, "confirm", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        doctor_module,
+        "run_doctor",
+        lambda value, secrets: called.append((value, secrets)) or 0,
+    )
+
+    setup_module._finish(settings, {})
+
+    assert len(called) == 1
+    assert called[0][0] is settings

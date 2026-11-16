@@ -15,6 +15,7 @@ from ..channels.types import (
     InboundMessage,
     TurnReply,
 )
+from ..delegation import DelegationStore, SpecialistAgentRunner
 from ..persona import apply_persona, display_name
 from ..runtime_setup import (
     approval_mode,
@@ -73,12 +74,25 @@ def build_handler(
     identity = build_identity(settings)
     memory = build_memory(settings, identity, secrets)
     provider = build_provider(settings, secrets)
-    registry = build_registry(settings, secrets=secrets)
+    delegation_store = DelegationStore()
+    registry = build_registry(
+        settings, secrets=secrets, delegation_store=delegation_store
+    )
     if sessions is ...:
         sessions = build_sessions(settings)
     calendar = build_calendar(settings)
     mode = approval_mode(settings)
     gate = AutoApprovalGate() if mode == "off" else ApprovalGate()
+    specialist_runner = SpecialistAgentRunner(
+        settings,
+        secrets,
+        memory=memory,
+        approval=gate,
+        max_tool_result_chars=settings.limits.max_tool_result_chars,
+        tool_timeout=settings.limits.tool_timeout,
+        provider_retries=settings.limits.provider_retries,
+        redactor=getattr(identity, "redact_for_memory", None),
+    )
     stream = streaming_enabled(settings) if streaming is None else streaming
     prompt = apply_persona(
         CHAT_SYSTEM_PROMPT,
@@ -106,6 +120,7 @@ def build_handler(
         context_window=context_window(settings),
         streaming=stream,
         system_prompt=prompt,
+        specialist_runner=specialist_runner,
     )
     return handler, memory
 

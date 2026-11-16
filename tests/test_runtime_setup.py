@@ -434,3 +434,18 @@ def test_memory_hook_uses_the_configured_root(monkeypatch, tmp_path):
         assert hook.config.wake_model == ""
     finally:
         hook.close()
+
+
+def test_disabled_memory_falls_back_to_daily_only(monkeypatch, tmp_path):
+    settings = advanced_settings()
+    settings.features.memory.enabled = False
+    settings.paths.memory_root = str(tmp_path / "memory")
+    monkeypatch.delenv("SORA_MEMORY", raising=False)
+
+    hook = build_memory(settings, identity=None, secrets={}, auto_dream=False)
+    assert hook is not None
+    try:
+        assert hook.config.daily_only is True
+        assert hook.config.enabled is True
+    finally:
+        hook.close()

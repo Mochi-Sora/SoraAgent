@@ -19,6 +19,7 @@ from dataclasses import replace
 from typing import Any
 
 from ..approval import AutoApprovalGate
+from ..delegation import SpecialistAgentRunner
 from ..persona import apply_persona, display_name
 from ..providers import ProviderConfigError
 from ..runner import RunEvent
@@ -190,6 +191,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _serve(
                 channel_cls,
                 config,
+                settings=settings,
+                secrets=secrets,
                 provider=provider,
                 registry=build_registry(settings, secrets=secrets),
                 memory=memory,
@@ -251,6 +254,8 @@ async def _serve(
     channel_cls: type,
     config: Any,
     *,
+    settings: Any,
+    secrets: dict[str, str],
     provider,
     registry,
     memory,
@@ -281,6 +286,13 @@ async def _serve(
         gate = AutoApprovalGate()
     else:
         broker = ApprovalBroker(bus, timeout=approval_timeout)
+    specialist_runner = SpecialistAgentRunner(
+        settings,
+        secrets,
+        memory=memory,
+        approval=gate,
+        redactor=getattr(identity, "redact_for_memory", None),
+    )
     loop = asyncio.get_running_loop()
 
     def emit(message: OutboundMessage) -> None:
@@ -315,6 +327,7 @@ async def _serve(
         quality=None if quality else False,
         streaming=streaming,
         system_prompt=system_prompt,
+        specialist_runner=specialist_runner,
     )
     channel = channel_cls(config, bus)
     manager = ChannelManager(

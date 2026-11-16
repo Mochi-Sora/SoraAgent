@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
@@ -14,6 +15,7 @@ from ..approval import ApprovalGate
 from ..calendar import register_calendar_tools, resolve_calendar
 from ..clock import wrap_clock
 from ..context import trim_messages
+from ..delegation import wire_specialist_runner
 from ..eval import (
     QualityGate,
     TrajectoryMetrics,
@@ -196,6 +198,7 @@ class ChatHandler:
         streaming: bool = True,
         file_understander: Any = None,
         delegate: bool = True,
+        specialist_runner: Any = None,
     ) -> None:
         self.provider = provider
         self.registry = registry or ToolRegistry()
@@ -233,6 +236,7 @@ class ChatHandler:
             self.provider = wrap_identity(self.identity, provider)
         self.provider = wrap_clock(self.provider, clock)
         self.delegate = bool(delegate)
+        self.specialist_runner = specialist_runner
         self._delegate_context = threading.local()
         if self.delegate:
             self._wire_delegation()
@@ -312,6 +316,7 @@ class ChatHandler:
         messages.append(Message("user", inbound.content))
         state = ChatState(session_id=key)
         self._notify("before_run", inbound.content, state)
+        self._delegate_context.inbound = inbound
         try:
             run = AgentRuntime.run(
                 RunRequest(
@@ -328,9 +333,12 @@ class ChatHandler:
                     on_delta=on_delta if writer is not None else None,
                     should_stop=lambda: token.cancelled,
                     on_event=self.on_event,
+                    always_visible=("find_delegates", "delegate_to_agent"),
                 )
             )
         finally:
+            with contextlib.suppress(AttributeError):
+                del self._delegate_context.inbound
             with self._lock:
                 if self._active.get(key) is token:
                     del self._active[key]
@@ -553,23 +561,40 @@ class ChatHandler:
         )
 
     def _wire_delegation(self) -> None:
-        if not self.registry.has("delegate_task"):
-            return
-        tool = self.registry.get("delegate_task")
-        runtime = getattr(tool, "delegation_runtime", None)
-        if runtime is not None:
-            runtime.runner = self._delegate_task
+        if self.registry.has("delegate_task"):
+            tool = self.registry.get("delegate_task")
+            runtime = getattr(tool, "delegation_runtime", None)
+            if runtime is not None:
+                runtime.runner = self._delegate_task
+        if self.specialist_runner is not None:
+            wire_specialist_runner(self.registry, self._run_specialist)
+
+    def _child_approval(self) -> Any:
+        inbound = getattr(self._delegate_context, "inbound", None)
+        if self.approval_gate is not None:
+            return self.approval_gate
+        if self.approvals is not None and inbound is not None:
+            return self.approvals.gate(inbound)
+        return _DenyApprovalGate()
+
+    def _run_specialist(
+        self, agent: Any, goal: str, context: str = ""
+    ) -> str:
+        if self.specialist_runner is None:
+            return "error: no specialist runner is configured"
+        try:
+            return self.specialist_runner(
+                agent, goal, context, approval=self._child_approval()
+            )
+        except TypeError as exc:
+            if "approval" not in str(exc):
+                raise
+            return self.specialist_runner(agent, goal, context)
 
     def _delegate_task(self, goal: str) -> str:
         if not str(goal or "").strip():
             return "error: delegation goal must not be empty"
-        inbound = getattr(self._delegate_context, "inbound", None)
-        if self.approval_gate is not None:
-            approval = self.approval_gate
-        elif self.approvals is not None and inbound is not None:
-            approval = self.approvals.gate(inbound)
-        else:
-            approval = _DenyApprovalGate()
+        approval = self._child_approval()
         child_registry = ToolRegistry()
         for tool in self.registry.all():
             if tool.name == "delegate_task":

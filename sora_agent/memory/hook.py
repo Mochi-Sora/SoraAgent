@@ -7,16 +7,19 @@ import logging
 import re
 import threading
 import time
+from datetime import datetime
 from typing import Any, Callable, Literal
 
 from .backup import BackupManager
 from .client import MemoryBackend
 from .config import MemoryConfig
+from .consolidate import DailyConsolidator
 from .daily import DailyStore
-from .dream import DreamError, DreamRunner
+from .dream import DreamRunner
 from .recall import MemoryRecallService
 from .scheduler import DreamScheduler
 from .sidecar import SidecarManager
+from .specialists import discover_specialists
 from .wake import OpenAIWakeGate
 
 _ACTION_LINE_RE = re.compile(
@@ -75,7 +78,7 @@ class MemoryHook:
             self.scheduler = DreamScheduler(
                 self.dream,
                 self.config,
-                has_pending=lambda now: bool(self.daily.pending_days(now)),
+                has_pending=self._has_pending,
                 logger=self.log,
             )
             self.scheduler.start()
@@ -140,10 +143,25 @@ class MemoryHook:
             self.log.warning("profile redaction failed; dropping memory write: %s", exc)
             return ""
 
+    def _has_pending(self, now: datetime) -> bool:
+        if self.daily.pending_days(now):
+            return True
+        return any(
+            source.store.pending_days(now)
+            for source in discover_specialists()
+        )
+
     def dream(self, dry_run: bool = False, include_today: bool = False) -> dict[str, Any]:
+        if self.config.daily_only:
+            return self.consolidate(dry_run=dry_run, include_today=include_today)
         backend = self._backend()
         if backend is None:
-            raise DreamError("active memory is unavailable")
+            report = self.consolidate(
+                dry_run=dry_run, include_today=include_today
+            )
+            report["mode"] = "daily_only_fallback"
+            report["longterm_unavailable"] = True
+            return report
         runner = DreamRunner(
             self.config,
             self.daily,
@@ -151,13 +169,42 @@ class MemoryHook:
             backup=self.backup,
             wake=self._wake,
             redactor=self._redact_memory,
+            specialists=discover_specialists(),
         )
         return runner.run(dry_run=dry_run, include_today=include_today)
+
+    def consolidate(
+        self, dry_run: bool = False, include_today: bool = False
+    ) -> dict[str, Any]:
+        return DailyConsolidator(
+            self.config,
+            self.daily,
+            backup=self.backup,
+            specialists=discover_specialists(),
+        ).run(dry_run=dry_run, include_today=include_today)
+
+    def availability(self, *, probe: bool = False) -> dict[str, Any]:
+        if self.config.daily_only:
+            return {"mode": "daily_only", "longterm_available": False}
+        if not probe:
+            return {
+                "mode": "long_term",
+                "longterm_available": self._client is not None,
+            }
+        available = self._backend() is not None
+        return {
+            "mode": "long_term" if available else "daily_only_fallback",
+            "longterm_available": available,
+        }
 
     def doctor(self) -> dict[str, Any]:
         days = self.daily.all_days()
         return {
+            "enabled": True,
+            "mode": "daily_only" if self.config.daily_only else "long_term",
             "config": {
+                "mode": "daily_only" if self.config.daily_only else "long_term",
+                "daily_only": bool(self.config.daily_only),
                 "root": str(self.config.root),
                 "db_path": str(self.config.db_path),
                 "daily_dir": str(self.config.daily_dir),
@@ -186,6 +233,8 @@ class MemoryHook:
         self.sidecar.stop()
 
     def _backend(self) -> MemoryBackend | None:
+        if self.config.daily_only:
+            return None
         now = time.monotonic()
         if self._client is not None:
             if now - self._health_checked_at < _HEALTH_CHECK_SECONDS:

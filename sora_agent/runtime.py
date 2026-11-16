@@ -52,6 +52,7 @@ class RunRequest:
     provider_retries: int = 2
     retry_base_delay: float = 0.5
     retry_max_delay: float = 8.0
+    always_visible: tuple[str, ...] = ()
 
 
 class AgentRuntime:
@@ -67,7 +68,7 @@ class AgentRuntime:
 
         run_registry = request.registry.copy()
         memory_name = str(getattr(request.memory_tool, "name", "") or "")
-        always_visible = {FIND_TOOLS_NAME}
+        always_visible = {FIND_TOOLS_NAME, *request.always_visible}
         if request.memory_tool is not None and memory_name:
             run_registry.add(request.memory_tool)
             always_visible.add(memory_name)

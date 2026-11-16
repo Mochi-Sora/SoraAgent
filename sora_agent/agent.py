@@ -89,6 +89,8 @@ class Agent:
         calendar: Any = None,
         calendar_db: Any = None,
         delegate: bool = True,
+        system_prompt: str | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry or ToolRegistry()
@@ -103,6 +105,8 @@ class Agent:
         self.tool_timeout = max(0.1, float(tool_timeout))
         self.provider_retries = max(0, int(provider_retries))
         self.on_event = on_event
+        self.system_prompt = str(system_prompt).strip() if system_prompt else ""
+        self.should_stop = should_stop
         self.identity = self._resolve_identity(identity)
         self.memory = self._resolve_memory(memory, self.identity)
         self.memory_tool: Any = None
@@ -155,6 +159,7 @@ class Agent:
                 after_execute=lambda call, result: self._after_tool(
                     state, call, result
                 ),
+                should_stop=self.should_stop,
             )
         )
         result = self._to_result(task, state, run)
@@ -199,6 +204,7 @@ class Agent:
             tool_timeout=self.tool_timeout,
             provider_retries=self.provider_retries,
             delegate=False,
+            should_stop=self.should_stop,
         )
         try:
             result = child.run(str(goal))
@@ -208,7 +214,8 @@ class Agent:
         return answer or "subagent produced no answer"
 
     def _system_prompt(self) -> str:
-        prompt = SYSTEM_PROMPT + TOOLS_POLICY + UNTRUSTED_POLICY
+        base = self.system_prompt or SYSTEM_PROMPT
+        prompt = base + TOOLS_POLICY + UNTRUSTED_POLICY
         if self.memory_tool is not None:
             prompt += MEMORY_POLICY
         return prompt

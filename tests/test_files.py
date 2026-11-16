@@ -93,10 +93,11 @@ def test_zip_lists_entries_without_extracting_them():
         [Attachment("bundle.zip", data=archive)]
     )
 
-    assert "**Archive contents**" in markdown
+    assert "Archive contents" in markdown
     assert "`readme.txt`" in markdown
     assert "`src/main.py`" in markdown
-    assert "not extracted" in markdown
+    assert "hello" in markdown
+    assert "print(1)" in markdown
 
 
 def test_docx_pptx_and_xlsx_extract_text():

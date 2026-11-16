@@ -304,6 +304,7 @@ def _advanced_flow(settings: Settings, secrets: dict[str, str]) -> None:
     _configure_limits(settings)
     _configure_streaming(settings)
     _configure_approval(settings)
+    _configure_delegation(settings)
     _configure_quality(settings)
     _advanced_review(settings, secrets)
     _advanced_final_confirmation(settings)
@@ -382,6 +383,7 @@ def _advanced_review(settings: Settings, secrets: dict[str, str]) -> None:
                 ("Limits", "limits"),
                 ("Streaming", "streaming"),
                 ("Approval", "approval"),
+                ("Specialists", "delegation"),
                 ("Quality evaluation", "quality"),
                 ("<- Back", "back"),
             ],
@@ -408,9 +410,32 @@ def _advanced_review(settings: Settings, secrets: dict[str, str]) -> None:
             "limits": lambda: _configure_limits(settings),
             "streaming": lambda: _configure_streaming(settings),
             "approval": lambda: _configure_approval(settings),
+            "delegation": lambda: _configure_delegation(settings),
             "quality": lambda: _configure_quality(settings),
         }
         dispatch[section]()
+
+
+def _configure_delegation(settings: Settings) -> None:
+    ui.section(
+        "Specialists",
+        "The main agent can always use specialists you create. This setting "
+        "only controls whether it may create new ones on demand.",
+    )
+    allow = prompts.confirm(
+        "Allow the main agent to create provisional specialists on demand?",
+        default=False,
+    )
+    settings.features.delegation.create_mode = "auto" if allow else "user"
+    if allow:
+        ui.warning(
+            "Auto-created specialists are restricted to research/file/web/"
+            "planning tools, and are limited to "
+            f"{settings.features.delegation.max_agents} total and "
+            f"{settings.features.delegation.max_per_day} per day."
+        )
+    else:
+        ui.info("Only you can create specialists (`sora delegate create`).")
 
 
 def _advanced_final_confirmation(settings: Settings) -> None:
@@ -1289,6 +1314,10 @@ def _show_advanced_settings(
                     settings.features.web_search.provider,
                 ),
             ),
+            (
+                "Specialist creation",
+                "On demand" if settings.features.delegation.create_mode == "auto" else "User only",
+            ),
             ("Identity", "On" if settings.features.identity else "Off"),
             ("Clock", "On" if settings.features.clock else "Off"),
             ("Calendar", "On" if settings.features.calendar else "Off"),
@@ -1508,6 +1537,11 @@ def _finish(settings: Settings, secrets: dict[str, str]) -> None:
         )
     ):
         _prepare_sidecar(settings, secrets)
+    ui.blank()
+    ui.section("Post-setup health check", "Verifying the features you selected.")
+    from . import doctor as doctor_module
+
+    doctor_module.run_doctor(settings, secrets)
     _next_steps(settings)
 
 

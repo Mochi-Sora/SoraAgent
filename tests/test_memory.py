@@ -26,6 +26,7 @@ from sora_agent.memory.louvain import louvain_communities
 from sora_agent.memory.recall import MemoryRecallService
 from sora_agent.memory.scheduler import DreamScheduler, next_dream_at
 from sora_agent.memory.sidecar import SidecarError, SidecarManager
+from sora_agent.memory.specialists import SpecialistSource
 from sora_agent.tools import Tool
 
 
@@ -629,6 +630,12 @@ def test_dream_transfers_marks_and_deletes_daily(tmp_path: Path) -> None:
         assert record["metadata"]["dream_round"] == 1
         assert record["metadata"]["dream_due"] == "2026-10-28T00:00:00+00:00"
     assert (config.backup_dir / "latest.json").exists()
+    phases = {
+        action.get("phase")
+        for action in report["actions"]
+        if action.get("op") == "backup"
+    }
+    assert {"pre_consolidation", "post_consolidation"} <= phases
     assert report["report_path"]
     second = DreamRunner(
         config,
@@ -657,7 +664,9 @@ def test_dream_keeps_daily_when_transfer_fails(tmp_path: Path) -> None:
     report = runner.run()
     assert daily.path_for(day.date()).exists()
     assert report["errors"]
-    assert report["transferred_days"] == []
+    assert report["transferred_days"][0]["messages"] == 0
+    assert report["transferred_days"][0]["failed"] == 1
+    assert daily.count(day.date()) == 1
 
 
 def test_dream_keeps_messages_appended_during_transfer(
@@ -1214,3 +1223,146 @@ def test_daily_search_ignores_stopwords_and_returns_no_answer(tmp_path: Path) ->
     assert store.search("What is the CEO's shoe size?", days=1) == []
     hits = store.search("What is my badge number?", days=1)
     assert hits and "BADGE-7781" in hits[0].content
+
+
+def test_dream_transfers_specialist_daily_with_provenance(tmp_path: Path) -> None:
+    day = datetime(2026, 10, 26, 23, tzinfo=timezone.utc)
+    config, daily, backend = _dream_setup(tmp_path, day)
+    specialist_dir = tmp_path / "delegations" / "research" / "workspace" / "daily"
+    specialist = DailyStore(specialist_dir, session_id="specialist:research")
+    specialist.append("assistant", "Specialist note for tomorrow.", ts=day)
+    source = SpecialistSource(
+        "research", specialist, specialist_dir, "Research Analyst"
+    )
+    now = datetime(2026, 10, 27, 0, 0, 1, tzinfo=timezone.utc)
+    report = DreamRunner(
+        config, daily, backend, clock=lambda: now, specialists=[source]
+    ).run()
+
+    assert report["errors"] == []
+    assert report["transferred_days"][0]["source"] == "specialist:research"
+    memory_id = f"specialist:research:daily:{day.date().isoformat()}:1"
+    record = backend.memories[memory_id]
+    assert record["metadata"]["source"] == "specialist"
+    assert record["metadata"]["specialist_id"] == "research"
+    assert record["metadata"]["specialist_name"] == "Research Analyst"
+    assert record["metadata"]["dream_round"] == 1
+    assert specialist.count(day.date()) == 0
+    backup_dir = config.specialist_backup_dir / "research"
+    assert backup_dir.exists()
+    assert (backup_dir / "latest.json").exists()
+
+
+def test_dream_forgets_a_row_after_the_final_retry(tmp_path: Path) -> None:
+    day = datetime(2026, 10, 26, 23, tzinfo=timezone.utc)
+    config, daily, backend = _dream_setup(tmp_path, day)
+    daily.append("user", "Remember this.")
+    backend.fail_save = True
+    runner = DreamRunner(
+        config,
+        daily,
+        backend,
+        clock=lambda: datetime(2026, 10, 27, 0, 0, 1, tzinfo=timezone.utc),
+    )
+    first = runner.run()
+    assert first["transferred_days"][0]["failed"] == 1
+    assert daily.count(day.date()) == 1
+    second = DreamRunner(
+        config,
+        daily,
+        backend,
+        clock=lambda: datetime(2026, 10, 28, 0, 0, 1, tzinfo=timezone.utc),
+    ).run()
+    assert second["forgotten"]
+    assert daily.count(day.date()) == 0
+
+
+def test_daily_only_consolidation_dedupes_and_archives(tmp_path: Path) -> None:
+    from sora_agent.memory.consolidate import DailyConsolidator
+
+    day = datetime(2026, 10, 26, 23, tzinfo=timezone.utc)
+    config, daily, _ = _dream_setup(tmp_path, day)
+    daily.append("user", "same note")
+    daily.append("assistant", "same note")
+    daily.append("user", "unique note")
+    report = DailyConsolidator(
+        config, daily, clock=lambda: datetime(2026, 10, 27, 0, 0, 1, tzinfo=timezone.utc)
+    ).run()
+
+    assert report["mode"] == "daily_only"
+    assert report["errors"] == []
+    remaining = daily.read_day(day.date())
+    assert [row["content"] for row in remaining] == ["same note", "unique note"]
+    archive = config.daily_dir / "archive"
+    assert list(archive.glob("*.db.zst"))
+
+
+def test_memory_hook_daily_only_consolidates_without_backend(tmp_path: Path) -> None:
+    config = MemoryConfig(
+        root=tmp_path,
+        enabled=True,
+        daily_only=True,
+        auto_download=False,
+        dream_auto=False,
+    )
+    config.ensure_directories()
+    daily = DailyStore(config.daily_dir, clock=lambda: datetime(2026, 10, 26, 23, tzinfo=timezone.utc))
+    daily.append("user", "duplicate note")
+    daily.append("assistant", "duplicate note")
+    hook = MemoryHook(config, daily=daily, client=None)
+    try:
+        report = hook.dream()
+    finally:
+        hook.close()
+    assert report["mode"] == "daily_only"
+    assert daily.count(datetime(2026, 10, 26).date()) == 1
+
+
+def test_memory_hook_falls_back_to_consolidation_when_unavailable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = MemoryConfig(
+        root=tmp_path,
+        enabled=True,
+        auto_download=False,
+        dream_auto=False,
+    )
+    config.ensure_directories()
+    daily = DailyStore(config.daily_dir, clock=lambda: datetime(2026, 10, 26, 23, tzinfo=timezone.utc))
+    daily.append("user", "same")
+    daily.append("assistant", "same")
+    hook = MemoryHook(config, daily=daily, client=None)
+    monkeypatch.setattr(hook, "_backend", lambda: None)
+    try:
+        report = hook.dream()
+    finally:
+        hook.close()
+    assert report["mode"] == "daily_only_fallback"
+    assert report["longterm_unavailable"] is True
+    assert daily.count(datetime(2026, 10, 26).date()) == 1
+
+
+def test_scheduler_pending_sees_specialist_daily(tmp_path: Path, monkeypatch) -> None:
+    now = datetime(2026, 10, 27, 0, 0, 1, tzinfo=timezone.utc)
+    config = MemoryConfig(
+        root=tmp_path,
+        enabled=True,
+        daily_only=True,
+        auto_download=False,
+        dream_auto=False,
+    )
+    config.ensure_directories()
+    delegations = tmp_path / "delegations"
+    specialist_dir = delegations / "research" / "workspace" / "daily"
+    specialist = DailyStore(specialist_dir, session_id="specialist:research")
+    specialist.append(
+        "assistant",
+        "pending specialist note",
+        ts=datetime(2026, 10, 26, 23, tzinfo=timezone.utc),
+    )
+    monkeypatch.setenv("SORA_DELEGATIONS_ROOT", str(delegations))
+    hook = MemoryHook(config, daily=DailyStore(config.daily_dir), client=None)
+    try:
+        assert hook._has_pending(now) is True
+    finally:
+        hook.close()

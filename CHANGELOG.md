@@ -2,6 +2,56 @@
 
 All notable changes to SoraAgent are documented here.
 
+## [0.2.0] - 2026-11-16
+
+### Added
+
+- Persistent specialists (delegation agents): a filesystem registry with
+  manifests, lexical routing, `find_delegates` / `delegate_to_agent`, scoped
+  tool grants, a dedicated workspace, read-only global memory recall,
+  specialist daily stores, and specialist-to-worker spawning. Chat surfaces
+  expose the two routing tools at the start of every turn.
+- `sora delegate create/list/show/promote/pause/resume/delete`.
+- Optional `features.delegation.create_mode: auto` (Advanced Setup, default
+  off) for provisional, quota-limited specialist creation by the main agent.
+- `Agent(system_prompt=...)` for specialist role prompts.
+- Specialist daily stores now use the main SQLite `DailyStore`; dreams transfer
+  them into unified long-term memory with provenance and half-done rounds.
+- Retry/forget handling for failed daily transfers: two attempts on the first
+  night, one retry on the next midnight, then a reported drop.
+- Daily-only memory mode: when long-term memory is disabled or unavailable,
+  daily stores are consolidated (dedupe + compact) and the previous snapshot is
+  archived losslessly beside the store. No relationships/facts/decay run.
+- Specialist daily backups under `memory backup/specialists/<id>/`; long-term
+  memory now takes a post-consolidation snapshot as well.
+- `sora setup` runs `sora doctor` after saving so unavailable long-term memory
+  (and other selected features) is visible immediately.
+- A document conversion pipeline in `sora_agent/documents/`: a converter
+  registry, a shared `Document`/`Block` model, and Markdown rendering. The
+  file understander is now a façade over it.
+- ODT/ODS/ODP, EPUB, EML, and RTF adapters; ZIP/TAR conversion now recursively
+  converts text/document members instead of only listing entries.
+- Structured DOCX (headings, lists, tables), PPTX (slide tables, speaker
+  notes), and XLSX (sheet names, formulas, merged-cell HTML tables) output.
+- RTF text extraction and an actionable legacy-OLE capability message.
+- `sora delegate` scoped workspace writes (`write_file` / `patch`) and
+  durable daily notes via `remember_daily` / `recall_daily`.
+
+### Changed
+
+- `sora doctor` reports the active document converters, whether PDF text
+  (`pypdf`) and image OCR are available, and the specialist registry.
+- Desktop first-run defaults now register the core tool pack.
+- Legacy `.doc/.xls/.ppt` and scanned PDFs are reported as capability gaps
+  rather than silently rendered as binary/preview text.
+
+### Fixed
+
+- Specialist `remember_daily` passes through the identity redactor before the
+  daily store write.
+- Daily-store consolidation closes its SQLite connection; the full suite now
+  passes with `-W error`.
+
 ## [0.1.5] - 2026-11-15
 
 ### Added

@@ -350,6 +350,34 @@ class WebSearchSettings:
 
 
 @dataclass
+class DelegationSettings:
+    enabled: bool = True
+    create_mode: str = "user"
+    max_agents: int = 20
+    max_per_day: int = 3
+
+    def __post_init__(self) -> None:
+        self.enabled = _as_bool(self.enabled, True)
+        mode = str(self.create_mode or "user").strip().lower()
+        if mode not in {"user", "auto"}:
+            raise SettingsError("features.delegation.create_mode must be user or auto")
+        self.create_mode = mode
+        self.max_agents = _as_int(self.max_agents, 20, minimum=1, maximum=200)
+        self.max_per_day = _as_int(self.max_per_day, 3, minimum=0, maximum=50)
+
+    @classmethod
+    def from_dict(cls, data: Any) -> DelegationSettings:
+        raw = _mapping(data, "features.delegation")
+        base = cls()
+        return cls(
+            enabled=_as_bool(raw.get("enabled"), base.enabled),
+            create_mode=_as_str(raw.get("create_mode"), base.create_mode),
+            max_agents=_as_int(raw.get("max_agents"), base.max_agents),
+            max_per_day=_as_int(raw.get("max_per_day"), base.max_per_day),
+        )
+
+
+@dataclass
 class FeatureSettings:
     memory: MemorySettings = field(default_factory=MemorySettings)
     files: FileSettings = field(default_factory=FileSettings)
@@ -362,6 +390,7 @@ class FeatureSettings:
     approval: str = "ask"
     quality: bool = True
     web_search: WebSearchSettings = field(default_factory=WebSearchSettings)
+    delegation: DelegationSettings = field(default_factory=DelegationSettings)
 
     def __post_init__(self) -> None:
         approval = str(self.approval or "ask").strip().lower()
@@ -385,6 +414,7 @@ class FeatureSettings:
             approval=_as_str(raw.get("approval"), base.approval),
             quality=_as_bool(raw.get("quality"), base.quality),
             web_search=WebSearchSettings.from_dict(raw.get("web_search")),
+            delegation=DelegationSettings.from_dict(raw.get("delegation")),
         )
 
 

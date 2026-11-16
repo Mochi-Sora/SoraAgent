@@ -12,6 +12,9 @@ them.
 
 from __future__ import annotations
 
+from typing import Any
+
+from ..delegation import DelegationStore, register_specialist_tools
 from ..tools import Tool, ToolRegistry
 from .config import ToolPackConfig
 from .delegation import DelegateRunner, register_delegation_tools
@@ -34,6 +37,8 @@ CORE_TOOL_NAMES = (
     "clarify",
     "execute_code",
     "delegate_task",
+    "find_delegates",
+    "delegate_to_agent",
 )
 
 __all__ = [
@@ -49,6 +54,12 @@ def register_core_tools(
     *,
     clarify_gate: ClarificationGate | None = None,
     delegate_runner: DelegateRunner | None = None,
+    delegation_store: DelegationStore | None = None,
+    specialist_runner: Any = None,
+    allow_create: bool = False,
+    max_agents: int = 20,
+    max_per_day: int = 3,
+    enable_specialists: bool = True,
 ) -> list[Tool]:
     """Register the core tool pack on ``registry`` and return what was added.
 
@@ -66,4 +77,15 @@ def register_core_tools(
     added.extend(
         register_delegation_tools(registry, pack, delegate_runner=delegate_runner)
     )
+    if enable_specialists:
+        added.extend(
+            register_specialist_tools(
+                registry,
+                delegation_store or DelegationStore(),
+                runner=specialist_runner,
+                allow_create=allow_create,
+                max_agents=max_agents,
+                max_per_day=max_per_day,
+            )
+        )
     return added

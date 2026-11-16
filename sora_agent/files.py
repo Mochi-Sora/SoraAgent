@@ -5,8 +5,9 @@ before the user's actual request, so a text-only model can reason about files
 and images without treating their contents as instructions.  The core stays
 standard-library-only:
 
-* text, JSON, CSV, HTML, DOCX, PPTX, XLSX, archives, and binary metadata are
-  handled directly;
+* structured documents go through ``sora_agent.documents``: text, CSV/TSV,
+  HTML, DOCX/PPTX/XLSX, ODT/ODS/ODP, EPUB, EML, RTF, archives, and binary
+  metadata;
 * PDF extraction uses the optional ``files`` extra (``pypdf``);
 * images use a configured OpenAI-compatible vision model, then OCR (when
   ``pytesseract`` and Pillow are available), then metadata.
@@ -15,25 +16,19 @@ standard-library-only:
 from __future__ import annotations
 
 import base64
-import csv
 import hashlib
-import html
 import importlib
 import io
 import json
 import mimetypes
-import re
-import tarfile
 import urllib.error
 import urllib.request
-import zipfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from xml.etree import ElementTree
 
+from .documents import ConversionLimits, default_registry, render_markdown
 from .net import urlopen
 
 MAX_ATTACHMENTS = 20
@@ -41,78 +36,11 @@ MAX_ARCHIVE_ENTRIES = 200
 MAX_TABLE_ROWS = 50
 MAX_TABLE_COLUMNS = 12
 MAX_PDF_PAGES = 50
-BINARY_PREVIEW_BYTES = 256
 VISION_MAX_BYTES = 10 * 1024 * 1024
-MAX_OFFICE_XML_BYTES = 20 * 1024 * 1024
-
-TEXT_EXTENSIONS = frozenset(
-    {
-        ".c",
-        ".cfg",
-        ".conf",
-        ".cpp",
-        ".css",
-        ".csv",
-        ".go",
-        ".h",
-        ".hpp",
-        ".ini",
-        ".java",
-        ".js",
-        ".json",
-        ".jsx",
-        ".log",
-        ".md",
-        ".php",
-        ".ps1",
-        ".py",
-        ".rb",
-        ".rs",
-        ".sh",
-        ".sql",
-        ".toml",
-        ".ts",
-        ".tsx",
-        ".txt",
-        ".xml",
-        ".yaml",
-        ".yml",
-    }
-)
 
 IMAGE_EXTENSIONS = frozenset(
     {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 )
-
-LANGUAGE_BY_SUFFIX = {
-    ".c": "c",
-    ".cpp": "cpp",
-    ".css": "css",
-    ".csv": "csv",
-    ".go": "go",
-    ".h": "c",
-    ".hpp": "cpp",
-    ".html": "html",
-    ".java": "java",
-    ".js": "javascript",
-    ".json": "json",
-    ".jsx": "jsx",
-    ".md": "markdown",
-    ".php": "php",
-    ".ps1": "powershell",
-    ".py": "python",
-    ".rb": "ruby",
-    ".rs": "rust",
-    ".sh": "bash",
-    ".sql": "sql",
-    ".svg": "xml",
-    ".toml": "toml",
-    ".ts": "typescript",
-    ".tsx": "tsx",
-    ".xml": "xml",
-    ".yaml": "yaml",
-    ".yml": "yaml",
-}
 
 VISION_PROMPT = (
     "Describe this image in detailed GitHub-flavored Markdown for a reader "
@@ -223,29 +151,6 @@ class VisionDescriber:
         return text
 
 
-class _HTMLText(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.parts: list[str] = []
-        self._skip = 0
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in {"script", "style", "noscript"}:
-            self._skip += 1
-        elif tag in {"p", "br", "li", "tr", "h1", "h2", "h3", "h4", "div"}:
-            self.parts.append("\n")
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in {"script", "style", "noscript"} and self._skip:
-            self._skip -= 1
-        elif tag in {"p", "li", "tr", "h1", "h2", "h3", "h4", "div"}:
-            self.parts.append("\n")
-
-    def handle_data(self, data: str) -> None:
-        if not self._skip:
-            self.parts.append(data)
-
-
 class FileUnderstander:
     """Convert attachments into an untrusted markdown block for one turn."""
 
@@ -265,6 +170,7 @@ class FileUnderstander:
         self.total_max_chars = max(self.max_chars, int(total_max_chars))
         self.vision = vision
         self.ocr = ocr or _ocr_image
+        self.documents = default_registry()
 
     def understand(self, attachments: Sequence[Attachment]) -> str:
         if not self.enabled or not attachments:
@@ -337,42 +243,26 @@ class FileUnderstander:
         kind = _kind(attachment, data)
         if kind == "image":
             return self._image_body(attachment, data)
-        if kind == "pdf":
-            return _pdf_body(data)
-        if kind == "docx":
-            return _docx_body(data)
-        if kind == "pptx":
-            return _pptx_body(data)
-        if kind == "xlsx":
-            return _xlsx_body(data)
-        if kind == "archive":
-            return _archive_body(attachment, data)
         if kind == "audio":
             return self._media_body(attachment, "Audio")
         if kind == "video":
             return self._media_body(attachment, "Video")
-        if kind == "text":
-            return self._text_body(attachment, data)
-        return _binary_body(attachment, data)
+        limits = ConversionLimits(
+            max_bytes=self.max_file_bytes,
+            max_chars=self.max_chars,
+            max_table_rows=MAX_TABLE_ROWS,
+            max_table_columns=MAX_TABLE_COLUMNS,
+            max_pdf_pages=MAX_PDF_PAGES,
+            max_archive_entries=MAX_ARCHIVE_ENTRIES,
+            max_archive_depth=2,
+            max_archive_total_bytes=self.max_file_bytes,
+        )
+        document = self.documents.convert(attachment, data, limits)
+        rendered = render_markdown(document)
+        if not rendered:
+            return "> The file contained no convertible text."
+        return rendered
 
-    def _text_body(self, attachment: Attachment, data: bytes) -> str:
-        text = _decode_text(data)
-        if text is None:
-            return _binary_body(attachment, data)
-        suffix = Path(attachment.filename).suffix.lower()
-        if suffix == ".json":
-            try:
-                text = json.dumps(
-                    json.loads(text), indent=2, ensure_ascii=False
-                )
-            except ValueError:
-                pass
-        if suffix == ".csv":
-            return _csv_body(text)
-        if suffix in {".html", ".htm"}:
-            return f"**Extracted text**\n\n{_fence(_html_to_text(text), 'text')}"
-        language = LANGUAGE_BY_SUFFIX.get(suffix, "text")
-        return f"**Extracted text**\n\n{_fence(text, language)}"
 
     def _image_body(self, attachment: Attachment, data: bytes) -> str:
         lines: list[str] = []
@@ -455,17 +345,6 @@ def _kind(attachment: Attachment, data: bytes) -> str:
     return "binary"
 
 
-def _decode_text(data: bytes) -> str | None:
-    if not _looks_like_text(data):
-        return None
-    for encoding in ("utf-8-sig", "utf-16", "latin-1"):
-        try:
-            return data.decode(encoding)
-        except (UnicodeDecodeError, LookupError):
-            continue
-    return None
-
-
 def _looks_like_text(data: bytes) -> bool:
     sample = data[:4096]
     if not sample:
@@ -483,275 +362,6 @@ def _looks_like_text(data: bytes) -> bool:
         1 for byte in sample if byte in b"\t\n\r" or 32 <= byte < 127
     )
     return printable / len(sample) >= 0.85
-
-
-def _csv_body(text: str) -> str:
-    try:
-        rows = list(csv.reader(io.StringIO(text)))
-    except csv.Error:
-        return f"**Extracted CSV**\n\n{_fence(text, 'csv')}"
-    rows = [row for row in rows if any(cell.strip() for cell in row)]
-    if not rows:
-        return "> The CSV file is empty."
-    width = max(len(row) for row in rows)
-    if (
-        len(rows) > MAX_TABLE_ROWS
-        or width > MAX_TABLE_COLUMNS
-        or any(len(cell) > 200 for row in rows for cell in row)
-    ):
-        return f"**Extracted CSV**\n\n{_fence(text, 'csv')}"
-    padded = [row + [""] * (width - len(row)) for row in rows]
-    header = padded[0]
-    lines = [
-        "| " + " | ".join(_cell(cell) for cell in header) + " |",
-        "| " + " | ".join("---" for _ in header) + " |",
-    ]
-    for row in padded[1:]:
-        lines.append("| " + " | ".join(_cell(cell) for cell in row) + " |")
-    if len(rows) == 1:
-        lines.append("\n_Only a header row was present._")
-    return "**Extracted CSV**\n\n" + "\n".join(lines)
-
-
-def _cell(value: str) -> str:
-    return value.replace("|", "\\|").replace("\n", " ").strip()
-
-
-def _html_to_text(text: str) -> str:
-    parser = _HTMLText()
-    try:
-        parser.feed(text)
-        parser.close()
-    except Exception:  # noqa: BLE001 - malformed HTML is common
-        return text
-    cleaned = html.unescape("".join(parser.parts))
-    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-
-
-def _pdf_body(data: bytes) -> str:
-    try:
-        pypdf = importlib.import_module("pypdf")
-    except ImportError:
-        return (
-            "> PDF text extraction needs the optional `files` extra:\n"
-            "> `pip install 'sora-agent[files]'`."
-        )
-    try:
-        reader = pypdf.PdfReader(io.BytesIO(data))
-        pages: list[str] = []
-        total = len(reader.pages)
-        for page in reader.pages[:MAX_PDF_PAGES]:
-            text = (page.extract_text() or "").strip()
-            if text:
-                pages.append(text)
-    except Exception as exc:  # noqa: BLE001 - malformed or encrypted PDF
-        return f"> Could not read this PDF: {exc}"
-    if not pages:
-        return "> The PDF contained no extractable text (it may be scanned)."
-    extracted = "\n".join(pages)
-    note = ""
-    if total > MAX_PDF_PAGES:
-        note = f"\n\n_Only the first {MAX_PDF_PAGES} of {total} pages are shown._"
-    return (
-        f"**Extracted PDF text ({total} page(s))**\n\n"
-        f"{_fence(extracted, 'text')}{note}"
-    )
-
-
-def _docx_body(data: bytes) -> str:
-    try:
-        with zipfile.ZipFile(io.BytesIO(data)) as bundle:
-            root = ElementTree.fromstring(
-                _read_zip_member(bundle, "word/document.xml")
-            )
-    except (KeyError, OSError, zipfile.BadZipFile, ElementTree.ParseError) as exc:
-        return f"> Could not read this DOCX: {exc}"
-    namespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-    paragraphs: list[str] = []
-    for paragraph in root.iter(f"{{{namespace}}}p"):
-        text = "".join(
-            node.text or "" for node in paragraph.iter(f"{{{namespace}}}t")
-        ).strip()
-        if text:
-            paragraphs.append(text)
-    if not paragraphs:
-        return "> The DOCX contained no text."
-    extracted = "\n".join(paragraphs)
-    return f"**Extracted DOCX text**\n\n{_fence(extracted, 'text')}"
-
-
-def _pptx_body(data: bytes) -> str:
-    try:
-        with zipfile.ZipFile(io.BytesIO(data)) as bundle:
-            slides = sorted(
-                name
-                for name in bundle.namelist()
-                if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)
-            )[:100]
-            rendered: list[str] = []
-            for index, name in enumerate(slides, 1):
-                root = ElementTree.fromstring(_read_zip_member(bundle, name))
-                texts = [
-                    node.text or ""
-                    for node in root.iter()
-                    if node.tag.endswith("}t") and node.text
-                ]
-                if texts:
-                    rendered.append(
-                        f"### Slide {index}\n\n" + "\n".join(texts)
-                    )
-    except (OSError, zipfile.BadZipFile, ElementTree.ParseError) as exc:
-        return f"> Could not read this PPTX: {exc}"
-    if not rendered:
-        return "> The PPTX contained no text."
-    return "**Extracted PPTX text**\n\n" + "\n\n".join(rendered)
-
-
-def _xlsx_body(data: bytes) -> str:
-    try:
-        with zipfile.ZipFile(io.BytesIO(data)) as bundle:
-            shared = _xlsx_shared_strings(bundle)
-            sheets = sorted(
-                name
-                for name in bundle.namelist()
-                if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", name)
-            )[:50]
-            rendered: list[str] = []
-            for index, name in enumerate(sheets, 1):
-                table = _xlsx_sheet(_read_zip_member(bundle, name), shared)
-                if table:
-                    rendered.append(f"### Sheet {index}\n\n{table}")
-    except (OSError, zipfile.BadZipFile, ElementTree.ParseError) as exc:
-        return f"> Could not read this XLSX: {exc}"
-    if not rendered:
-        return "> The XLSX contained no text."
-    return "**Extracted XLSX text**\n\n" + "\n\n".join(rendered)
-
-
-def _xlsx_shared_strings(bundle: zipfile.ZipFile) -> list[str]:
-    try:
-        raw = _read_zip_member(bundle, "xl/sharedStrings.xml")
-    except KeyError:
-        return []
-    root = ElementTree.fromstring(raw)
-    return [
-        "".join(node.text or "" for node in item.iter() if node.tag.endswith("}t"))
-        for item in root
-        if item.tag.endswith("}si")
-    ]
-
-
-def _xlsx_sheet(raw: bytes, shared: list[str]) -> str:
-    root = ElementTree.fromstring(raw)
-    rows: list[list[str]] = []
-    for row in root.iter():
-        if not row.tag.endswith("}row"):
-            continue
-        cells: dict[int, str] = {}
-        for cell in row:
-            if not cell.tag.endswith("}c"):
-                continue
-            reference = cell.attrib.get("r", "")
-            column = _column_index(reference)
-            if column is None:
-                continue
-            kind = cell.attrib.get("t")
-            value = ""
-            if kind == "inlineStr":
-                value = "".join(
-                    node.text or "" for node in cell.iter() if node.tag.endswith("}t")
-                )
-            else:
-                raw_value = next(
-                    (node.text or "" for node in cell if node.tag.endswith("}v")),
-                    "",
-                )
-                if kind == "s":
-                    try:
-                        value = shared[int(raw_value)]
-                    except (IndexError, ValueError):
-                        value = ""
-                else:
-                    value = raw_value
-            cells[column] = value.strip()
-        if cells:
-            width = max(cells) + 1
-            rows.append([cells.get(index, "") for index in range(width)])
-    if not rows:
-        return ""
-    width = min(max(len(row) for row in rows), MAX_TABLE_COLUMNS)
-    rows = [
-        (row[:width] + [""] * width)[:width]
-        for row in rows[:MAX_TABLE_ROWS]
-    ]
-    lines = [
-        "| " + " | ".join(_cell(value) for value in rows[0]) + " |",
-        "| " + " | ".join("---" for _ in range(width)) + " |",
-    ]
-    for row in rows[1:]:
-        lines.append("| " + " | ".join(_cell(value) for value in row) + " |")
-    return "\n".join(lines)
-
-
-def _read_zip_member(bundle: zipfile.ZipFile, name: str) -> bytes:
-    info = bundle.getinfo(name)
-    if info.file_size > MAX_OFFICE_XML_BYTES:
-        raise FileUnderstandingError(
-            f"{name} is too large to read safely "
-            f"({info.file_size} bytes)"
-        )
-    return bundle.read(name)
-
-
-def _column_index(reference: str) -> int | None:
-    match = re.match(r"([A-Z]+)", reference.upper())
-    if not match:
-        return None
-    value = 0
-    for char in match.group(1):
-        value = value * 26 + (ord(char) - ord("A") + 1)
-    return value - 1
-
-
-def _archive_body(attachment: Attachment, data: bytes) -> str:
-    suffix = Path(attachment.filename).suffix.lower()
-    entries: list[tuple[str, int]] = []
-    try:
-        if suffix == ".zip":
-            with zipfile.ZipFile(io.BytesIO(data)) as bundle:
-                for info in bundle.infolist()[: MAX_ARCHIVE_ENTRIES + 1]:
-                    if not info.is_dir():
-                        entries.append((info.filename, info.file_size))
-        else:
-            with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as bundle:
-                for member in bundle.getmembers():
-                    if member.isfile():
-                        entries.append((member.name, member.size))
-    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
-        return f"> Could not read this archive: {exc}"
-    if not entries:
-        return "> The archive is empty."
-    shown = entries[:MAX_ARCHIVE_ENTRIES]
-    lines = ["**Archive contents**", ""]
-    lines.extend(f"- `{_inline(name)}` ({_format_size(size)})" for name, size in shown)
-    if len(entries) > len(shown):
-        lines.append(f"- ... and {len(entries) - len(shown)} more entries")
-    lines.append("")
-    lines.append("> Nested archives are listed but not extracted.")
-    return "\n".join(lines)
-
-
-def _binary_body(attachment: Attachment, data: bytes) -> str:
-    digest = hashlib.sha256(data).hexdigest()
-    preview = data[:BINARY_PREVIEW_BYTES].hex(" ")
-    return (
-        "**Binary file metadata**\n\n"
-        f"- SHA-256: `{digest}`\n"
-        f"- Size: {_format_size(len(data))}\n"
-        f"- First {min(len(data), BINARY_PREVIEW_BYTES)} bytes (hex):\n\n"
-        f"{_fence(preview, 'text')}\n\n"
-        "> No text representation is available for this file type."
-    )
 
 
 def _image_dimensions(data: bytes) -> tuple[int, int] | None:
@@ -801,12 +411,6 @@ def _ocr_image(attachment: Attachment) -> str | None:
     except Exception:  # noqa: BLE001 - OCR is best-effort
         return None
     return text or None
-
-
-def _fence(text: str, language: str = "text") -> str:
-    longest = max((len(match) for match in re.findall(r"`+", text)), default=0)
-    ticks = "`" * max(3, longest + 1)
-    return f"{ticks}{language}\n{text.rstrip()}\n{ticks}"
 
 
 def _inline(value: str) -> str:

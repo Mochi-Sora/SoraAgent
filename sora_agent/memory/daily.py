@@ -86,6 +86,14 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts);
+CREATE TABLE IF NOT EXISTS transfer_attempts (
+    day TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (day, message_id)
+);
 """
 
 _FTS_SCHEMA = """
@@ -316,6 +324,90 @@ class DailyStore:
             }
             for row in rows
         ]
+
+    def transfer_failures(self, day: date) -> dict[int, int]:
+        path = self.path_for(day)
+        if not path.exists():
+            return {}
+        with self._open(path) as conn:
+            rows = conn.execute(
+                "SELECT message_id, attempts FROM transfer_attempts WHERE day = ?",
+                (day.isoformat(),),
+            ).fetchall()
+        return {int(row[0]): int(row[1]) for row in rows}
+
+    def record_transfer_failure(
+        self, day: date, message_ids: Sequence[int], error: str
+    ) -> dict[int, int]:
+        identifiers = [int(value) for value in message_ids]
+        if not identifiers:
+            return {}
+        path = self.path_for(day)
+        stamp = utcnow().isoformat()
+        with self._open(path) as conn:
+            for message_id in identifiers:
+                conn.execute(
+                    """
+                    INSERT INTO transfer_attempts
+                        (day, message_id, attempts, last_error, updated_at)
+                    VALUES (?, ?, 1, ?, ?)
+                    ON CONFLICT(day, message_id) DO UPDATE SET
+                        attempts = transfer_attempts.attempts + 1,
+                        last_error = excluded.last_error,
+                        updated_at = excluded.updated_at
+                    """,
+                    (day.isoformat(), message_id, str(error)[:1000], stamp),
+                )
+            rows = conn.execute(
+                "SELECT message_id, attempts FROM transfer_attempts WHERE day = ?",
+                (day.isoformat(),),
+            ).fetchall()
+        return {int(row[0]): int(row[1]) for row in rows}
+
+    def clear_transfer_failures(self, day: date, message_ids: Sequence[int]) -> int:
+        identifiers = [int(value) for value in message_ids]
+        if not identifiers:
+            return 0
+        path = self.path_for(day)
+        if not path.exists():
+            return 0
+        placeholders = ",".join("?" for _ in identifiers)
+        with self._open(path) as conn:
+            cursor = conn.execute(
+                f"DELETE FROM transfer_attempts WHERE day = ? AND message_id IN ({placeholders})",
+                (day.isoformat(), *identifiers),
+            )
+            return max(0, int(cursor.rowcount or 0))
+
+    def forget_messages(self, day: date, message_ids: Sequence[int]) -> int:
+        """Drop failed rows after their final retry, with their failure state."""
+        identifiers = [int(value) for value in message_ids]
+        if not identifiers:
+            return 0
+        path = self.path_for(day)
+        if not path.exists():
+            return 0
+        placeholders = ",".join("?" for _ in identifiers)
+        with self._open(path) as conn:
+            conn.execute(
+                f"DELETE FROM transfer_attempts WHERE day = ? AND message_id IN ({placeholders})",
+                (day.isoformat(), *identifiers),
+            )
+            cursor = conn.execute(
+                f"DELETE FROM messages WHERE id IN ({placeholders})",
+                tuple(identifiers),
+            )
+        return max(0, int(cursor.rowcount or 0))
+
+    def compact(self, day: date) -> None:
+        path = self.path_for(day)
+        if not path.exists():
+            return
+        conn = sqlite3.connect(str(path))
+        try:
+            conn.execute("VACUUM")
+        finally:
+            conn.close()
 
     def count(self, day: date | None = None) -> int:
         path = self.path_for(day or self.day_for())

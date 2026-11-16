@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import os
 import sys
 
+from ..delegation import DelegationStore
+from ..documents import default_registry
 from ..model_catalog import format_tokens, provider_info
 from ..runtime_setup import (
     approval_mode,
+    build_memory,
     build_registry,
     feature_enabled,
     files_enabled,
-    memory_enabled,
     provider_kind,
     provider_label,
     quality_enabled,
@@ -83,10 +86,11 @@ def run_doctor(settings: Settings | None, secrets: dict[str, str]) -> int:
         ],
     )
     memory = settings.features.memory
+    memory_status = _memory_status(settings, secrets)
     ui.kv_table(
         "Features",
         [
-            ("Memory", "On" if memory_enabled(settings) else "Off"),
+            ("Memory", memory_status),
             ("Files", "On" if files_enabled(settings) else "Off"),
             (
                 "Core tools",
@@ -113,7 +117,9 @@ def run_doctor(settings: Settings | None, secrets: dict[str, str]) -> int:
         ],
     )
     _tools_table(settings, secrets)
-    _warnings(settings, secrets)
+    _files_table()
+    _delegation_table()
+    _warnings(settings, secrets, memory_status)
     return 0
 
 
@@ -171,7 +177,76 @@ def _tools_table(settings: Settings, secrets: dict[str, str]) -> None:
     )
 
 
-def _warnings(settings: Settings, secrets: dict[str, str]) -> None:
+def _files_table() -> None:
+    converters = ", ".join(default_registry().capabilities())
+    pdf = (
+        "available (pypdf)"
+        if importlib.util.find_spec("pypdf") is not None
+        else "text layer needs the files extra (pypdf)"
+    )
+    ocr = (
+        "available (pytesseract + Pillow)"
+        if importlib.util.find_spec("pytesseract") is not None
+        and importlib.util.find_spec("PIL") is not None
+        else "not installed (vision model may be used for images)"
+    )
+    ui.kv_table(
+        "File understanding",
+        [
+            ("Converters", converters),
+            ("PDF text", pdf),
+            ("Image OCR", ocr),
+            ("Scanned PDFs", "text layer only; OCR/raster fallback not wired"),
+            ("Legacy Office", ".doc/.xls/.ppt are not converted"),
+        ],
+    )
+
+
+def _delegation_table() -> None:
+    store = DelegationStore()
+    agents = store.list(include_paused=True)
+    active = sum(1 for agent in agents if agent.status == "active")
+    ui.kv_table(
+        "Specialists",
+        [
+            ("Store", str(store.root)),
+            ("Agents", f"{active} active / {len(agents)} total"),
+        ],
+    )
+
+
+def _memory_status(settings: Settings, secrets: dict[str, str]) -> str:
+    env_memory = os.getenv("SORA_MEMORY", "").strip().lower()
+    if env_memory and env_memory not in {"1", "true", "yes", "on"}:
+        return "Off (SORA_MEMORY=0)"
+    try:
+        memory = build_memory(
+            settings, None, secrets, auto_dream=False
+        )
+    except Exception as exc:  # noqa: BLE001 - doctor must still render
+        return f"Unavailable ({type(exc).__name__})"
+    if memory is None:
+        return "Off"
+    try:
+        status = memory.availability(probe=True)
+    except Exception:  # noqa: BLE001 - a probe failure is the result
+        return "Unavailable (probe failed)"
+    finally:
+        with contextlib.suppress(Exception):
+            memory.close()
+    mode = str(status.get("mode", ""))
+    if mode == "daily_only":
+        return "Daily-only (long-term off)"
+    if mode == "daily_only_fallback":
+        return "Daily-only fallback (long-term unavailable)"
+    return "Long-term (available)" if status.get("longterm_available") else "Unavailable"
+
+
+def _warnings(
+    settings: Settings,
+    secrets: dict[str, str],
+    memory_status: str = "",
+) -> None:
     problems: list[str] = []
     kind = provider_kind(settings)
     if kind not in {"mock", "demo"}:
@@ -202,6 +277,11 @@ def _warnings(settings: Settings, secrets: dict[str, str]) -> None:
             problems.append("Web search uses Brave but BRAVE_SEARCH_API_KEY is missing.")
         elif provider == "custom" and not web.url:
             problems.append("Web search is set to custom but has no endpoint URL.")
+    if settings.features.memory.enabled and "unavailable" in memory_status.lower():
+        problems.append(
+            "Long-term memory is enabled but unavailable; daily-only consolidation "
+            "will run until the CortexDB sidecar is healthy."
+        )
     if approval_mode(settings) == "off":
         problems.append("Approval is OFF: consequential tools execute without asking.")
     if not quality_enabled(settings):

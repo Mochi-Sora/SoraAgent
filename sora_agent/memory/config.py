@@ -41,6 +41,7 @@ def _env_float(name: str, default: float) -> float:
 class MemoryConfig:
     root: Path = field(default_factory=lambda: Path.home() / ".sora_agent")
     enabled: bool = True
+    daily_only: bool = False
     user_id: str = "sora"
 
     recall_top_k: int = 8
@@ -131,6 +132,10 @@ class MemoryConfig:
         return self.root / "memory backup"
 
     @property
+    def specialist_backup_dir(self) -> Path:
+        return self.backup_dir / "specialists"
+
+    @property
     def bin_dir(self) -> Path:
         return self.root / "bin"
 
@@ -170,12 +175,14 @@ class MemoryConfig:
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.daily_dir.mkdir(parents=True, exist_ok=True)
         self.backup_dir.mkdir(parents=True, exist_ok=True)
+        self.specialist_backup_dir.mkdir(parents=True, exist_ok=True)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.report_dir.mkdir(parents=True, exist_ok=True)
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         if os.name != "nt":
             for path in (self.root, self.memory_dir, self.daily_dir,
-                         self.backup_dir, self.log_dir, self.report_dir):
+                         self.backup_dir, self.specialist_backup_dir,
+                         self.log_dir, self.report_dir):
                 try:
                     path.chmod(0o700)
                 except OSError:

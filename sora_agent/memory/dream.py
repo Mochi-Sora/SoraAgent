@@ -18,6 +18,7 @@ from .config import MemoryConfig
 from .daily import DailyStore
 from .entities import entity_payloads, graph_hints, relation_payloads
 from .louvain import louvain_communities
+from .specialists import SpecialistSource
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]{2,}")
 _ARTIFACT_KINDS = {"merged", "conflict", "inferred_link"}
@@ -43,6 +44,7 @@ class DreamRunner:
         wake: Callable[[dict[str, Any]], str] | None = None,
         clock: Callable[[], datetime] | None = None,
         redactor: Callable[[str], str] | None = None,
+        specialists: list[SpecialistSource] | None = None,
     ) -> None:
         self.config = config
         self.daily = daily
@@ -51,6 +53,7 @@ class DreamRunner:
         self.wake = wake
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.redactor = redactor
+        self.specialists = list(specialists or [])
         self.started = time.monotonic()
         self.report: dict[str, Any] = {}
 
@@ -84,6 +87,8 @@ class DreamRunner:
             "inferences": [],
             "artifacts_removed": [],
             "errors": [],
+            "failed_transfers": [],
+            "forgotten": [],
             "wake_requested": False,
             "wake_response": "",
             "caps_hit": [],
@@ -96,6 +101,7 @@ class DreamRunner:
                     report["actions"].append(
                         {
                             "op": "backup",
+                            "phase": "pre_consolidation",
                             "file": manifest.get("file"),
                             "inverse": "restore from this snapshot",
                         }
@@ -117,6 +123,19 @@ class DreamRunner:
             report["cohort"] = sorted(cohort)
             self._pipeline(report, by_id, cohort, rounds, now, dry_run)
             self._mark(report, by_id, cohort, rounds, now, dry_run)
+            if not dry_run and config.db_path.exists():
+                try:
+                    manifest = self.backup.snapshot_active()
+                    report["actions"].append(
+                        {
+                            "op": "backup",
+                            "phase": "post_consolidation",
+                            "file": manifest.get("file"),
+                            "inverse": "restore from this snapshot",
+                        }
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    report["errors"].append("post-consolidation snapshot: " + str(exc))
             if not dry_run and hasattr(self.backend, "sweep_expired"):
                 try:
                     self.backend.sweep_expired()
@@ -142,116 +161,226 @@ class DreamRunner:
         dry_run: bool,
         include_today: bool,
     ) -> None:
-        pending = self._pending_days(now, include_today)
         next_due = self._next_midnight(now).isoformat()
-        for day in pending:
-            messages = self.daily.read_day(day)
-            if not messages:
-                report["transferred_days"].append(
-                    {"day": day.isoformat(), "messages": 0, "deleted": False}
-                )
-                continue
-            if not dry_run:
-                try:
-                    self.backup.snapshot_daily(self.daily.path_for(day), day)
-                except Exception as exc:  # noqa: BLE001
-                    report["errors"].append(
-                        f"backup {day.isoformat()}: {exc}"
-                    )
-                    continue
-            saved: list[str] = []
-            failed = False
-            for message in messages:
-                memory_id = "daily:{}:{}".format(day.isoformat(), message["id"])
-                content = str(message.get("content") or "")
-                redacted = False
-                if self.redactor is not None:
-                    try:
-                        new_content = self.redactor(content)
-                    except Exception as exc:  # noqa: BLE001
-                        failed = True
-                        report["errors"].append(
-                            f"redact {memory_id}: {exc}"
-                        )
-                        break
-                    if not new_content.strip():
-                        new_content = "[profile details withheld]"
-                    if new_content != content:
-                        redacted = True
-                    content = new_content
-                if _already_redacted(content):
-                    redacted = True
-                metadata = {
-                    "sora_kind": "verbatim",
-                    "sora_role": str(message.get("role") or ""),
-                    "source": "daily",
-                    "source_day": day.isoformat(),
-                    "source_message_id": int(message["id"]),
-                    "dream_round": 0,
-                    "dream_due": next_due,
-                }
-                if redacted:
-                    metadata["profile_redacted"] = True
-                entity_names, relations = (
-                    ([], []) if dry_run else graph_hints(self.backend, content)
-                )
-                payload: dict[str, Any] = {
-                    "memory_id": memory_id,
-                    "user_id": self.config.user_id,
-                    "session_id": str(message.get("session_id") or "default"),
-                    "scope": "user",
-                    "role": str(message.get("role") or ""),
-                    "content": content,
-                    "importance": 0.6 if message.get("role") == "user" else 0.5,
-                    "metadata": metadata,
-                }
-                if entity_names:
-                    payload["entities"] = entity_payloads(entity_names)
-                if relations:
-                    payload["relations"] = relation_payloads(relations)
-                try:
-                    action = "dry_run" if dry_run else "skip"
-                    if not dry_run:
-                        # The deterministic id makes retries idempotent: a
-                        # previous run may have saved this row and crashed
-                        # before deleting it.
-                        existing = self.backend.get_memory(memory_id)
-                        if existing is None:
-                            self.backend.save_memory(payload)
-                            if self.backend.get_memory(memory_id) is None:
-                                raise DreamError(
-                                    "verification failed for " + memory_id
-                                )
-                            action = "save"
-                    saved.append(memory_id)
-                    report["actions"].append(
+        for label, store, agent_id in self._sources():
+            for day in self._pending_days_for(store, now, include_today):
+                messages = store.read_day(day)
+                if not messages:
+                    report["transferred_days"].append(
                         {
-                            "op": action,
-                            "memory_id": memory_id,
-                            "inverse": "delete " + memory_id,
+                            "source": label,
+                            "day": day.isoformat(),
+                            "messages": 0,
+                            "deleted": False,
                         }
                     )
-                except Exception as exc:  # noqa: BLE001
-                    failed = True
-                    report["errors"].append(
-                        f"save {memory_id}: {exc}"
+                    continue
+                if not dry_run:
+                    try:
+                        self._backup_day(store, agent_id, day)
+                    except Exception as exc:  # noqa: BLE001
+                        report["errors"].append(
+                            f"backup {label} {day.isoformat()}: {exc}"
+                        )
+                        continue
+                failures = store.transfer_failures(day)
+                saved = 0
+                failed = 0
+                forgotten = 0
+                for message in messages:
+                    message_id = int(message["id"])
+                    attempts = failures.get(message_id, 0)
+                    if attempts >= 2:
+                        # Should be rare: the row survived a final retry.
+                        store.forget_messages(day, [message_id])
+                        report["forgotten"].append(
+                            {
+                                "source": label,
+                                "day": day.isoformat(),
+                                "message_id": message_id,
+                                "attempts": attempts,
+                            }
+                        )
+                        forgotten += 1
+                        continue
+                    payload, error = self._payload_for(
+                        store,
+                        label,
+                        agent_id,
+                        day,
+                        message,
+                        next_due,
+                        dry_run,
+                        attempts,
                     )
-                    break
-            if failed:
-                continue
-            if not dry_run:
-                # Delete only the rows that were transferred.  A message
-                # appended while the transfer was running stays in the day
-                # file for the next dream instead of being lost.
-                identifiers = [int(message["id"]) for message in messages]
-                self.daily.delete_messages(day, identifiers)
-            report["transferred_days"].append(
-                {
-                    "day": day.isoformat(),
-                    "messages": len(saved),
-                    "deleted": not dry_run,
-                }
-            )
+                    if payload is None:
+                        if dry_run:
+                            continue
+                        new_attempts = attempts + 1
+                        store.record_transfer_failure(day, [message_id], error)
+                        if new_attempts >= 2:
+                            store.forget_messages(day, [message_id])
+                            report["forgotten"].append(
+                                {
+                                    "source": label,
+                                    "day": day.isoformat(),
+                                    "message_id": message_id,
+                                    "attempts": new_attempts,
+                                    "error": error,
+                                }
+                            )
+                            forgotten += 1
+                        else:
+                            report["failed_transfers"].append(
+                                {
+                                    "source": label,
+                                    "day": day.isoformat(),
+                                    "message_id": message_id,
+                                    "attempts": new_attempts,
+                                    "error": error,
+                                }
+                            )
+                            failed += 1
+                        report["errors"].append(error)
+                        continue
+                    if dry_run:
+                        saved += 1
+                        report["actions"].append(
+                            {
+                                "op": "dry_run",
+                                "memory_id": payload["memory_id"],
+                                "inverse": "none",
+                            }
+                        )
+                        continue
+                    store.clear_transfer_failures(day, [message_id])
+                    store.delete_messages(day, [message_id])
+                    saved += 1
+                    report["actions"].append(
+                        {
+                            "op": "save",
+                            "memory_id": payload["memory_id"],
+                            "inverse": "delete " + payload["memory_id"],
+                        }
+                    )
+                report["transferred_days"].append(
+                    {
+                        "source": label,
+                        "day": day.isoformat(),
+                        "messages": saved,
+                        "deleted": not dry_run,
+                        "failed": failed,
+                        "forgotten": forgotten,
+                    }
+                )
+
+    def _sources(self):
+        yield "main", self.daily, ""
+        for source in self.specialists:
+            yield f"specialist:{source.agent_id}", source.store, source.agent_id
+
+    def _pending_days_for(
+        self, store: DailyStore, now: datetime, include_today: bool
+    ) -> list[date]:
+        pending = store.pending_days(now)
+        if include_today and store.count() > 0:
+            today = store.day_for(now)
+            if today not in pending:
+                pending.append(today)
+        return sorted(pending)
+
+    def _backup_day(self, store: DailyStore, agent_id: str, day: date) -> None:
+        source = store.path_for(day)
+        if agent_id:
+            self.backup.snapshot_specialist_daily(agent_id, source, day)
+        else:
+            self.backup.snapshot_daily(source, day)
+
+    def _payload_for(
+        self,
+        store: DailyStore,
+        label: str,
+        agent_id: str,
+        day: date,
+        message: dict[str, Any],
+        next_due: str,
+        dry_run: bool,
+        attempts_before: int = 0,
+    ) -> tuple[dict[str, Any] | None, str]:
+        message_id = int(message["id"])
+        if agent_id:
+            memory_id = f"specialist:{agent_id}:daily:{day.isoformat()}:{message_id}"
+            session_id = f"specialist:{agent_id}"
+            role = "assistant"
+        else:
+            memory_id = f"daily:{day.isoformat()}:{message_id}"
+            session_id = str(message.get("session_id") or "default")
+            role = str(message.get("role") or "")
+        content = str(message.get("content") or "")
+        redacted = False
+        if self.redactor is not None:
+            try:
+                new_content = self.redactor(content)
+            except Exception as exc:  # noqa: BLE001
+                return None, f"redact {memory_id}: {exc}"
+            if not new_content.strip():
+                new_content = "[profile details withheld]"
+            if new_content != content:
+                redacted = True
+            content = new_content
+        if _already_redacted(content):
+            redacted = True
+        metadata: dict[str, Any] = {
+            "sora_kind": "verbatim",
+            "sora_role": role,
+            "source": "specialist" if agent_id else "daily",
+            "source_day": day.isoformat(),
+            "source_message_id": message_id,
+            "dream_round": 0,
+            "dream_due": next_due,
+        }
+        if agent_id:
+            metadata["specialist_id"] = agent_id
+            metadata["specialist_name"] = self._specialist_name(agent_id)
+        if redacted:
+            metadata["profile_redacted"] = True
+        entity_names, relations = ([], []) if dry_run else graph_hints(
+            self.backend, content
+        )
+        payload: dict[str, Any] = {
+            "memory_id": memory_id,
+            "user_id": self.config.user_id,
+            "session_id": session_id,
+            "scope": "user",
+            "role": role,
+            "content": content,
+            "importance": 0.5,
+            "metadata": metadata,
+        }
+        if entity_names:
+            payload["entities"] = entity_payloads(entity_names)
+        if relations:
+            payload["relations"] = relation_payloads(relations)
+        if dry_run:
+            return payload, ""
+        attempts = 2 if attempts_before <= 0 else 1
+        for _ in range(attempts):
+            try:
+                existing = self.backend.get_memory(memory_id)
+                if existing is None:
+                    self.backend.save_memory(payload)
+                    if self.backend.get_memory(memory_id) is None:
+                        raise DreamError("verification failed for " + memory_id)
+                return payload, ""
+            except Exception as exc:  # noqa: BLE001 - retry on the spot
+                error = f"save {memory_id}: {exc}"
+        return None, error
+
+    def _specialist_name(self, agent_id: str) -> str:
+        for source in self.specialists:
+            if source.agent_id == agent_id:
+                return source.name or source.agent_id
+        return agent_id
 
     def _cohort(
         self, by_id: dict[str, dict[str, Any]], now: datetime
