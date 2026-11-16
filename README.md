@@ -34,7 +34,7 @@ deliberately tiny; the production concerns live in explicit gates around it:
 
 The core imports only the Python standard library; optional integrations
 (`openai`, `zstandard`) are extras. Requires Python **3.9+**. Current version:
-**0.2.2** — see [CHANGELOG.md](CHANGELOG.md).
+**0.2.3** — see [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -1274,8 +1274,10 @@ optional rules → decay → expire → mark → post-consolidation backup → r
   run processes them alongside the new daily rows and marks them complete
   (`dream_round=2`, `dream_due=null`). The pipeline deduplicates near-identical
   memories, flags conflicting numeric claims (which can engage the optional
-  wake model), builds a token-overlap graph, runs a dependency-free
-  deterministic Louvain community pass, generates transient two-hop link
+  wake model), projects CortexDB's native memory→entity mentions into
+  memory-to-memory edges (falling back to a token-overlap graph when graph
+  tools are unavailable), runs a dependency-free deterministic Louvain
+  community pass, generates transient two-hop link
   diagnostics, optionally applies configured rules, decays importance
   (default ×0.98, floor 0.05), expires records, and writes a JSON report.
   Durable graph relationships come from CortexDB entities/relations; the

@@ -2,6 +2,20 @@
 
 All notable changes to SoraAgent are documented here.
 
+## [0.2.3] - 2026-11-16
+
+### Added
+
+- Dream clustering now projects CortexDB's native memory→entity `mentions`
+  graph into memory-to-memory edges before Louvain. The lexical token-overlap
+  graph remains the fallback for backends without graph tools.
+
+### Changed
+
+- The benchmark's deterministic feature suite now covers graph extraction,
+  graph-aware recall output, native graph projection, transient inferred-link
+  cleanup, and missing-memory HTTP 404 handling (39 checks total).
+
 ## [0.2.2] - 2026-11-16
 
 ### Added

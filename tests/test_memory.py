@@ -1400,3 +1400,31 @@ def test_recall_exposes_bounded_cortexdb_graph_facts(tmp_path: Path) -> None:
     text = service.recall("What did Alice deploy?", scope="longterm", k=4)
     assert "Graph facts:" in text
     assert "Alice —deployed→ Apollo" in text
+
+
+def test_dream_uses_native_entity_graph_for_communities(tmp_path: Path) -> None:
+    class NativeGraphBackend(FakeBackend):
+        def call_tool(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+            assert name == "graph_list_all"
+            return {
+                "nodes": [],
+                "edges": [
+                    {"from": "memory:m1", "to": "entity:alice", "type": "mentions"},
+                    {"from": "memory:m2", "to": "entity:alice", "type": "mentions"},
+                    {"from": "memory:m2", "to": "entity:apollo", "type": "mentions"},
+                    {"from": "memory:m3", "to": "entity:apollo", "type": "mentions"},
+                ],
+            }
+
+    config = config_for(tmp_path)
+    daily = DailyStore(config.daily_dir)
+    runner = DreamRunner(config, daily, NativeGraphBackend())
+    records = [
+        {"id": "m1", "content": "unrelated words one"},
+        {"id": "m2", "content": "unrelated words two"},
+        {"id": "m3", "content": "unrelated words three"},
+    ]
+    assert runner._graph(records) == [
+        ("m1", "m2", 1.0),
+        ("m2", "m3", 1.0),
+    ]

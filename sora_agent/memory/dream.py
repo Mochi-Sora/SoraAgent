@@ -593,6 +593,9 @@ class DreamRunner:
                     )
 
     def _graph(self, records: list[dict[str, Any]]) -> list[tuple[str, str, float]]:
+        native = self._native_graph(records)
+        if native:
+            return native
         token_sets = {str(item.get("id")): _tokens(item) for item in records}
         ids = sorted(token_sets)
         edges: list[tuple[str, str, float]] = []
@@ -606,6 +609,68 @@ class DreamRunner:
                     edges.append((left, right, weight))
         edges.sort()
         return edges
+
+    def _native_graph(
+        self, records: list[dict[str, Any]]
+    ) -> list[tuple[str, str, float]]:
+        """Project CortexDB's entity graph onto this dream cohort.
+
+        The sidecar exposes memory -> entity ``mentions`` edges.  Two memories
+        are neighbors when they mention the same entity; the edge weight is
+        the number of shared entities.  A backend without graph tools (or a
+        sidecar without a graph) falls back to the lexical graph.
+        """
+        call = getattr(self.backend, "call_tool", None)
+        if not callable(call):
+            return []
+        try:
+            payload = call("graph_list_all", {"limit": 5000})
+        except Exception:  # noqa: BLE001 - graph projection is optional
+            return []
+        if not isinstance(payload, dict):
+            return []
+        edges = payload.get("edges")
+        if not isinstance(edges, list) or not edges:
+            return []
+        wanted = {str(item.get("id")) for item in records}
+        mentions: dict[str, set[str]] = {}
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+            if str(edge.get("type") or "") != "mentions":
+                continue
+            left = str(edge.get("from") or "")
+            right = str(edge.get("to") or "")
+            if left.startswith("memory:"):
+                memory_id = left[len("memory:") :]
+                entity = right
+            elif right.startswith("memory:"):
+                memory_id = right[len("memory:") :]
+                entity = left
+            else:
+                continue
+            if memory_id not in wanted or not entity.startswith("entity:"):
+                continue
+            mentions.setdefault(memory_id, set()).add(entity)
+        by_entity: dict[str, list[str]] = {}
+        for memory_id, entities in mentions.items():
+            for entity in entities:
+                by_entity.setdefault(entity, []).append(memory_id)
+        weights: dict[tuple[str, str], float] = {}
+        for entity_memories in by_entity.values():
+            members = sorted(set(entity_memories))
+            if len(members) < 2:
+                continue
+            # Avoid a quadratic blow-up from a pathological hub.
+            if len(members) > 100:
+                continue
+            for index, left in enumerate(members):
+                for right in members[index + 1 :]:
+                    key = (left, right)
+                    weights[key] = weights.get(key, 0.0) + 1.0
+        return sorted(
+            (left, right, weight) for (left, right), weight in weights.items()
+        )
 
     def _communities(
         self,
