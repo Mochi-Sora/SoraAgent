@@ -367,6 +367,7 @@ def test_cortexdb_client_rest_and_pagination() -> None:
         memories = client.list_memories(limit=10)
         assert [item["id"] for item in memories] == ["m1", "m2"]
         client.update_memory("m1", importance=0.4)
+        assert client.get_memory("missing") is None
         client.delete_memory("m1")
         client.recall(
             "Alice",
@@ -989,7 +990,7 @@ def test_sidecar_download_verifies_checksum(tmp_path: Path) -> None:
         pin = manager._checksum_path(path)
         record = json.loads(pin.read_text(encoding="utf-8"))
         assert record["version"] == "9.9.9"
-        assert record["sha256"] == hashlib.sha256(data).hexdigest()
+        assert record["sha256"] == hashlib.sha256(binary).hexdigest()
 
         # A later download prefers the local pin, so a changed payload is
         # rejected even when the mirror serves a matching checksum.
@@ -1027,7 +1028,7 @@ def test_sidecar_explicit_checksum_pins_the_download(tmp_path: Path) -> None:
             auto_download=True,
             sidecar_version="9.9.8",
             download_base_url=base,
-            sidecar_sha256=hashlib.sha256(data).hexdigest(),
+            sidecar_sha256=hashlib.sha256(binary).hexdigest(),
         )
 
         assert SidecarManager(config).download().exists()

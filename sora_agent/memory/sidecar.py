@@ -502,6 +502,8 @@ class SidecarManager:
             )
 
     def download(self) -> Path:
+        # A pin is the checksum of the extracted executable, not of the
+        # release archive.  The archive checksum still verifies the download.
         pinned = self._pinned_checksum() or self._read_pin(
             self.config.sidecar_path
         )
@@ -509,18 +511,19 @@ class SidecarManager:
         for asset in self._asset_names():
             try:
                 data = self._fetch(asset)
-                checksum = pinned or self._fetch_checksum(asset)
-                checksum = checksum.strip().lower()
-                if not re.fullmatch(r"[0-9a-f]{64}", checksum):
-                    raise SidecarError(
-                        "invalid checksum for " + asset
-                    )
-                actual = hashlib.sha256(data).hexdigest()
-                if actual != checksum:
-                    raise SidecarError(
-                        "checksum mismatch for " + asset
-                    )
+                if not pinned:
+                    archive_checksum = self._fetch_checksum(asset).strip().lower()
+                    if not re.fullmatch(r"[0-9a-f]{64}", archive_checksum):
+                        raise SidecarError("invalid checksum for " + asset)
+                    archive_actual = hashlib.sha256(data).hexdigest()
+                    if archive_actual != archive_checksum:
+                        raise SidecarError("checksum mismatch for " + asset)
                 binary = self._extract(data, asset)
+                binary_checksum = hashlib.sha256(binary).hexdigest()
+                if pinned and binary_checksum != pinned:
+                    raise SidecarError(
+                        "checksum mismatch for extracted " + asset
+                    )
                 target = self.config.sidecar_path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with tempfile.NamedTemporaryFile(
@@ -531,7 +534,7 @@ class SidecarManager:
                 if os.name != "nt":
                     temp_path.chmod(0o755)
                 os.replace(str(temp_path), str(target))
-                self._write_checksum(target, checksum)
+                self._write_checksum(target, binary_checksum)
                 return target
             except Exception as exc:  # noqa: BLE001 - try the next mirror
                 last_error = exc

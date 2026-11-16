@@ -116,9 +116,16 @@ class CortexDBClient:
         return response if isinstance(response, dict) else {}
 
     def get_memory(self, memory_id: str) -> dict[str, Any] | None:
-        response = self._request(
-            "GET", "/v1/memory", params={"memory_id": memory_id}
-        )
+        try:
+            response = self._request(
+                "GET", "/v1/memory", params={"memory_id": memory_id}
+            )
+        except CortexDBError as exc:
+            # A missing memory is a normal negative lookup, not a backend
+            # failure.  CortexDB returns 404 with a context-dependent message.
+            if exc.status == 404:
+                return None
+            raise
         if isinstance(response, dict):
             memory = response.get("memory")
             return memory if isinstance(memory, dict) else None
@@ -156,9 +163,14 @@ class CortexDBClient:
         return response if isinstance(response, dict) else {}
 
     def delete_memory(self, memory_id: str) -> None:
-        self._request(
-            "DELETE", "/v1/memory", params={"memory_id": memory_id}
-        )
+        try:
+            self._request(
+                "DELETE", "/v1/memory", params={"memory_id": memory_id}
+            )
+        except CortexDBError as exc:
+            if exc.status == 404:
+                return
+            raise
 
     def recall(self, query: str, top_k: int = 8, **options: Any) -> dict[str, Any]:
         payload: dict[str, Any] = {

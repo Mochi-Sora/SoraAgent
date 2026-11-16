@@ -2,6 +2,20 @@
 
 All notable changes to SoraAgent are documented here.
 
+## [0.2.1] - 2026-11-16
+
+### Fixed
+
+- CortexDB `get_memory` now treats HTTP 404 as a normal missing-memory lookup
+  instead of raising. This was blocking every real daily transfer because the
+  dream idempotency check could not query an absent id.
+- CortexDB `delete_memory` now treats 404 as already deleted.
+- Sidecar downloads verify the release archive checksum but pin the checksum of
+  the extracted `cortexdb-grpc` binary. Previously the archive checksum was
+  written as the executable pin, so the downloaded sidecar failed its own
+  verification and could not start.
+- Added regression coverage for the missing-memory lookup and binary pin.
+
 ## [0.2.0] - 2026-11-16
 
 ### Added
