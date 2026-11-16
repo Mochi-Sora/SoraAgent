@@ -34,7 +34,7 @@ deliberately tiny; the production concerns live in explicit gates around it:
 
 The core imports only the Python standard library; optional integrations
 (`openai`, `zstandard`) are extras. Requires Python **3.9+**. Current version:
-**0.2.1** — see [CHANGELOG.md](CHANGELOG.md).
+**0.2.2** — see [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -1256,6 +1256,9 @@ optional rules → decay → expire → mark → post-consolidation backup → r
   existed. A dead client is probed and restarted every few seconds instead of
   being cached forever. `sora-memory download|start|stop|doctor` exposes the
   lifecycle; `stop` force-stops an adopted sidecar.
+- **Graph-aware recall**: in `auto`/`graph`/`ppr` modes, recall passes entity
+  hints to CortexDB and renders a bounded, redacted **Graph facts** section
+  from the native entity/relation graph. Lexical mode skips graph hints.
 - **Fail-open**: if the sidecar is unavailable, long-term recall degrades to
   daily results with an explicit note and the backend is retried at most every
   30 seconds. A broken memory hook never breaks a run.
@@ -1272,10 +1275,14 @@ optional rules → decay → expire → mark → post-consolidation backup → r
   (`dream_round=2`, `dream_due=null`). The pipeline deduplicates near-identical
   memories, flags conflicting numeric claims (which can engage the optional
   wake model), builds a token-overlap graph, runs a dependency-free
-  deterministic Louvain community pass, infers two-hop links, optionally
-  applies configured rules, decays importance (default ×0.98, floor 0.05),
-  expires records, and writes a JSON report. A file lock (`dream.lock`) makes
-  concurrent dreams fail fast.
+  deterministic Louvain community pass, generates transient two-hop link
+  diagnostics, optionally applies configured rules, decays importance
+  (default ×0.98, floor 0.05), expires records, and writes a JSON report.
+  Durable graph relationships come from CortexDB entities/relations; the
+  `dream:link` diagnostics and other dream artifacts are removed at the end of
+  the run. `dream_community` labels are persisted metadata but are not yet
+  consumed by recall. A file lock (`dream.lock`) makes concurrent dreams fail
+  fast.
 - **Daily-only mode**: if memory is disabled (or enabled but CortexDB is
   unavailable), daily stores are the whole memory. No transfer, relationships,
   fact extraction, conflicts, or decay run. A simple consolidator deduplicates

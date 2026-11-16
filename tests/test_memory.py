@@ -1367,3 +1367,36 @@ def test_scheduler_pending_sees_specialist_daily(tmp_path: Path, monkeypatch) ->
         assert hook._has_pending(now) is True
     finally:
         hook.close()
+
+
+def test_recall_exposes_bounded_cortexdb_graph_facts(tmp_path: Path) -> None:
+    class GraphRecallBackend(FakeBackend):
+        def recall(self, query: str, top_k: int = 8, **options: Any) -> dict[str, Any]:
+            return {
+                "memories": [
+                    {
+                        "memory": {
+                            "id": "m1",
+                            "content": "Alice deployed Apollo on Kubernetes.",
+                        },
+                        "score": 0.9,
+                    }
+                ],
+                "graph_facts": [
+                    {
+                        "subject": "Alice",
+                        "predicate": "deployed",
+                        "object": "Apollo",
+                        "subject_id": "entity:alice",
+                        "object_id": "entity:apollo",
+                    }
+                ],
+            }
+
+    daily = DailyStore(tmp_path)
+    service = MemoryRecallService(
+        daily, lambda: GraphRecallBackend(), retrieval_mode="auto"
+    )
+    text = service.recall("What did Alice deploy?", scope="longterm", k=4)
+    assert "Graph facts:" in text
+    assert "Alice —deployed→ Apollo" in text

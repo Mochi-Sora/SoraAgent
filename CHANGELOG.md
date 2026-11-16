@@ -2,6 +2,22 @@
 
 All notable changes to SoraAgent are documented here.
 
+## [0.2.2] - 2026-11-16
+
+### Added
+
+- Recall now includes a bounded **Graph facts** section from CortexDB's native
+  entity/relation graph. These are untrusted, redacted recall items and are
+  capped by the normal recall budget.
+
+### Documentation
+
+- Clarified that SoraAgent's `dream:link` inferred two-hop records are transient
+  diagnostics: they are generated and reported, then removed by artifact
+  cleanup. Durable graph relationships come from CortexDB entities/relations.
+- Clarified that `dream_community` labels are persisted as metadata but are not
+  currently consumed by recall or clustering decisions.
+
 ## [0.2.1] - 2026-11-16
 
 ### Fixed
