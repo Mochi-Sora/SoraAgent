@@ -288,7 +288,7 @@ class DailyStore:
         limit: int,
         session_ids: Sequence[str] = (),
     ) -> list[DailyHit]:
-        clauses = " AND ".join("lower(content) LIKE ?" for _ in tokens)
+        clauses = " OR ".join("lower(content) LIKE ?" for _ in tokens)
         params: list[Any] = ["%" + token.lower() + "%" for token in tokens]
         if session_ids:
             marks = ",".join("?" for _ in session_ids)
@@ -312,7 +312,14 @@ class DailyStore:
                 ts=str(row[1]),
                 role=str(row[2]),
                 content=str(row[3]),
-                score=float(len(tokens)) + day.toordinal() * 1e-6,
+                score=float(
+                    sum(
+                        1
+                        for token in tokens
+                        if token.lower() in str(row[3]).lower()
+                    )
+                )
+                + day.toordinal() * 1e-6,
             )
             for row in rows
         ]

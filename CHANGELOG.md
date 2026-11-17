@@ -2,6 +2,14 @@
 
 All notable changes to SoraAgent are documented here.
 
+## [0.3.1] - 2026-11-17
+
+### Fixed
+
+- The daily LIKE fallback now uses OR semantics and ranks by the number of
+  matched tokens instead of requiring every token as a substring. CJK and
+  mixed-language queries no longer miss otherwise matching messages.
+
 ## [0.3.0] - 2026-11-17
 
 ### Added

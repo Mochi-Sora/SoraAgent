@@ -62,4 +62,4 @@ __all__ = [
     "register_core_tools",
     "wrap_clock",
 ]
-__version__ = "0.3.0"
+__version__ = "0.3.1"
