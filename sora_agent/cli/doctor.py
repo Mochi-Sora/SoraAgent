@@ -20,6 +20,7 @@ from ..runtime_setup import (
     provider_label,
     quality_enabled,
     resolve_web_search,
+    state_root_path,
     streaming_enabled,
 )
 from ..settings import Settings, config_path, secrets_path
@@ -105,6 +106,14 @@ def run_doctor(settings: Settings | None, secrets: dict[str, str]) -> int:
                 ("configured" if memory.enabled and memory.sidecar else "off"),
             ),
             ("Identity", "On" if settings.features.identity else "Off"),
+            (
+                "Session state",
+                (
+                    f"On ({state_root_path(settings)})"
+                    if feature_enabled(settings, "state", "SORA_STATE")
+                    else "Off"
+                ),
+            ),
             ("Clock", "On" if settings.features.clock else "Off"),
             ("Calendar", "On" if settings.features.calendar else "Off"),
             (
@@ -239,6 +248,8 @@ def _memory_status(settings: Settings, secrets: dict[str, str]) -> str:
         return "Daily-only (long-term off)"
     if mode == "daily_only_fallback":
         return "Daily-only fallback (long-term unavailable)"
+    if mode == "long_term" and status.get("embedder") is False:
+        return "Long-term (lexical; sidecar has no embedder)"
     return "Long-term (available)" if status.get("longterm_available") else "Unavailable"
 
 

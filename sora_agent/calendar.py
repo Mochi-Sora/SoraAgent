@@ -205,9 +205,30 @@ class CalendarStore:
     ) -> None:
         self.path = Path(path).expanduser() if path else default_calendar_db()
         self.clock = resolve_clock(clock) or default_clock
+        parent_existed = self.path.parent.exists()
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if not parent_existed or self.path.parent == Path(DEFAULT_CALENDAR_DB).expanduser().parent:
+            try:
+                os.chmod(self.path.parent, 0o700)
+            except OSError:
+                pass
         with self._connect() as connection:
             connection.executescript(_SCHEMA)
+        self._harden_files()
+
+    def _harden_files(self) -> None:
+        if os.name == "nt":
+            return
+        for candidate in (
+            self.path,
+            Path(str(self.path) + "-wal"),
+            Path(str(self.path) + "-shm"),
+        ):
+            try:
+                if candidate.exists():
+                    os.chmod(candidate, 0o600)
+            except OSError:
+                pass
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -735,7 +756,19 @@ def register_calendar_tools(
             continue
         added.append(
             registry.add(
-                Tool(function, name, description, aliases=aliases)
+                Tool(
+                    function,
+                    name,
+                    description,
+                    aliases=aliases,
+                    needs_approval=name
+                    in {
+                        "calendar_add_event",
+                        "calendar_add_todo",
+                        "calendar_complete_todo",
+                        "calendar_set_importance",
+                    },
+                )
             )
         )
     return added

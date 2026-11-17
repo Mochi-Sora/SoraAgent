@@ -125,14 +125,14 @@ def test_clock_stays_behind_state_and_identity_in_either_wrapper_order(
         assert [message.role for message in sent] == [
             "system",
             "system",
-            "user",
             "system",
+            "user",
             "system",
         ]
         assert sent[0].content == "BASE"
         assert sent[1].content.startswith("## PERSISTENT USER PROFILE")
-        assert sent[2].content == "goal"
-        assert sent[3].content.startswith("## SESSION STATE PROTOCOL")
+        assert sent[2].content.startswith("## SESSION STATE PROTOCOL")
+        assert sent[3].content == "goal"
         assert sent[4].content.startswith(CLOCK_HEADING)
 
 

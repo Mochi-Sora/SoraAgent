@@ -352,3 +352,55 @@ def test_handler_keeps_full_history_when_no_window_is_configured(tmp_path):
     handler.handle(_inbound("current question"))
 
     assert len(provider.calls[0]) == len(history) + 2
+
+
+def test_state_is_injected_into_the_system_block_and_isolated_by_chat(
+    tmp_path,
+) -> None:
+    provider = PlainProvider("ok")
+    handler = ChatHandler(
+        provider,
+        max_steps=1,
+        clock=False,
+        calendar=False,
+        identity=False,
+        memory=False,
+        quality=False,
+        streaming=False,
+        delegate=False,
+        state_enabled=True,
+        state_root=tmp_path / "state",
+    )
+
+    handler.handle(_inbound("first goal", chat="a"))
+    handler.handle(_inbound("second goal", chat="b"))
+
+    assert len(provider.calls) == 2
+    for sent in provider.calls:
+        assert sent[0].role == "system"
+        assert sent[1].role == "system"
+        assert sent[1].content.startswith("## SESSION STATE PROTOCOL")
+        assert sent[1].content.rstrip().endswith("STATE>>>")
+        assert sent[2].role == "user"
+
+    states = sorted((tmp_path / "state").glob("*.state.md"))
+    assert len(states) == 2
+    contents = [path.read_text(encoding="utf-8") for path in states]
+    assert any("first goal" in content for content in contents)
+    assert any("second goal" in content for content in contents)
+
+    # Reusing a chat reuses its state file, not the other chat's file.
+    handler.handle(_inbound("follow-up", chat="a"))
+    assert len(list((tmp_path / "state").glob("*.state.md"))) == 2
+
+
+def test_chat_handler_derives_a_principal_from_sender_and_channel() -> None:
+    handler = ChatHandler(PlainProvider(), max_steps=1, clock=False, quality=False)
+    assert (
+        handler._principal_id(InboundMessage("telegram", "alice", "chat-1", "hi"))
+        == "telegram:alice"
+    )
+    assert (
+        handler._principal_id(InboundMessage("cli", "local", "local", "hi"))
+        == "sora"
+    )

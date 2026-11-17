@@ -121,8 +121,25 @@ class DreamRunner:
             }
             cohort, rounds = self._cohort(by_id, now)
             report["cohort"] = sorted(cohort)
-            self._pipeline(report, by_id, cohort, rounds, now, dry_run)
-            self._mark(report, by_id, cohort, rounds, now, dry_run)
+            pipeline_ok = self._pipeline(
+                report, by_id, cohort, rounds, now, dry_run
+            )
+            # Lifecycle work applies to every memory, not only the cohort that
+            # is still within its dream rounds.
+            self._decay(report, list(by_id.values()), now, dry_run)
+            expired = self._expire(
+                report, list(by_id.values()), now, dry_run
+            )
+            if pipeline_ok:
+                self._mark(
+                    report,
+                    by_id,
+                    cohort,
+                    rounds,
+                    now,
+                    dry_run,
+                    skip=expired,
+                )
             if not dry_run and config.db_path.exists():
                 try:
                     manifest = self.backup.snapshot_active()
@@ -316,6 +333,9 @@ class DreamRunner:
             memory_id = f"daily:{day.isoformat()}:{message_id}"
             session_id = str(message.get("session_id") or "default")
             role = str(message.get("role") or "")
+        user_id = str(
+            message.get("user_id") or self.config.user_id or "sora"
+        )[:200]
         content = str(message.get("content") or "")
         redacted = False
         if self.redactor is not None:
@@ -344,12 +364,19 @@ class DreamRunner:
             metadata["specialist_name"] = self._specialist_name(agent_id)
         if redacted:
             metadata["profile_redacted"] = True
+        if self.config.ttl_days > 0:
+            expires_at = (
+                day + timedelta(days=self.config.ttl_days)
+            ).isoformat()
+            metadata["sora_expires_at"] = expires_at
+        else:
+            expires_at = ""
         entity_names, relations = ([], []) if dry_run else graph_hints(
             self.backend, content
         )
         payload: dict[str, Any] = {
             "memory_id": memory_id,
-            "user_id": self.config.user_id,
+            "user_id": user_id,
             "session_id": session_id,
             "scope": "user",
             "role": role,
@@ -357,6 +384,8 @@ class DreamRunner:
             "importance": 0.5,
             "metadata": metadata,
         }
+        if expires_at:
+            payload["expires_at"] = expires_at
         if entity_names:
             payload["entities"] = entity_payloads(entity_names)
         if relations:
@@ -418,24 +447,23 @@ class DreamRunner:
         rounds: dict[str, int],
         now: datetime,
         dry_run: bool,
-    ) -> None:
+    ) -> bool:
         records = [by_id[memory_id] for memory_id in cohort if memory_id in by_id]
         if not records:
-            return
+            return True
         if self._over_budget(report):
-            return
+            return False
         self._dedupe(report, by_id, records, rounds, now, dry_run)
         self._conflicts(report, by_id, records, rounds, now, dry_run)
         if self._over_budget(report):
-            return
+            return False
         graph = self._graph(records)
         communities = louvain_communities(graph)
         self._communities(report, records, communities, dry_run)
         self._inferences(report, by_id, records, graph, communities, rounds, now, dry_run)
         if self.config.dream_rules:
             self._rules(report, dry_run)
-        self._decay(report, records, now, dry_run)
-        self._expire(report, records, now, dry_run)
+        return True
 
     def _dedupe(
         self,
@@ -446,7 +474,7 @@ class DreamRunner:
         now: datetime,
         dry_run: bool,
     ) -> None:
-        groups: dict[str, list[dict[str, Any]]] = {}
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for record in records:
             metadata = _metadata(record)
             if _kind(metadata) in {"merged", "conflict", "inferred_link"}:
@@ -454,10 +482,13 @@ class DreamRunner:
             normalized = _normalize(str(record.get("content") or ""))
             if len(normalized) < 40:
                 continue
-            groups.setdefault(normalized, []).append(record)
+            groups.setdefault(
+                (_record_user_id(record, self.config.user_id), normalized),
+                [],
+            ).append(record)
         created = 0
-        for normalized in sorted(groups):
-            group = groups[normalized]
+        for _group_key in sorted(groups):
+            group = groups[_group_key]
             if len(group) < 2 or created >= self.config.dream_max_merges:
                 continue
             ids = sorted(str(item.get("id")) for item in group)
@@ -474,19 +505,24 @@ class DreamRunner:
             )
             metadata = {
                 "sora_kind": "merged",
+                "durable": True,
                 "sources": ids,
                 "dream_round": target_round,
                 "dream_due": self._due_for(target_round, now),
             }
             payload = {
                 "memory_id": merged_id,
-                "user_id": self.config.user_id,
+                "user_id": _record_user_id(canonical, self.config.user_id),
                 "scope": "user",
                 "content": str(canonical.get("content") or ""),
                 "importance": max(_importance(item) for item in group),
                 "metadata": metadata,
-                "supersedes": [memory_id for memory_id in ids if memory_id != str(canonical.get("id"))],
+                "supersedes": ids,
             }
+            if self.config.ttl_days > 0:
+                payload["expires_at"] = (
+                    now + timedelta(days=self.config.ttl_days)
+                ).isoformat()
             report["actions"].append(
                 {
                     "op": "merge",
@@ -530,11 +566,14 @@ class DreamRunner:
                 break
             left_id = str(left.get("id"))
             left_text = str(left.get("content") or "")
+            left_user = _record_user_id(left, self.config.user_id)
             for right in candidates[left_index + 1:]:
                 if created >= self.config.dream_max_conflicts:
                     break
                 right_id = str(right.get("id"))
                 right_text = str(right.get("content") or "")
+                if left_user != _record_user_id(right, self.config.user_id):
+                    continue
                 if _jaccard(tokens[left_id], tokens[right_id]) < 0.7:
                     continue
                 if _numbers(left_text) == _numbers(right_text):
@@ -550,17 +589,23 @@ class DreamRunner:
                 content = f"Conflicting records:\n- [{left_id}] {_brief(left_text)}\n- [{right_id}] {_brief(right_text)}"
                 payload = {
                     "memory_id": conflict_id,
-                    "user_id": self.config.user_id,
+                    "user_id": left_user,
                     "scope": "user",
                     "content": content,
                     "importance": 0.8,
+                    "supersedes": [left_id, right_id],
                     "metadata": {
                         "sora_kind": "conflict",
+                        "durable": True,
                         "sources": [left_id, right_id],
                         "dream_round": target_round,
                         "dream_due": self._due_for(target_round, now),
                     },
                 }
+                if self.config.ttl_days > 0:
+                    payload["expires_at"] = (
+                        now + timedelta(days=self.config.ttl_days)
+                    ).isoformat()
                 report["conflicts"].append(
                     {
                         "memory_id": conflict_id,
@@ -740,6 +785,13 @@ class DreamRunner:
                         continue
                     if communities.get(left) != communities.get(right):
                         continue
+                    left_user = _record_user_id(
+                        by_id.get(left, {}), self.config.user_id
+                    )
+                    if left_user != _record_user_id(
+                        by_id.get(right, {}), self.config.user_id
+                    ):
+                        continue
                     link_id = "dream:link:" + _digest(
                         "|".join(sorted([left, right]))
                     )
@@ -755,7 +807,7 @@ class DreamRunner:
                     )
                     payload = {
                         "memory_id": link_id,
-                        "user_id": self.config.user_id,
+                        "user_id": left_user,
                         "scope": "user",
                         "content": content,
                         "importance": 0.4,
@@ -832,12 +884,20 @@ class DreamRunner:
                 report["caps_hit"].append("dream_max_updates")
                 break
             memory_id = str(record.get("id"))
+            metadata = _metadata(record)
+            last = metadata.get("last_decay")
+            if last:
+                try:
+                    if _parse_iso(str(last)).date() >= now.date():
+                        continue
+                except (TypeError, ValueError):
+                    pass
             previous = _importance(record)
             candidate = max(
                 self.config.dream_min_importance,
                 round(previous * self.config.dream_decay, 4),
             )
-            if abs(candidate - previous) < 0.01:
+            if candidate >= previous:
                 continue
             report["actions"].append(
                 {
@@ -855,7 +915,10 @@ class DreamRunner:
                 self.backend.update_memory(
                     memory_id,
                     importance=candidate,
-                    metadata={"last_decay": now.isoformat()},
+                    metadata={
+                        "last_decay": now.isoformat(),
+                        "last_decay_from": previous,
+                    },
                 )
             except Exception as exc:  # noqa: BLE001
                 report["errors"].append(f"decay {memory_id}: {exc}")
@@ -866,14 +929,25 @@ class DreamRunner:
         records: list[dict[str, Any]],
         now: datetime,
         dry_run: bool,
-    ) -> None:
+    ) -> set[str]:
         removed = 0
+        removed_ids: set[str] = set()
         for record in records:
             if removed >= self.config.dream_max_updates:
                 break
             memory_id = str(record.get("id"))
             metadata = _metadata(record)
             expires = record.get("expires_at") or metadata.get("sora_expires_at") or metadata.get("expires_at")
+            if not expires and self.config.ttl_days > 0:
+                source_day = str(metadata.get("source_day") or "").strip()
+                if source_day:
+                    try:
+                        expires = (
+                            date.fromisoformat(source_day)
+                            + timedelta(days=self.config.ttl_days)
+                        ).isoformat()
+                    except ValueError:
+                        expires = None
             if not expires:
                 continue
             try:
@@ -890,12 +964,14 @@ class DreamRunner:
                 }
             )
             removed += 1
+            removed_ids.add(memory_id)
             if dry_run:
                 continue
             try:
                 self.backend.delete_memory(memory_id)
             except Exception as exc:  # noqa: BLE001
                 report["errors"].append(f"expire {memory_id}: {exc}")
+        return removed_ids
 
     def _mark(
         self,
@@ -905,9 +981,14 @@ class DreamRunner:
         rounds: dict[str, int],
         now: datetime,
         dry_run: bool,
+        *,
+        skip: set[str] | None = None,
     ) -> None:
         updates = 0
+        skipped = skip or set()
         for memory_id in cohort:
+            if memory_id in skipped:
+                continue
             if updates >= self.config.dream_max_updates:
                 report["caps_hit"].append("dream_max_updates")
                 break
@@ -961,7 +1042,10 @@ class DreamRunner:
         for memory_id in sorted(by_id):
             record = by_id[memory_id]
             kind = _kind(_metadata(record))
-            if not _is_artifact(memory_id, kind) or memory_id in expired:
+            if (
+                not _is_artifact(memory_id, kind, _metadata(record))
+                or memory_id in expired
+            ):
                 continue
             planned += 1
             report["actions"].append(
@@ -1065,13 +1149,21 @@ def _already_redacted(content: str) -> bool:
     return "[profile details withheld]" in content or "[profile]" in content
 
 
-def _is_artifact(memory_id: str, kind: str) -> bool:
+def _is_artifact(memory_id: str, kind: str, metadata: dict[str, Any] | None = None) -> bool:
+    if (metadata or {}).get("durable"):
+        return False
     return kind in _ARTIFACT_KINDS or memory_id.startswith(_ARTIFACT_PREFIXES)
 
 
 def _metadata(record: dict[str, Any]) -> dict[str, Any]:
     metadata = record.get("metadata")
     return metadata if isinstance(metadata, dict) else {}
+
+
+def _record_user_id(record: dict[str, Any], fallback: str = "sora") -> str:
+    metadata = _metadata(record)
+    value = record.get("user_id") or metadata.get("user_id") or fallback
+    return str(value or fallback)[:200]
 
 
 def _kind(metadata: dict[str, Any]) -> str:

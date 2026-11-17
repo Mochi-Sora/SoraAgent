@@ -7,10 +7,11 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..net import urlopen
+from ..net import ssl_context, urlopen
+from ..toolpack.safety import assert_public_peer, assert_public_url
 
 
 class HttpError(RuntimeError):
@@ -125,19 +126,62 @@ def request_json(
         raise HttpError(f"invalid JSON from {url}") from exc
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects so an allowed URL cannot bounce to a private host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _host_allowed(host: str, allowed_hosts: Sequence[str]) -> bool:
+    value = str(host or "").strip("[]").lower().rstrip(".")
+    for suffix in allowed_hosts:
+        candidate = str(suffix or "").strip().lower().lstrip(".").rstrip(".")
+        if candidate and (value == candidate or value.endswith("." + candidate)):
+            return True
+    return False
+
+
 def download(
     url: str,
     *,
     headers: Mapping[str, str] | None = None,
     timeout: float = 30.0,
     max_bytes: int = 20 * 1024 * 1024,
+    allowed_hosts: Sequence[str] | None = None,
+    validate_public: bool = False,
 ) -> bytes:
-    """Download at most ``max_bytes`` from ``url``."""
+    """Download at most ``max_bytes`` from ``url``.
+
+    ``allowed_hosts`` restricts token-bearing or platform-provided attachment
+    URLs.  ``validate_public`` additionally rejects private/loopback
+    destinations.  Redirects are never followed by this helper.
+    """
+    parsed = urllib.parse.urlsplit(str(url or ""))
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise HttpError("attachment URL must be http(s) with a hostname")
+    if parsed.username or parsed.password:
+        raise HttpError("attachment URL must not contain credentials")
+    if allowed_hosts and not _host_allowed(parsed.hostname, allowed_hosts):
+        raise HttpError(
+            f"attachment host is not allowed: {parsed.hostname}"
+        )
+    if validate_public:
+        try:
+            assert_public_url(url, allow_private=False)
+        except ValueError as exc:
+            raise HttpError(f"unsafe attachment URL: {exc}") from exc
     req = urllib.request.Request(url, headers=dict(headers or {}))
     chunks: list[bytes] = []
     total = 0
     try:
-        with urlopen(req, timeout) as response:
+        opener = urllib.request.build_opener(
+            _NoRedirectHandler(),
+            urllib.request.HTTPSHandler(context=ssl_context()),
+        )
+        with opener.open(req, timeout=timeout) as response:
+            if validate_public:
+                assert_public_peer(response, url)
             while True:
                 chunk = response.read(64 * 1024)
                 if not chunk:

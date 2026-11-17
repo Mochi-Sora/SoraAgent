@@ -7,6 +7,17 @@ from typing import Any
 
 from .._util import env_bool, env_float, env_int, env_str, split_ids
 
+DEFAULT_TEAMS_ATTACHMENT_HOSTS = (
+    "microsoft.com",
+    "microsoftonline.com",
+    "office.com",
+    "office.net",
+    "sharepoint.com",
+    "skype.com",
+    "trafficmanager.net",
+    "windows.net",
+)
+
 
 @dataclass(frozen=True)
 class TeamsConfig:
@@ -26,6 +37,7 @@ class TeamsConfig:
     max_message_chars: int = 4000
     download_attachments: bool = True
     max_attachment_bytes: int = 20 * 1024 * 1024
+    attachment_hosts: tuple[str, ...] = DEFAULT_TEAMS_ATTACHMENT_HOSTS
     typing: bool = True
     verify_jwt: bool = True
 
@@ -46,6 +58,15 @@ class TeamsConfig:
             raise ValueError("teams max_message_chars must be > 0")
         if self.max_attachment_bytes <= 0:
             raise ValueError("teams max_attachment_bytes must be > 0")
+        object.__setattr__(
+            self,
+            "attachment_hosts",
+            tuple(
+                item.strip().lower().lstrip(".").rstrip(".")
+                for item in self.attachment_hosts
+                if str(item).strip()
+            ),
+        )
 
     @property
     def resolved_token_url(self) -> str:
@@ -121,6 +142,10 @@ def from_settings(settings, secrets, args):
         download_attachments=env_bool("SORA_TEAMS_DOWNLOAD_FILES", True),
         max_attachment_bytes=env_int(
             "SORA_TEAMS_MAX_ATTACHMENT_BYTES", 20 * 1024 * 1024
+        ),
+        attachment_hosts=(
+            split_ids(env_str("SORA_TEAMS_ATTACHMENT_HOSTS"))
+            or DEFAULT_TEAMS_ATTACHMENT_HOSTS
         ),
         typing=bool(getattr(settings.channel, "typing", True)),
         verify_jwt=not env_bool("SORA_TEAMS_ALLOW_UNVERIFIED", False),

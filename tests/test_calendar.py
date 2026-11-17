@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from sora_agent.agent import Agent
+from sora_agent.approval import AutoApprovalGate
 from sora_agent.calendar import (
     BALANCED,
     IMPORTANCE_LEVELS,
@@ -244,7 +245,7 @@ def test_calendar_tools_are_hidden_until_find_tools_loads_them(
     assert "calendar_add_todo" in gate.visible_names()
     assert "callable next step" in result
 
-    executor = ToolExecutor(registry)
+    executor = ToolExecutor(registry, approval=AutoApprovalGate())
     added = executor.execute(
         ToolCall(
             id="add_1",
@@ -311,6 +312,7 @@ def test_agent_registers_calendar_tools_hidden_by_default(
         identity=False,
         clock=False,
         calendar=store,
+        approval=AutoApprovalGate(),
     )
 
     result = agent.run("Schedule a review.")
@@ -356,3 +358,47 @@ def test_chat_handler_registers_hidden_calendar_tools(
     assert handler.registry.has("calendar_list")
     assert provider.tools[0] == [FIND_TOOLS_NAME]
 
+
+
+def test_calendar_store_uses_private_permissions(tmp_path: Path) -> None:
+    import os
+
+    if os.name == "nt":
+        pytest.skip("POSIX permissions are not available on Windows")
+    root = tmp_path / "private"
+    store = CalendarStore(root / "calendar.db", clock=lambda: NOW)
+    store.add_todo("private task")
+    assert (root.stat().st_mode & 0o777) == 0o700
+    assert (store.path.stat().st_mode & 0o777) == 0o600
+
+
+def test_calendar_mutations_require_approval(tmp_path: Path) -> None:
+    store = store_at(tmp_path / "calendar.db")
+    registry = ToolRegistry()
+    register_calendar_tools(registry, store)
+    assert registry.get("calendar_list").needs_approval is False
+    for name in (
+        "calendar_add_event",
+        "calendar_add_todo",
+        "calendar_complete_todo",
+        "calendar_set_importance",
+    ):
+        assert registry.get(name).needs_approval is True
+
+    class Reject:
+        def request(self, action, detail):
+            return False
+
+        def log(self, action, decision, detail, actor="agent"):
+            return None
+
+    result = ToolExecutor(registry, approval=Reject()).execute(
+        ToolCall(
+            id="add_1",
+            name="calendar_add_event",
+            arguments={"title": "Injected", "starts_at": "2026-11-05T09:00"},
+        )
+    )
+    assert result.executed is False
+    assert "rejected" in result.content
+    assert store.list_items(kind="events") == []

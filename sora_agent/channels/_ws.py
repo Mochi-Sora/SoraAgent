@@ -79,6 +79,10 @@ class WebSocketClient:
         host = parsed.hostname
         if not host:
             raise WebSocketError(f"websocket url has no host: {url}")
+        if scheme == "ws" and host not in {"localhost", "127.0.0.1", "::1"}:
+            raise WebSocketError(
+                "plaintext ws:// is only allowed for loopback; use wss://"
+            )
         port = parsed.port or (443 if scheme == "wss" else 80)
         target = parsed.path or "/"
         if parsed.query:

@@ -129,20 +129,29 @@ class UrllibTeamsTransport:
         except JwtError as exc:
             raise TeamsError(f"invalid Teams token: {exc}") from exc
         if service_url:
-            claimed = claims.get("serviceUrl")
+            claimed = claims.get("serviceurl")
             if not isinstance(claimed, str) or _normalize_url(
                 claimed
             ) != _normalize_url(service_url):
                 raise TeamsError("Teams token serviceUrl does not match the activity")
         return claims
 
-    def download(self, url: str, max_bytes: int) -> bytes:
+    def download(
+        self,
+        url: str,
+        max_bytes: int,
+        *,
+        allowed_hosts: tuple[str, ...] | None = None,
+        validate_public: bool = False,
+    ) -> bytes:
         try:
             return download(
                 url,
                 headers={"Authorization": f"Bearer {self.access_token()}"},
                 timeout=self._request_timeout,
                 max_bytes=max_bytes,
+                allowed_hosts=allowed_hosts,
+                validate_public=validate_public,
             )
         except HttpError as exc:
             raise TeamsError(str(exc)) from exc

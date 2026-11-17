@@ -401,3 +401,14 @@ def test_specialist_daily_notes_are_redacted(tmp_path):
     recalled = registry.get("recall_daily").fn("token")
     assert "secret-value" not in recalled
     assert "[secret]" in recalled
+
+
+def test_specialist_delete_rejects_path_traversal(tmp_path):
+    from sora_agent.delegation.store import DelegationStore
+
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "agent.json").write_text("{}", encoding="utf-8")
+    store = DelegationStore(tmp_path / "delegations")
+    assert store.delete("../victim", remove_workspace=True) is False
+    assert victim.exists()

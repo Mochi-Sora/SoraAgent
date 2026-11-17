@@ -279,3 +279,36 @@ def test_transport_sends_message_and_typing(monkeypatch):
     assert calls[0][0] == "https://smba.example/v3/conversations/c1/activities"
     assert calls[0][1]["json_body"]["replyToId"] == "a0"
     assert calls[1][1]["json_body"]["type"] == "typing"
+
+
+def test_teams_jwt_uses_the_lowercase_serviceurl_claim(monkeypatch):
+    import sora_agent.channels.teams.transport as module
+
+    transport = UrllibTeamsTransport(
+        "app",
+        "secret",
+        token_url="https://token.example",
+        openid_config_url="https://openid.example",
+        scope="scope",
+    )
+    monkeypatch.setattr(
+        transport,
+        "_openid_config",
+        lambda: {"jwks_uri": "https://jwks.example", "issuer": "issuer"},
+    )
+    monkeypatch.setattr(module, "fetch_jwks", lambda *args, **kwargs: {"keys": []})
+    monkeypatch.setattr(
+        module,
+        "verify_rs256",
+        lambda *args, **kwargs: {"serviceurl": "https://smba.example"},
+    )
+    claims = transport.verify_jwt("token", "https://smba.example")
+    assert claims["serviceurl"] == "https://smba.example"
+
+    monkeypatch.setattr(
+        module,
+        "verify_rs256",
+        lambda *args, **kwargs: {"serviceUrl": "https://smba.example"},
+    )
+    with pytest.raises(TeamsError, match="serviceUrl"):
+        transport.verify_jwt("token", "https://smba.example")

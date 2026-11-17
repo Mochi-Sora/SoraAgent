@@ -76,6 +76,33 @@ def assert_public_url(url: str, allow_private: bool = False) -> str:
     return parsed.geturl()
 
 
+def assert_public_peer(response: Any, url: str = "") -> None:
+    """Reject a response whose actual peer is private after DNS resolution.
+
+    The pre-flight URL check can be defeated by DNS rebinding: the name can
+    resolve publicly for the check and privately for the connection.  This
+    validates the connected socket, not the name.
+    """
+    sock = None
+    try:
+        sock = response.fp.raw._sock  # type: ignore[attr-defined]
+    except AttributeError:
+        sock = None
+    if sock is None:
+        raise ValueError(
+            "could not verify the connection peer for " + (url or "the response")
+        )
+    try:
+        peer = sock.getpeername()
+    except OSError as exc:
+        raise ValueError(f"could not verify the connection peer: {exc}") from exc
+    address = str(peer[0]) if isinstance(peer, tuple) and peer else ""
+    if not address or _is_private_address(address):
+        raise ValueError(
+            f"refusing a private, loopback, or unresolvable connection peer: {address or url}"
+        )
+
+
 def untrusted(source: str, text: str) -> str:
     """Frame third-party content as data rather than instructions."""
 

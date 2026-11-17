@@ -146,8 +146,8 @@ def _message_from_dict(item: Any) -> Message:
     if not isinstance(item, dict):
         raise TypeError("session message must be an object")
     role = item.get("role")
-    if not isinstance(role, str):
-        raise TypeError("session message role must be a string")
+    if not isinstance(role, str) or role not in {"user", "assistant", "tool"}:
+        raise TypeError("session message role must be user, assistant, or tool")
     calls = []
     for raw in item.get("tool_calls") or []:
         if not isinstance(raw, dict):

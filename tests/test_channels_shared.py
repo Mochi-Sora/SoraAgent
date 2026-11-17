@@ -436,3 +436,105 @@ def test_fetch_jwks_uses_the_cache():
         assert len(calls) == 1
     finally:
         server.stop()
+
+
+def test_download_rejects_unlisted_hosts_before_network() -> None:
+    with pytest.raises(_http.HttpError, match="not allowed"):
+        _http.download(
+            "https://files.attacker.example/payload",
+            allowed_hosts=("sharepoint.com",),
+            validate_public=False,
+        )
+
+
+def test_download_does_not_follow_redirects() -> None:
+    def callback(method, path, headers, body):
+        if path == "/redirect":
+            return 302, {"Location": "/bytes"}, b""
+        return 200, {"Content-Type": "application/octet-stream"}, b"abc"
+
+    server = _start_webhook(callback)
+    try:
+        base = f"http://127.0.0.1:{server.bound_port}"
+        with pytest.raises(_http.HttpError):
+            _http.download(
+                base + "/redirect",
+                allowed_hosts=("127.0.0.1",),
+            )
+    finally:
+        server.stop()
+
+
+def test_channel_caps_attachment_count_and_known_total_bytes() -> None:
+    from types import SimpleNamespace
+
+    from sora_agent.channels.base import BaseChannel
+    from sora_agent.channels.bus import MessageBus
+    from sora_agent.files import Attachment
+
+    class Dummy(BaseChannel):
+        async def start(self):
+            return None
+
+        async def stop(self):
+            return None
+
+        async def send(self, msg):
+            return None
+
+    channel = Dummy(SimpleNamespace(allow_from=("*",)), MessageBus())
+    channel.max_attachments = 2
+    channel.max_total_attachment_bytes = 10
+    attachments = [
+        Attachment("a.txt", size=6),
+        Attachment("b.txt", size=6),
+        Attachment("c.txt", size=1),
+        Attachment("d.txt", size=1),
+    ]
+    selected = channel.limit_attachments(attachments)
+    assert [item.filename for item in selected] == ["a.txt", "c.txt"]
+    assert "total-byte limit" in attachments[1].error
+    assert "count limit" in attachments[3].error
+
+
+def test_channel_caps_total_bytes_after_unknown_size_downloads() -> None:
+    from types import SimpleNamespace
+
+    from sora_agent.channels.base import BaseChannel
+    from sora_agent.channels.bus import MessageBus
+    from sora_agent.channels.types import InboundMessage
+    from sora_agent.files import Attachment
+
+    class Dummy(BaseChannel):
+        async def start(self):
+            return None
+
+        async def stop(self):
+            return None
+
+        async def send(self, msg):
+            return None
+
+    channel = Dummy(SimpleNamespace(allow_from=("*",)), MessageBus())
+    channel.max_total_attachment_bytes = 10
+    message = InboundMessage(
+        "fake",
+        "u",
+        "c",
+        "files",
+        attachments=[
+            Attachment("a.bin", data=b"123456"),
+            Attachment("b.bin", data=b"123456"),
+        ],
+    )
+    channel.enforce_attachment_totals(message)
+    assert message.attachments[0].data == b"123456"
+    assert message.attachments[1].data is None
+    assert "total-byte limit" in message.attachments[1].error
+
+
+def test_websocket_requires_tls_for_non_loopback() -> None:
+    from sora_agent.channels._ws import WebSocketClient, WebSocketError
+
+    with pytest.raises(WebSocketError, match="wss://"):
+        WebSocketClient.connect("ws://example.com/socket", timeout=1)

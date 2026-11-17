@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterable, Sequence
 from typing import Any, cast
 
 from .clock import append_clock, extract_clock, strip_clock
+from .edit_gate import identity_edit_allowed
 from .identity import (
     IDENTITY_HEADING,
     SOUL_LIMIT,
@@ -248,6 +249,15 @@ class IdentityProvider:
     ) -> str:
         parsed = extract_identity_edits(raw)
         visible = parsed.text
+        if (
+            parsed.user_edit is not None
+            or parsed.soul_edit is not None
+            or parsed.issues
+        ) and not identity_edit_allowed(base_messages):
+            log.warning(
+                "identity edit ignored: no trusted user request in this turn"
+            )
+            return visible
         accepted: set[str] = set()
         accepted, rejected, issues = self._try_apply(parsed, accepted)
         if not issues and not rejected:

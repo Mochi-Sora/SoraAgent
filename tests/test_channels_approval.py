@@ -22,14 +22,13 @@ from sora_agent.channels.types import InboundMessage
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("yes", True),
-        (" YES! ", True),
         ("approve", True),
-        ("ok", True),
-        ("no", False),
+        (" APPROVE! ", True),
+        ("ok", None),
+        ("reject", False),
         ("Reject.", False),
-        ("stop", False),
-        ("what about PO-2?", None),
+        ("stop", None),
+        ("yes", None),
         ("", None),
     ],
 )
@@ -74,7 +73,7 @@ def test_render_request_names_the_action_and_the_reply_words():
     text = render_request("cancel_order", "PO-1")
     assert "cancel_order" in text
     assert "PO-1" in text
-    assert "yes" in text and "no" in text
+    assert "approve" in text and "reject" in text
 
 
 def test_request_is_resolved_by_a_chat_reply():
@@ -89,7 +88,7 @@ def test_request_is_resolved_by_a_chat_reply():
         )
         worker.start()
         prompt = await asyncio.wait_for(bus.next_outbound(), 2)
-        consumed = broker.consume(_inbound("yes"))
+        consumed = broker.consume(_inbound("approve"))
         await _join(worker)
         return prompt, consumed, approved
 
@@ -163,7 +162,7 @@ def test_callback_from_a_topic_without_a_session_key_still_resolves():
         token = prompt.metadata["approval_id"]
         consumed = broker.consume(
             _inbound(
-                "yes",
+                "approve",
                 chat_id="42",
                 metadata={"approval_id": token},
             )
@@ -227,7 +226,7 @@ def test_matching_callback_token_resolves_the_request():
         prompt = await asyncio.wait_for(bus.next_outbound(), 2)
         token = prompt.metadata["approval_id"]
         consumed = broker.consume(
-            _inbound("yes", metadata={"approval_id": token})
+            _inbound("approve", metadata={"approval_id": token})
         )
         await _join(worker)
         return consumed, approved
@@ -310,7 +309,7 @@ def test_gate_audits_the_actor_and_decision():
         )
         worker.start()
         prompt = await asyncio.wait_for(bus.next_outbound(), 2)
-        broker.consume(_inbound("no"))
+        broker.consume(_inbound("reject"))
         await _join(worker)
         return prompt, gate, approved
 

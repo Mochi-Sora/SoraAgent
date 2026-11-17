@@ -2,6 +2,124 @@
 
 All notable changes to SoraAgent are documented here.
 
+## [0.3.0] - 2026-11-17
+
+### Added
+
+- Session state is now wired into `sora chat`, `sora-gateway`, and the SoraDesk
+  bridge. Each conversation gets a stable hashed state id; the default root is
+  `~/.sora_agent/state`.
+- `features.state`, `paths.state_root`, `SORA_STATE`, and `SORA_STATE_ROOT`.
+- `sora doctor` reports the state root and whether state is enabled.
+
+### Fixed
+
+- The recall renderer is clamped below the configured tool-result cap instead
+  of producing 6000 characters that the tool layer later truncates to 4000.
+  `sora doctor` now reports when the sidecar has no embedder.
+- Recall now fuses daily and long-term hits by normalized relevance, recency,
+  and importance; the old fixed half-daily/half-long-term quota is gone.
+  Duplicate content is collapsed, graph facts get a small reserved budget, and
+  rendering follows the ranked order so daily messages cannot truncate the
+  long-term section away.
+- Dream decay now applies to every memory once per UTC day, including records
+  that have completed their dream rounds; the old sub-0.01 skip that froze
+  importance at 0.49 is gone.
+- Transferred memories receive `expires_at` from `SORA_MEMORY_TTL_DAYS`
+  (default 90; `0` disables). Expiry also retroactively applies to old records
+  that carry `source_day`. Expired records are excluded from marking, avoiding
+  the previous delete-then-update 404.
+- Dream merge and conflict records are now durable. Sources are marked
+  superseded, the canonical merge/conflict record is retained, and cleanup no
+  longer deletes the only surviving record. Dedupe and conflict detection are
+  scoped by principal so one user's memories cannot be merged into another's.
+
+### Security
+
+- Shell and `execute_code` processes are terminated as soon as the bounded
+  output cap is reached; they no longer continue until the command timeout.
+- Channel attachment totals are enforced again after unknown-size downloads;
+  excess data is released and marked with an error.
+- Real vision-model descriptions and real OCR now run in child processes with
+  an `image_timeout` (default 60s), so a slow provider or OCR engine cannot
+  block the turn. Injected test/custom vision or OCR callables still run locally.
+- `execute_code` now drains stdout/stderr through bounded readers instead of
+  buffering the whole stream before clipping.
+- Document conversion now runs in a child process with a 30-second deadline.
+  A pathological DOCX/PDF/archive/CSV parser can be killed instead of blocking
+  the turn; conversion failures and timeouts become attachment notes.
+- `web_extract` now runs in a child process with a hard deadline
+  (`web_timeout + 3s`), so a slow DNS/TLS lookup cannot block the turn. The
+  child still enforces public URL, redirect, and peer checks.
+- Inbound channels now cap attachments at 20 per message and 100 MiB of known
+  size before starting any download; extra items are marked with an error.
+- Shell output is now bounded while it is being read, for both foreground and
+  background processes. A command that prints megabytes no longer buffers the
+  whole stream in memory before the output cap is applied.
+- Web extraction and token-bearing attachment downloads now validate the
+  connected peer address, not only the hostname resolution. This closes the
+  DNS-rebinding gap where the pre-flight lookup was public but the connection
+  landed on loopback/private space.
+- Chat approvals now require exact words (`approve`/`reject` and their listed
+  inflections). Ambiguous replies such as `ok`, `go`, `yes`, `yeah`, `stop`, or
+  `no` no longer resolve a pending approval.
+- Calendar mutations now require approval, and the calendar directory/database
+  are created with private permissions.
+- Teams and Google Chat attachment downloads now use a platform host
+  allowlist (`SORA_TEAMS_ATTACHMENT_HOSTS` /
+  `SORA_GOOGLE_CHAT_ATTACHMENT_HOSTS`), reject private destinations, and never
+  follow redirects. The Teams bearer token is only sent to an allowed host.
+- The iMessage webhook now requires `SORA_IMESSAGE_WEBHOOK_SECRET` by default,
+  accepts it only in the `x-webhook-secret` header, and compares it in constant
+  time. `SORA_IMESSAGE_ALLOW_UNVERIFIED=1` is the explicit opt-out.
+- Teams JWT verification now reads the Bot Framework lowercase `serviceurl`
+  claim, so verified mode no longer fails or pushes operators toward
+  unverified mode.
+- `search_files` now skips symlinks and re-resolves every walked file against
+  the configured workspace roots before opening it. A symlink inside the
+  workspace can no longer read a file outside it.
+- `search_files` runs its regex in a child process with
+  `SORA_TOOLPACK_SEARCH_TIMEOUT` (default 30s), so catastrophic backtracking
+  is terminated instead of hanging the turn.
+- State reads reject symlinks, accept UTF-8 BOM files, and take a cross-process
+  lock during accepted writes.
+- Specialist deletion rejects path-traversal ids.
+- Identity secret checks catch embedded credentials, and the memory firewall
+  removes natural-language password/API-key phrases.
+- Session files reject injected `system` roles; non-loopback WebSockets require
+  `wss://`.
+- Every executed tool result is now wrapped in a per-run `<untrusted>` boundary;
+  skipped and approval-rejection notices remain harness text.
+- `web_extract` validates redirect targets before following them, and custom
+  `web_search` URLs go through the public-URL guard.
+- Identity and session-state edits are now provenance-gated. A turn containing
+  tool output or untrusted user content cannot persist an edit unless the
+  user's own message explicitly requests an identity/state update. This closes
+  the persistent prompt-injection path through web/file/memory/delegation
+  content.
+
+### Fixed
+
+- Daily recall is now scoped to the active conversation. `MemoryHook` binds the
+  current session for the duration of a run, and `DailyStore.search` filters
+  by `session_id` for both FTS and LIKE paths.
+- Long-term memory is now keyed by principal. Channel messages use
+  `<channel>:<sender_id>`; CLI/local uses `SORA_MEMORY_USER_ID`. Daily rows carry
+  the principal into the dream transfer, and recall passes it to CortexDB.
+
+### Changed
+
+- Session state is inserted into the leading system-message block (before the
+  conversation), not appended after the user turn, so providers that forward
+  only leading system messages still receive it.
+- State text now includes the active state-file path.
+- Unreadable primary state files now try a valid `.bak` before falling back to
+  a synthetic recovery document.
+
+### Tests
+
+- Added per-chat state isolation and safe session-id mapping coverage.
+
 ## [0.2.3] - 2026-11-16
 
 ### Added

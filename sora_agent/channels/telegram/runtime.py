@@ -189,7 +189,11 @@ class TelegramChannel(BaseChannel):
         if not query_id:
             return
         if consumed:
-            text = "Approved" if inbound.content == "yes" else "Rejected"
+            text = (
+                "Approved"
+                if inbound.content in {"approve", "approved"}
+                else "Rejected"
+            )
         else:
             text = "This approval is no longer active."
         try:
@@ -325,7 +329,8 @@ def _parse_callback_data(data: str) -> tuple[str, str] | None:
         return None
     if parts[1] not in {"yes", "no"} or not parts[2]:
         return None
-    return parts[1], parts[2]
+    decision = "approve" if parts[1] == "yes" else "reject"
+    return decision, parts[2]
 
 
 def _approval_markup(msg: OutboundMessage) -> dict[str, Any] | None:

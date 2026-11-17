@@ -672,7 +672,7 @@ def _callback_update(data: str = "approval:yes:abc") -> dict:
 def test_parse_update_maps_an_approval_callback():
     parsed = parse_update(_callback_update())
     assert parsed is not None
-    assert parsed.content == "yes"
+    assert parsed.content == "approve"
     assert parsed.metadata["kind"] == "approval_callback"
     assert parsed.metadata["approval_id"] == "abc"
     assert parsed.callback_query_id == "cq1"
@@ -778,7 +778,7 @@ def test_channel_defers_button_acknowledgement_until_consumed():
         return message, transport
 
     message, transport = asyncio.run(scenario())
-    assert message.content == "yes"
+    assert message.content == "approve"
     assert transport.answered == [
         ("cq1", "This approval is no longer active.")
     ]

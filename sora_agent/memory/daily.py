@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT NOT NULL,
     session_id TEXT NOT NULL,
+    user_id TEXT NOT NULL DEFAULT 'sora',
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
     content TEXT NOT NULL
 );
@@ -148,11 +149,13 @@ class DailyStore:
         self,
         root: Path,
         session_id: str = "default",
+        user_id: str = "sora",
         clock: Callable[[], datetime] | None = None,
         use_fts: bool = True,
     ) -> None:
         self.root = Path(root)
         self.session_id = session_id
+        self.user_id = user_id
         self.clock = clock or utcnow
         self.use_fts = use_fts
         self.root.mkdir(parents=True, exist_ok=True)
@@ -172,6 +175,7 @@ class DailyStore:
         content: str,
         session_id: str | None = None,
         ts: datetime | None = None,
+        user_id: str | None = None,
     ) -> int:
         if role not in {"user", "assistant"}:
             raise ValueError("daily memory stores only user and assistant messages")
@@ -183,18 +187,34 @@ class DailyStore:
         stamp = moment.isoformat()
         with self._open(path) as conn:
             cur = conn.execute(
-                "INSERT INTO messages(ts, session_id, role, content) VALUES (?, ?, ?, ?)",
-                (stamp, session_id or self.session_id, role, content),
+                "INSERT INTO messages(ts, session_id, user_id, role, content) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    stamp,
+                    session_id or self.session_id,
+                    user_id or self.user_id,
+                    role,
+                    content,
+                ),
             )
             row_id = cur.lastrowid
             if row_id is None:
                 raise RuntimeError("daily memory insert did not return a row id")
             return int(row_id)
 
-    def search(self, query: str, k: int = 8, days: int = 2) -> list[DailyHit]:
+    def search(
+        self,
+        query: str,
+        k: int = 8,
+        days: int = 2,
+        session_ids: Sequence[str] | None = None,
+    ) -> list[DailyHit]:
         tokens = [token for token in _tokens(query) if token not in _STOPWORDS][:16]
         if not tokens:
             return []
+        scope = tuple(
+            str(item) for item in (session_ids or ()) if str(item).strip()
+        )
         limit = max(1, min(int(k), 50))
         today = self.day_for()
         wanted: list[date] = []
@@ -205,12 +225,16 @@ class DailyStore:
             path = self.path_for(day)
             if not path.exists():
                 continue
-            hits.extend(self._search_day(day, tokens, limit))
+            hits.extend(self._search_day(day, tokens, limit, scope))
         hits.sort(key=lambda hit: hit.score, reverse=True)
         return hits[:limit]
 
     def _search_day(
-        self, day: date, tokens: Sequence[str], limit: int
+        self,
+        day: date,
+        tokens: Sequence[str],
+        limit: int,
+        session_ids: Sequence[str] = (),
     ) -> list[DailyHit]:
         path = self.path_for(day)
         with self._open(path) as conn:
@@ -222,16 +246,23 @@ class DailyStore:
                 ]
                 for expr in expressions:
                     try:
+                        scoped = ""
+                        params: list[Any] = [expr]
+                        if session_ids:
+                            marks = ",".join("?" for _ in session_ids)
+                            scoped = f" AND m.session_id IN ({marks})"
+                            params.extend(session_ids)
+                        params.append(limit)
                         rows = conn.execute(
-                            """
+                            f"""
                             SELECT m.id, m.ts, m.role, m.content, bm25(messages_fts) AS rank
                             FROM messages_fts
                             JOIN messages m ON m.id = messages_fts.rowid
-                            WHERE messages_fts MATCH ?
+                            WHERE messages_fts MATCH ?{scoped}
                             ORDER BY rank
                             LIMIT ?
                             """,
-                            (expr, limit),
+                            params,
                         ).fetchall()
                     except sqlite3.OperationalError:
                         continue
@@ -247,7 +278,7 @@ class DailyStore:
                             )
                             for row in rows
                         ]
-            return self._search_like(conn, day, tokens, limit)
+            return self._search_like(conn, day, tokens, limit, session_ids)
 
     def _search_like(
         self,
@@ -255,9 +286,15 @@ class DailyStore:
         day: date,
         tokens: Sequence[str],
         limit: int,
+        session_ids: Sequence[str] = (),
     ) -> list[DailyHit]:
         clauses = " AND ".join("lower(content) LIKE ?" for _ in tokens)
-        params = ["%" + token.lower() + "%" for token in tokens]
+        params: list[Any] = ["%" + token.lower() + "%" for token in tokens]
+        if session_ids:
+            marks = ",".join("?" for _ in session_ids)
+            clauses += f" AND session_id IN ({marks})"
+            params.extend(session_ids)
+        params.append(limit)
         rows = conn.execute(
             f"""
             SELECT id, ts, role, content
@@ -266,7 +303,7 @@ class DailyStore:
             ORDER BY id DESC
             LIMIT ?
             """,
-            (*params, limit),
+            params,
         ).fetchall()
         return [
             DailyHit(
@@ -312,15 +349,17 @@ class DailyStore:
             return []
         with self._open(path) as conn:
             rows = conn.execute(
-                "SELECT id, ts, session_id, role, content FROM messages ORDER BY id"
+                "SELECT id, ts, session_id, user_id, role, content "
+                "FROM messages ORDER BY id"
             ).fetchall()
         return [
             {
                 "id": int(row[0]),
                 "ts": str(row[1]),
                 "session_id": str(row[2]),
-                "role": str(row[3]),
-                "content": str(row[4]),
+                "user_id": str(row[3]),
+                "role": str(row[4]),
+                "content": str(row[5]),
             }
             for row in rows
         ]
@@ -464,6 +503,14 @@ class DailyStore:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=10000")
         conn.executescript(_SCHEMA)
+        columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        if "user_id" not in columns:
+            conn.execute(
+                "ALTER TABLE messages ADD COLUMN user_id TEXT NOT NULL DEFAULT 'sora'"
+            )
         if self.use_fts:
             try:
                 version = int(conn.execute("PRAGMA user_version").fetchone()[0])

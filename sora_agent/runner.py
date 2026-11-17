@@ -24,6 +24,7 @@ from .providers import (
     provider_turn,
 )
 from .tools import ToolExecutor, ToolResult
+from .untrusted import new_boundary, wrap_untrusted
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +100,8 @@ class RunSpec:
     required_first_tool: str | None = None
     # Called for each observable moment.  An observer must never affect a run.
     on_event: Callable[[RunEvent], None] | None = None
+    # One random boundary per run, reused for every untrusted tool observation.
+    boundary: str = ""
 
 
 @dataclass
@@ -128,6 +131,7 @@ class Runner:
         self.executor = executor
 
     def run(self, spec: RunSpec) -> RunResult:
+        boundary = spec.boundary or new_boundary()
         messages = list(spec.messages)
         steps: list[Step] = []
         final_answer = ""
@@ -227,7 +231,7 @@ class Runner:
                         )
                         metrics.skipped_tool_calls += len(results)
                         for result in results:
-                            messages.append(_tool_message(result))
+                            messages.append(_tool_message(result, boundary))
                     corrections += 1
                     steps.append(
                         Step(
@@ -308,7 +312,7 @@ class Runner:
                     )
                 )
                 results.append(result)
-                messages.append(_tool_message(result))
+                messages.append(_tool_message(result, boundary))
                 if report is None and result.report is not None:
                     report = result.report
                 if result.stopped:
@@ -337,7 +341,7 @@ class Runner:
                 ):
                     results.append(result)
                     metrics.skipped_tool_calls += 1
-                    messages.append(_tool_message(result))
+                    messages.append(_tool_message(result, boundary))
 
             steps.append(
                 Step(
@@ -503,10 +507,15 @@ def _first_tool_correction(required: str) -> str:
     )
 
 
-def _tool_message(result: ToolResult) -> Message:
+def _tool_message(result: ToolResult, boundary: str = "") -> Message:
+    content = result.content
+    if result.executed and not result.skipped:
+        content = wrap_untrusted(
+            result.call.name or "tool", content, boundary=boundary or None
+        )
     return Message(
         role="tool",
-        content=result.content,
+        content=content,
         tool_call_id=result.call.id,
         name=result.call.name,
     )

@@ -216,6 +216,25 @@ def build_identity(settings: Settings, *, enabled: bool | None = None) -> Any:
     )
 
 
+def state_root_path(settings: Settings) -> Path:
+    """Return the configured session-state root."""
+    configured = os.getenv("SORA_STATE_ROOT", "").strip()
+    root = configured or settings.paths.state_root
+    return Path(root).expanduser() if root else Path.home() / ".sora_agent" / "state"
+
+
+def build_state(settings: Settings, session_key: str) -> Any:
+    """Build a session-state manager, or return ``None`` when disabled."""
+    if not feature_enabled(settings, "state", "SORA_STATE"):
+        return None
+    from .state import StateConfig, StateManager, state_session_id
+
+    return StateManager(
+        state_session_id(session_key),
+        StateConfig(root=state_root_path(settings)),
+    )
+
+
 def build_calendar(settings: Settings) -> Any:
     if not feature_enabled(settings, "calendar", "SORA_CALENDAR"):
         return False
@@ -370,6 +389,7 @@ def build_memory(
         config,
         identity=identity,
         auto_dream=config.dream_auto if auto_dream is None else auto_dream,
+        tool_result_budget=settings.limits.max_tool_result_chars,
     )
 
 

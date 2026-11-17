@@ -73,6 +73,7 @@ class MemoryConfig:
     dream_decay: float = 0.98
     dream_min_importance: float = 0.05
     dream_budget_seconds: float = 120.0
+    ttl_days: int = 90
     dream_rules: tuple[dict[str, Any], ...] = ()
 
     backup_keep_daily: int = 14
@@ -114,6 +115,7 @@ class MemoryConfig:
             object.__setattr__(self, "dream_edge_jaccard", 0.45)
         if self.dream_budget_seconds <= 0:
             object.__setattr__(self, "dream_budget_seconds", 120.0)
+        object.__setattr__(self, "ttl_days", max(0, min(int(self.ttl_days), 3650)))
 
     @property
     def memory_dir(self) -> Path:
@@ -305,6 +307,9 @@ class MemoryConfig:
             dream_decay=_env_float("SORA_MEMORY_DREAM_DECAY", 0.98),
             dream_min_importance=_env_float("SORA_MEMORY_DREAM_MIN_IMPORTANCE", 0.05),
             dream_budget_seconds=_env_float("SORA_MEMORY_DREAM_BUDGET", 120.0),
+            ttl_days=_env_int(
+                "SORA_MEMORY_TTL_DAYS", _pick_int(raw, "ttl_days", 90)
+            ),
             dream_rules=rules,
             backup_keep_daily=_env_int("SORA_MEMORY_BACKUP_DAILY", 14),
             backup_keep_weekly=_env_int("SORA_MEMORY_BACKUP_WEEKLY", 8),

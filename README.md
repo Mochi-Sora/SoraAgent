@@ -34,7 +34,7 @@ deliberately tiny; the production concerns live in explicit gates around it:
 
 The core imports only the Python standard library; optional integrations
 (`openai`, `zstandard`) are extras. Requires Python **3.9+**. Current version:
-**0.2.3** — see [CHANGELOG.md](CHANGELOG.md).
+**0.3.0** — see [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -468,7 +468,7 @@ The layers are intentionally separable:
 | Tools | `sora_agent/tools.py` | `Tool`, `ToolRegistry`, `ToolExecutor`, `ToolResult`, schema generation, the `@tool` decorator. |
 | Core tool pack | `sora_agent/toolpack/` | Hermes-style file, shell, web, planning, code-execution, and delegation tools. |
 | Attachments | `sora_agent/files.py` | Convert files and images into untrusted markdown carried in a user turn. |
-| Untrusted framing | `sora_agent/untrusted.py` | Random per-turn boundaries for attachment and vision text. |
+| Untrusted framing | `sora_agent/untrusted.py` | Random per-turn boundaries for attachments, vision text, and executed tool output. |
 | Discovery | `sora_agent/tool_search.py` | `ToolGate`, `FindToolsTool`, two-tier lexical ranking with aliases and IDF weights. |
 | Approval | `sora_agent/approval.py` | `ApprovalGate`, `AuditEntry`; chat variant in `channels/approval.py`. |
 | Evaluation | `sora_agent/eval.py` | `Trajectory`, `EvalReport`, `QualityGate`, `structural_grader`, metrics. |
@@ -766,8 +766,10 @@ Behavior details:
 - `SORA_TOOLPACK_TERMINAL_TIMEOUT`, `SORA_TOOLPACK_CODE_TIMEOUT`,
   `SORA_TOOLPACK_MAX_READ_BYTES`, `SORA_TOOLPACK_MAX_READ_CHARS`,
   `SORA_TOOLPACK_MAX_WRITE_BYTES`, `SORA_TOOLPACK_MAX_TERMINAL_OUTPUT`,
-  `SORA_TOOLPACK_WEB_TIMEOUT`, `SORA_TOOLPACK_WEB_MAX_CHARS`, and
-  `SORA_TOOLPACK_ALLOW_PRIVATE_NETWORK` tune limits.
+  `SORA_TOOLPACK_SEARCH_TIMEOUT`, `SORA_TOOLPACK_WEB_TIMEOUT`,
+  `SORA_TOOLPACK_WEB_MAX_CHARS`, and `SORA_TOOLPACK_ALLOW_PRIVATE_NETWORK`
+  tune limits. `search_files` runs its regex in a child process, so a
+  pathological pattern is killed at the deadline.
 - `web_extract` rejects loopback/private/reserved destinations and re-checks
   redirects; `web_search` supports Tavily (`TAVILY_API_KEY`), Brave
   (`BRAVE_SEARCH_API_KEY`), or a custom JSON endpoint (`SORA_WEB_SEARCH_URL`).
@@ -909,9 +911,11 @@ For chat channels, `channels/approval.py` provides:
 
 Behavior details:
 
-- Clear replies (`yes`, `y`, `ok`, `approve`, ... / `no`, `n`, `reject`, ...)
-  decide the request; anything else is left for the agent, so a user can ask a
-  follow-up question while an approval is pending.
+- Only the exact words `approve` / `approved` or `reject` / `rejected` /
+  `deny` / `denied` decide a chat approval. Ambiguous conversational replies
+  such as `ok`, `go`, `yeah`, or `yes` are left for the agent, so they cannot
+  accidentally approve a pending action. Anything else remains a normal
+  follow-up message.
 - Only the sender who triggered the turn can decide it. Replies and button
   presses from another participant in the same chat are ignored.
 - A timeout (default 300 s in the gateway) **denies** the request.
@@ -1031,12 +1035,12 @@ Treat this as the authoritative current time. ...
 ```
 
 - Enabled by default for `Agent` and `ChatHandler`; disable with `clock=False`.
-- The section is always the final message: the order is base prompt, identity,
-  conversation, state, then the clock.  The identity/state wrappers use
-  `extract_clock`/`append_clock` to preserve that ordering no matter which order
-  wrappers are composed in.  Keeping the dynamic clock after the conversation
-  (instead of before the user turn) preserves the provider prefix cache for the
-  static prompt and all prior turns.
+- The section is always the final message.  The order is base prompt,
+  identity, state, conversation, then the clock.  The identity/state wrappers
+  use `extract_clock`/`append_clock` to preserve that ordering no matter which
+  order wrappers are composed in.  Keeping the dynamic clock after the
+  conversation preserves the provider prefix cache for the static prompt and
+  all prior turns.
 - `resolve_clock` accepts `False`, `True`/`None`/`"default"`, a fixed
   `datetime` (useful in tests), or any callable returning a datetime. A broken
   clock fails open and never breaks a turn.
@@ -1046,7 +1050,11 @@ Treat this as the authoritative current time. ...
 A small, dependency-free calendar the model reaches through ordinary tools.
 
 - Storage: one SQLite file at `~/.sora_agent/calendar.db`
-  (override with `SORA_CALENDAR_DB`).
+  (override with `SORA_CALENDAR_DB`). The default directory is 0700 and the
+  database plus WAL/SHM files are 0600.
+- Mutating tools (`calendar_add_event`, `calendar_add_todo`,
+  `calendar_complete_todo`, `calendar_set_importance`) require approval;
+  `calendar_list` is read-only.
 - Item kinds: `event` (title, start, optional end) and `todo` (title, optional
   due date, completed flag, completion timestamp).
 - Importance slider with exactly three stops: `important`, `balanced`,
@@ -1078,16 +1086,21 @@ agent's cumulative working memory for one conversation. It uses only the
 standard library and knows nothing about the loop; `state_provider.py` is the
 single adapter.
 
-State is deliberately **opt-in**: `Agent` and `ChatHandler` do not create a
-`StateManager` on their own. Wrap the provider as shown below (or pass an
-already wrapped provider) when a deployment wants persistent session state.
-State-aware streaming settles the complete response before emitting visible
-text, so `<state_edit>` blocks are never shown to the user.
+State is enabled by default for the shipped chat surfaces: `sora chat`,
+`sora-gateway`, and the SoraDesk bridge create one `StateManager` per
+conversation. The manager uses a hashed runtime session id, so a channel key
+such as `telegram:12345` is safe as a filename. Direct library users can still
+opt in explicitly with `StatefulProvider`.
 
-- **Storage**: `<session_id>.state.md` inside a caller-supplied root (there is
-  deliberately no default root). Writes are atomic (`fsync` + `os.replace`,
-  0600 files, 0700 root); the previous valid document is kept as
-  `<session_id>.state.md.bak`.
+- **Configuration**: `features.state` (default `true`), `paths.state_root`, or
+  `SORA_STATE` / `SORA_STATE_ROOT`. The default root is
+  `~/.sora_agent/state`.
+- **Storage**: `<hashed-session-id>.state.md` under the state root. Writes are
+  atomic (`fsync` + `os.replace`, 0600 files, 0700 root); the previous valid
+  document is kept as `<session_id>.state.md.bak`.
+- **Visibility**: the current document is inserted into the leading system
+  message block, before the conversation, together with its state-file path.
+  `sora doctor` reports whether state is on and which root is used.
 - **Format**: exactly four `## ` headings in order —
 
   ```
@@ -1111,13 +1124,18 @@ text, so `<state_edit>` blocks are never shown to the user.
   (default 3). State is **never** deleted, cleared, or reset. A corrupt file is
   never overwritten by the recovery path; rejected edits leave the file
   untouched; an unchanged edit is a no-op.
-- **Protocol**: the provider wrapper appends a state protocol plus the current
+- **Protocol**: the provider wrapper adds a state protocol plus the current
   document inside `<<<STATE ... STATE>>>`; the model may append at most one
   full-replacement `<state_edit>...</state_edit>` block. Invalid edits trigger a
   bounded deterministic repair loop, and the visible answer is never rewritten
   by a repair.
-- **Prompt caching**: the original system messages stay byte-for-byte untouched;
-  the state is inserted as the final system message (before the clock).
+- **Provenance gate**: an edit is accepted on a tool-output or untrusted-content
+  turn only when the user's own message explicitly asks to update state.  The
+  same rule applies to `USER.md`/`SOUL.md` edits; tool output alone can never
+  persist a state or identity change.
+- **Prompt caching**: the state is part of the leading system block, before the
+  conversation. It changes only when the model applies a state edit, so the
+  conversation suffix remains cacheable between edits.
 
 ```python
 from pathlib import Path
@@ -1174,7 +1192,9 @@ document, `<user_edit>...</user_edit>` and/or `<soul_edit>...</soul_edit>`.
 Each key appears once; combine multi-value facts into one line. Blocks are
 removed from the visible answer — including from streamed deltas — before the
 user sees it; rejected edits go through a bounded repair loop that never
-rewrites the answer.
+rewrites the answer.  A block produced on a tool-output or untrusted-content
+turn is ignored unless the user's own message explicitly requested an identity
+change.
 
 Durability: every accepted edit archives the previous active backup and writes
 new gzip backups with a `manifest.json` carrying compressed/plaintext SHA-256
@@ -1234,7 +1254,16 @@ optional rules → decay → expire → mark → post-consolidation backup → r
   as always-visible and set as the required first tool; the system prompt tells
   the model to recall before acting. Results are framed as *untrusted data, not
   instructions*. Scopes: `auto` (daily + long-term), `daily`, `longterm`.
-  Every hit passes back through the identity redactor.
+  Daily recall is scoped to the active conversation. Long-term memory is
+  keyed by principal: channel messages use `<channel>:<sender_id>`, while the
+  CLI uses `SORA_MEMORY_USER_ID` (default `sora`). Daily and long-term results
+  are ranked together by normalized relevance, recency, and importance instead
+  of fixed source quotas; duplicate content is removed. Rendering follows that
+  ranking line by line, so a long daily section cannot hide the top long-term
+  fact. The rendered recall budget is clamped below
+  `limits.max_tool_result_chars`, so the tool wrapper does not silently cut the
+  ranked tail. `sora doctor` reports when CortexDB has no embedder and recall is
+  lexical/graph-only. Every hit passes back through the identity redactor.
 - **Long-term store**: an external `cortexdb-grpc` sidecar that owns the active
   database. Python speaks JSON over loopback (no gRPC/protobuf dependency) on a
   dynamically chosen free port with a bearer token at
@@ -1272,19 +1301,22 @@ optional rules → decay → expire → mark → post-consolidation backup → r
   second nightly failure forgets it (deleted and recorded in the report). New
   memories are marked half-done (`dream_round=1`, due next midnight); the next
   run processes them alongside the new daily rows and marks them complete
-  (`dream_round=2`, `dream_due=null`). The pipeline deduplicates near-identical
-  memories, flags conflicting numeric claims (which can engage the optional
-  wake model), projects CortexDB's native memory→entity mentions into
+  (`dream_round=2`, `dream_due=null`). The pipeline deduplicates exact
+  normalized memories, resolves conflicting numeric claims into a durable
+  conflict record (which can engage the optional wake model), projects
+  CortexDB's native memory→entity mentions into
   memory-to-memory edges (falling back to a token-overlap graph when graph
   tools are unavailable), runs a dependency-free deterministic Louvain
   community pass, generates transient two-hop link
-  diagnostics, optionally applies configured rules, decays importance
-  (default ×0.98, floor 0.05), expires records, and writes a JSON report.
-  Durable graph relationships come from CortexDB entities/relations; the
-  `dream:link` diagnostics and other dream artifacts are removed at the end of
-  the run. `dream_community` labels are persisted metadata but are not yet
-  consumed by recall. A file lock (`dream.lock`) makes concurrent dreams fail
-  fast.
+  diagnostics, optionally applies configured rules, decays importance once
+  per UTC day for every memory (default ×0.98, floor 0.05), expires records by
+  explicit `expires_at` or the default TTL, and writes a JSON report.
+  Durable graph relationships come from CortexDB entities/relations. A merged
+  canonical record and a conflict record are retained with `durable: true`,
+  and their source records are marked superseded; only transient `dream:link`
+  diagnostics and pre-durable artifacts are removed at the end of the run.
+  `dream_community` labels are persisted metadata but are not yet consumed by
+  recall. A file lock (`dream.lock`) makes concurrent dreams fail fast.
 - **Daily-only mode**: if memory is disabled (or enabled but CortexDB is
   unavailable), daily stores are the whole memory. No transfer, relationships,
   fact extraction, conflicts, or decay run. A simple consolidator deduplicates
@@ -1312,10 +1344,11 @@ optional rules → decay → expire → mark → post-consolidation backup → r
 | --- | --- | --- |
 | `SORA_MEMORY` | `true` | Master switch; `0` disables memory entirely. Setting `features.memory.enabled=false` without this env switch uses daily-only mode. |
 | `SORA_MEMORY_ROOT` | `~/.sora_agent` | Root for db, daily files, backups, logs. |
-| `SORA_MEMORY_USER_ID` | `sora` | Scope used when writing/recalling memories. |
+| `SORA_MEMORY_USER_ID` | `sora` | CLI/local long-term namespace; channel messages use `<channel>:<sender_id>`. |
 | `SORA_MEMORY_RECALL_TOP_K` | `8` (1–50) | Recall result budget. |
 | `SORA_MEMORY_RECALL_MAX_CHARS` | `6000` | Rendered recall text cap. |
 | `SORA_MEMORY_RECALL_MODE` | `auto` | Retrieval mode: `auto`, `lexical`, `graph`, `ppr`. |
+| `SORA_MEMORY_TTL_DAYS` | `90` | Default lifetime for transferred verbatim memories; `0` disables TTL expiry. |
 | `SORA_MEMORY_AUTO_DOWNLOAD` | `true` | Download the sidecar when missing. |
 | `SORA_MEMORY_DOWNLOAD_BASE_URL` | CortexDB release base URL | Where to download the sidecar from. |
 | `SORA_MEMORY_SIDECAR_BIN` | — | Use an existing binary instead. |
@@ -1540,12 +1573,13 @@ when needed, `SORA_VISION_BASE_URL` / `SORA_VISION_API_KEY`. If no vision model
 or OCR engine is available, the image is represented by its metadata. Each
 image description makes one extra model request when a vision model is used.
 
-Attachment and vision text is wrapped in an `<untrusted>` element with a random
-per-turn boundary token. The system prompt tells the model that this content is
-data, never instructions, and that identity/state edits may never be triggered
-by it. Parsing never executes document content or macros. Archives are expanded
-with entry, depth, and total-byte caps; nested archives are included up to the
-limit.
+Attachment and vision text, and every executed tool result, is wrapped in an
+`<untrusted>` element with one random boundary token per run. The system prompt
+tells the model that this content is data, never instructions, and that
+identity/state edits may never be triggered by it. Skipped and
+approval-rejection notices are harness text and stay unwrapped. Parsing never
+executes document content or macros. Archives are expanded with entry, depth,
+and total-byte caps; nested archives are included up to the limit.
 
 `sora doctor` lists the active converters, whether PDF text (`pypdf`) and image
 OCR (`pytesseract` + Pillow) are available, and which formats still need an

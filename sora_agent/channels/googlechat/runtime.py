@@ -169,6 +169,7 @@ class GoogleChatChannel(BaseChannel):
     def _prepare_attachments(self, message: InboundMessage) -> None:
         if not self.config.download_attachments:
             return
+        message.attachments = self.limit_attachments(message.attachments)
         for attachment in message.attachments:
             if attachment.data is not None or attachment.error:
                 continue
@@ -180,10 +181,13 @@ class GoogleChatChannel(BaseChannel):
                     attachment.file_id,
                     timeout=self.config.request_timeout,
                     max_bytes=self.config.max_attachment_bytes,
+                    allowed_hosts=self.config.attachment_hosts,
+                    validate_public=True,
                 )
                 attachment.size = len(attachment.data)
             except HttpError as exc:
                 attachment.error = f"download failed: {exc}"
+        self.enforce_attachment_totals(message)
 
 
 def parse_event(payload: Any) -> InboundMessage | None:

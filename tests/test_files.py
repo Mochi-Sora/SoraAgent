@@ -282,8 +282,19 @@ def test_missing_pdf_dependency_mentions_the_files_extra(monkeypatch):
 
     monkeypatch.setattr(files.importlib, "import_module", fake_import)
 
-    markdown = FileUnderstander().understand(
-        [Attachment("scan.pdf", mime_type="application/pdf", data=b"%PDF-1.4")]
+    # Exercise the conversion worker directly so the monkeypatch applies; the
+    # production path runs this same worker in a supervised child process.
+    markdown = files._convert_document_worker(
+        Attachment("scan.pdf", mime_type="application/pdf", data=b"%PDF-1.4"),
+        b"%PDF-1.4",
+        files.FileUnderstander().max_file_bytes,
+        files.FileUnderstander().max_chars,
+        files.MAX_TABLE_ROWS,
+        files.MAX_TABLE_COLUMNS,
+        files.MAX_PDF_PAGES,
+        files.MAX_ARCHIVE_ENTRIES,
+        2,
+        files.FileUnderstander().max_file_bytes,
     )
 
     assert "sora-agent[files]" in markdown

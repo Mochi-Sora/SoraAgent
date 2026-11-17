@@ -43,6 +43,7 @@ class MemoryHook:
         logger: logging.Logger | None = None,
         identity: Any = None,
         auto_dream: bool | None = None,
+        tool_result_budget: int | None = None,
     ) -> None:
         self.config = config or MemoryConfig.from_env()
         self.log = logger or logging.getLogger("sora_agent.memory")
@@ -63,11 +64,17 @@ class MemoryHook:
                 self._wake = OpenAIWakeGate(self.config)
             except Exception:  # noqa: BLE001
                 self._wake = None
+        recall_chars = self.config.recall_max_chars
+        if tool_result_budget is not None:
+            recall_chars = min(
+                recall_chars,
+                max(200, int(tool_result_budget) - 200),
+            )
         self.recall_service = MemoryRecallService(
             self.daily,
             self._backend,
             top_k=self.config.recall_top_k,
-            max_chars=self.config.recall_max_chars,
+            max_chars=recall_chars,
             user_id=self.config.user_id,
             retrieval_mode=self.config.recall_retrieval_mode,
             redactor=self._redact_memory,
@@ -93,20 +100,38 @@ class MemoryHook:
             self._tool = _MemoryTool(self.recall)
         return self._tool
 
-    def recall(self, query: str, scope: str = "auto", k: int | None = None) -> str:
-        return self.recall_service.recall(query, scope=scope, k=k)
+    def recall(
+        self, query: str, scope: str = "auto", k: int | None = None
+    ) -> str:
+        session_id = str(
+            getattr(self._pending, "session_id", "") or ""
+        ).strip()
+        user_id = str(
+            getattr(self._pending, "user_id", "") or ""
+        ).strip()
+        return self.recall_service.recall(
+            query,
+            scope=scope,
+            k=k,
+            session_id=session_id or None,
+            user_id=user_id or None,
+        )
 
     def before_run(self, task: str, state: Any = None) -> None:
         # The user message is intentionally not written yet.  It is buffered
         # until after the provider has had a chance to apply a <user_edit>
         # block, so the memory firewall can redact against the updated profile.
         self._pending.task = str(task)
+        self._pending.session_id = _session_id(state, self.daily.session_id)
+        self._pending.user_id = _user_id(state, self.config.user_id)
 
     def after_run(self, result: Any, state: Any = None) -> None:
         if not self.config.enabled:
             return
         task = getattr(self._pending, "task", "")
         self._pending.task = ""
+        self._pending.session_id = ""
+        self._pending.user_id = ""
         user_text = self._redact_memory(task)
         self._append_daily("user", user_text, state)
         final = _final_answer(result)
@@ -129,7 +154,8 @@ class MemoryHook:
             self.daily.append(
                 role,
                 content,
-                session_id=_session_id(state),
+                session_id=_session_id(state, self.daily.session_id),
+                user_id=_user_id(state, self.config.user_id),
             )
         except Exception as exc:  # noqa: BLE001
             self.log.warning("daily %s write failed: %s", role, exc)
@@ -191,10 +217,22 @@ class MemoryHook:
                 "mode": "long_term",
                 "longterm_available": self._client is not None,
             }
-        available = self._backend() is not None
+        backend = self._backend()
+        available = backend is not None
+        embedder = None
+        if backend is not None:
+            info = getattr(backend, "info", None)
+            if callable(info):
+                try:
+                    payload = info()
+                    if isinstance(payload, dict):
+                        embedder = payload.get("has_embedder")
+                except Exception:  # noqa: BLE001 - capability probe is optional
+                    embedder = None
         return {
             "mode": "long_term" if available else "daily_only_fallback",
             "longterm_available": available,
+            "embedder": embedder,
         }
 
     def doctor(self) -> dict[str, Any]:
@@ -210,6 +248,7 @@ class MemoryHook:
                 "daily_dir": str(self.config.daily_dir),
                 "backup_dir": str(self.config.backup_dir),
                 "recall_mode": self.config.recall_retrieval_mode,
+                "recall_max_chars": self.recall_service.max_chars,
                 "auto_dream": self.config.dream_auto,
                 "dream_hour_utc": self.config.dream_hour_utc,
                 "scheduler_running": bool(
@@ -367,8 +406,15 @@ def _one_line(text: str) -> str:
     return " ".join(str(text).split())
 
 
-def _session_id(state: Any) -> str:
+def _session_id(state: Any, fallback: str = "default") -> str:
     value = getattr(state, "session_id", None)
     if isinstance(value, str) and value:
         return value
-    return "default"
+    return str(fallback or "default")
+
+
+def _user_id(state: Any, fallback: str = "sora") -> str:
+    value = getattr(state, "user_id", None)
+    if isinstance(value, str) and value.strip():
+        return value.strip()[:200]
+    return str(fallback or "sora").strip()[:200] or "sora"

@@ -176,6 +176,7 @@ class FeishuChannel(BaseChannel):
     def _prepare_attachments(self, message: InboundMessage) -> None:
         if not self.config.download_attachments:
             return
+        message.attachments = self.limit_attachments(message.attachments)
         message_id = message.metadata.get("message_id")
         for attachment in message.attachments:
             if attachment.data is not None or attachment.error:
@@ -202,6 +203,7 @@ class FeishuChannel(BaseChannel):
                 attachment.size = len(attachment.data)
             except Exception as exc:  # noqa: BLE001 - report on the attachment
                 attachment.error = f"download failed: {exc}"
+        self.enforce_attachment_totals(message)
 
     def _clear_reaction(self, chat_id: str, message_id: str) -> None:
         reaction_id = self._reactions.pop((chat_id, message_id), None)

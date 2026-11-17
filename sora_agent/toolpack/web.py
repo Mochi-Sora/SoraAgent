@@ -10,11 +10,23 @@ import urllib.request
 from html.parser import HTMLParser
 from typing import Annotated, Any
 
-from ..net import urlopen
+from ..net import ssl_context, urlopen
 from ..tools import Tool, ToolRegistry
-from .safety import assert_public_url
+from .safety import assert_public_peer, assert_public_url
 
 _USER_AGENT = "SoraAgent/0.1 (+https://github.com/Mochi-Sora/SoraAgent)"
+
+
+class _PublicRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject private/loopback destinations before following a redirect."""
+
+    def __init__(self, allow_private: bool) -> None:
+        super().__init__()
+        self.allow_private = allow_private
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        assert_public_url(newurl, allow_private=self.allow_private)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _http_json(
@@ -280,6 +292,61 @@ def _duckduckgo_search(query: str, limit: int, timeout: float) -> list[dict[str,
     return results
 
 
+def _extract_page(
+    url: str,
+    limit: int,
+    allow_private: bool,
+    timeout: float,
+) -> str:
+    """Extract one page in a child process so DNS/TLS can be killed."""
+    try:
+        target = assert_public_url(url, allow_private=allow_private)
+    except ValueError as exc:
+        return f"error: {exc}"
+    request = urllib.request.Request(
+        target,
+        headers={
+            "User-Agent": _USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
+        },
+    )
+    try:
+        opener = urllib.request.build_opener(
+            _PublicRedirectHandler(allow_private),
+            urllib.request.HTTPSHandler(context=ssl_context()),
+        )
+        with opener.open(request, timeout=timeout) as response:
+            final_url = response.geturl()
+            assert_public_url(final_url, allow_private=allow_private)
+            if not allow_private:
+                assert_public_peer(response, final_url)
+            raw = response.read(max(4_000, limit * 4))
+            charset = response.headers.get_content_charset() or "utf-8"
+            content_type = response.headers.get("Content-Type", "")
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        return f"error: could not fetch {target}: {exc}"
+    text = raw.decode(charset, errors="replace")
+    if "html" in content_type.lower() or re.search(
+        r"<html|<body|<p[\s>]", text[:2000], re.IGNORECASE
+    ):
+        parser = _HTMLText()
+        parser.feed(text)
+        title = parser.title.strip()
+        body = parser.text()
+    else:
+        title = ""
+        body = text
+    body = body[: max(0, limit - 80)].rstrip()
+    if len(body) >= limit - 80:
+        body += "\n...[truncated]"
+    lines = [f"URL: {final_url}"]
+    if title:
+        lines.append(f"Title: {title}")
+    lines.append("")
+    lines.append(body or "(no readable text)")
+    return "\n".join(lines)
+
+
 def register_web_tools(registry: ToolRegistry, config: Any) -> list[Tool]:
     added: list[Tool] = []
 
@@ -367,46 +434,29 @@ def register_web_tools(registry: ToolRegistry, config: Any) -> list[Tool]:
         max_chars: Annotated[int, "Maximum characters to return"] = 15000,
     ) -> str:
         try:
-            target = assert_public_url(url, allow_private=config.allow_private_network)
+            assert_public_url(
+                url, allow_private=config.allow_private_network
+            )
         except ValueError as exc:
             return f"error: {exc}"
         limit = max(500, min(int(max_chars), config.web_max_chars))
-        request = urllib.request.Request(
-            target,
-            headers={
-                "User-Agent": _USER_AGENT,
-                "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
-            },
-        )
+        from ..isolation import IsolationError, ToolTimeout, run_isolated
+
         try:
-            with urlopen(request, timeout=config.web_timeout) as response:
-                final_url = response.geturl()
-                assert_public_url(final_url, allow_private=config.allow_private_network)
-                raw = response.read(max(4_000, limit * 4))
-                charset = response.headers.get_content_charset() or "utf-8"
-                content_type = response.headers.get("Content-Type", "")
-        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
-            return f"error: could not fetch {target}: {exc}"
-        text = raw.decode(charset, errors="replace")
-        if "html" in content_type.lower() or re.search(
-            r"<html|<body|<p[\s>]", text[:2000], re.IGNORECASE
-        ):
-            parser = _HTMLText()
-            parser.feed(text)
-            title = parser.title.strip()
-            body = parser.text()
-        else:
-            title = ""
-            body = text
-        body = body[: max(0, limit - 80)].rstrip()
-        if len(body) >= limit - 80:
-            body += "\n...[truncated]"
-        lines = [f"URL: {final_url}"]
-        if title:
-            lines.append(f"Title: {title}")
-        lines.append("")
-        lines.append(body or "(no readable text)")
-        return "\n".join(lines)
+            return run_isolated(
+                _extract_page,
+                {
+                    "url": str(url),
+                    "limit": limit,
+                    "allow_private": bool(config.allow_private_network),
+                    "timeout": float(config.web_timeout),
+                },
+                timeout=float(config.web_timeout) + 3.0,
+            )
+        except ToolTimeout:
+            return f"error: web extraction exceeded {config.web_timeout:g}s"
+        except IsolationError as exc:
+            return f"error: web extraction failed: {exc}"
 
     definitions = [
         Tool(

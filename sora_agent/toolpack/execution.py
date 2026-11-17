@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import os
-import signal
 import subprocess
 import sys
 from typing import Annotated, Any
 
 from ..tools import Tool, ToolRegistry
+from .shell import _collect
 
 
 def _clip(text: str, limit: int) -> str:
@@ -45,23 +45,10 @@ def register_execution_tools(registry: ToolRegistry, config: Any) -> list[Tool]:
             process = subprocess.Popen([sys.executable, "-c", source], **kwargs)
         except OSError as exc:
             return f"error: could not start Python: {exc}"
-        timed_out = False
-        try:
-            out, err = process.communicate(timeout=limit)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            try:
-                if os.name == "nt":
-                    process.kill()
-                else:
-                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-            except OSError:
-                process.kill()
-            try:
-                out, err = process.communicate(timeout=3)
-            except subprocess.TimeoutExpired:
-                out, err = "", ""
-        lines = [f"exit_code: {process.poll()}"]
+        code, out, err, timed_out = _collect(
+            process, limit, config.max_terminal_output
+        )
+        lines = [f"exit_code: {code}"]
         if timed_out:
             lines.append("timed_out: true")
         if out:

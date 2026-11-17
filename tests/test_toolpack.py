@@ -441,14 +441,14 @@ def test_static_system_prefix_stays_before_conversation(tmp_path):
     assert [message.role for message in sent] == [
         "system",
         "system",
-        "user",
         "system",
+        "user",
         "system",
     ]
     assert sent[0].content.startswith("You are a careful enterprise-workflow")
     assert sent[1].content.startswith("## PERSISTENT USER PROFILE")
-    assert sent[2].content == "do work"
-    assert sent[3].content.startswith("## SESSION STATE PROTOCOL")
+    assert sent[2].content.startswith("## SESSION STATE PROTOCOL")
+    assert sent[3].content == "do work"
     assert sent[4].content.startswith("## CURRENT TIME")
 
 
@@ -513,3 +513,149 @@ def test_root_environment_variables(monkeypatch, tmp_path):
 
     assert extra.resolve() in config.roots
     assert Path(tempfile.gettempdir()).resolve() in config.roots
+
+
+def test_web_redirect_guard_rejects_private_destinations() -> None:
+    import urllib.request
+
+    from sora_agent.toolpack.web import _PublicRedirectHandler
+
+    handler = _PublicRedirectHandler(allow_private=False)
+    request = urllib.request.Request("https://example.com/start")
+    with pytest.raises(ValueError, match="private, loopback"):
+        handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "http://127.0.0.1:8080/secret",
+        )
+
+
+def test_search_files_does_not_follow_symlinks_outside_the_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("TOP_SECRET_VALUE\n", encoding="utf-8")
+    link = workspace / "link.txt"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not supported on this platform")
+
+    registry = _registry(workspace)
+    output = registry.get("search_files").call(
+        pattern="TOP_SECRET_VALUE", path=".", target="content"
+    )
+    assert "link.txt:" not in output
+    assert "no matches" in output.lower()
+
+
+def test_search_files_regex_timeout_is_enforced_in_a_child_process(tmp_path):
+    from sora_agent.isolation import ToolTimeout
+
+    target = tmp_path / "payload.txt"
+    target.write_text("a" * 40 + "!\n", encoding="utf-8")
+    registry = _registry(tmp_path, search_timeout=0.3)
+    tool = registry.get("search_files")
+    with pytest.raises(ToolTimeout):
+        tool.call(pattern="(a+)+$", path=".", target="content")
+
+
+def test_public_peer_guard_rejects_loopback_socket() -> None:
+    from sora_agent.toolpack.safety import assert_public_peer
+
+    class Sock:
+        def getpeername(self):
+            return ("127.0.0.1", 1234)
+
+    class Raw:
+        _sock = Sock()
+
+    class Fp:
+        raw = Raw()
+
+    class Response:
+        fp = Fp()
+
+    with pytest.raises(ValueError, match="private, loopback"):
+        assert_public_peer(Response(), "https://public.example")
+
+
+def test_shell_output_is_bounded_while_running(tmp_path):
+    registry = _registry(tmp_path, max_terminal_output=200)
+    output = registry.get("terminal").call(
+        command='python3 -c "print(\'x\' * 5000)"'
+    )
+    assert "exit_code: 0" in output
+    assert len(output) < 500
+
+    started = registry.get("terminal").call(
+        command='python3 -c "print(\'y\' * 5000)"',
+        background=True,
+    )
+    session_id = next(
+        line.split(":", 1)[1].strip()
+        for line in started.splitlines()
+        if line.startswith("session_id:")
+    )
+    waited = registry.get("process_manage").call(
+        action="wait", session_id=session_id, timeout=3
+    )
+    assert "exit_code: 0" in waited
+    assert len(waited) < 600
+
+
+def test_web_extract_runs_in_a_child_process(tmp_path):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"<html><title>Test</title><body><p>Hello web</p></body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        registry = _registry(tmp_path, allow_private_network=True)
+        output = registry.get("web_extract").call(
+            url=f"http://127.0.0.1:{server.server_address[1]}/"
+        )
+        assert "Hello web" in output
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_execute_code_output_is_bounded(tmp_path):
+    registry = _registry(tmp_path, max_terminal_output=200)
+    output = registry.get("execute_code").call(
+        code="print('z' * 5000)"
+    )
+    assert "exit_code: 0" in output
+    assert len(output) < 500
+
+
+def test_shell_process_is_killed_once_output_cap_is_reached(tmp_path):
+    import time
+
+    registry = _registry(tmp_path, max_terminal_output=200, terminal_timeout=30)
+    started = time.monotonic()
+    output = registry.get("terminal").call(
+        command="yes q",
+        timeout=30,
+    )
+    elapsed = time.monotonic() - started
+    assert elapsed < 10
+    assert "truncated" in output

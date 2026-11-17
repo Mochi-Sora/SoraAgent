@@ -27,8 +27,10 @@ from ..runtime_setup import (
     build_sessions,
     clock_enabled,
     context_window,
+    feature_enabled,
     provider_label,
     quality_enabled,
+    state_root_path,
     streaming_enabled,
 )
 from ..settings import Settings
@@ -121,6 +123,8 @@ def build_handler(
         streaming=stream,
         system_prompt=prompt,
         specialist_runner=specialist_runner,
+        state_enabled=feature_enabled(settings, "state", "SORA_STATE"),
+        state_root=state_root_path(settings),
     )
     return handler, memory
 

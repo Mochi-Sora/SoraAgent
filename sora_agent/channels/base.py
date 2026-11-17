@@ -21,6 +21,8 @@ class BaseChannel(ABC):
 
     name: str = "base"
     display_name: str = "Base"
+    max_attachments: int = 20
+    max_total_attachment_bytes: int = 100 * 1024 * 1024
     #: Whether the transport can edit a live message as text arrives.
     supports_streaming: bool = False
 
@@ -71,6 +73,60 @@ class BaseChannel(ABC):
             allow = allow.split(",")
         allowed = {str(item).strip() for item in allow if str(item).strip()}
         return "*" in allowed or str(sender_id) in allowed
+
+    def limit_attachments(self, attachments: list[Attachment]) -> list[Attachment]:
+        """Apply count and known-total-byte caps before any download.
+
+        Unknown sizes are still allowed up to the per-file limit enforced by
+        each channel; this cap prevents a payload with hundreds of URLs from
+        starting hundreds of downloads.
+        """
+        selected: list[Attachment] = []
+        total = 0
+        for attachment in attachments:
+            if len(selected) >= max(1, int(self.max_attachments)):
+                attachment.error = (
+                    f"attachment count limit reached ({self.max_attachments})"
+                )
+                continue
+            size = max(0, int(attachment.size or 0))
+            if (
+                size
+                and total + size > max(1, int(self.max_total_attachment_bytes))
+            ):
+                attachment.error = (
+                    "attachment total-byte limit reached "
+                    f"({self.max_total_attachment_bytes} bytes)"
+                )
+                continue
+            total += size
+            selected.append(attachment)
+        return selected
+
+    def enforce_attachment_totals(self, message: Any) -> None:
+        """Apply the total-byte cap after unknown-size downloads complete."""
+        total = 0
+        kept: list[Attachment] = []
+        for attachment in message.attachments:
+            size = (
+                len(attachment.data)
+                if attachment.data is not None
+                else max(0, int(attachment.size or 0))
+            )
+            if (
+                size
+                and total + size > max(1, int(self.max_total_attachment_bytes))
+            ):
+                attachment.data = None
+                attachment.error = (
+                    "attachment total-byte limit reached "
+                    f"({self.max_total_attachment_bytes} bytes)"
+                )
+                kept.append(attachment)
+                continue
+            total += size
+            kept.append(attachment)
+        message.attachments = kept
 
     async def _handle_message(
         self,

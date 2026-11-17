@@ -687,7 +687,7 @@ def test_chat_approval_round_trip():
             await _wait_for(
                 lambda: any("Approval required" in m.content for m in channel.sent)
             )
-            await bus.publish_inbound(InboundMessage("fake", "7", "42", "yes"))
+            await bus.publish_inbound(InboundMessage("fake", "7", "42", "approve"))
             await _wait_for(
                 lambda: any(m.content == "done" for m in channel.sent)
             )
@@ -731,7 +731,7 @@ def test_chat_approval_denial_blocks_the_tool():
             await _wait_for(
                 lambda: any("Approval required" in m.content for m in channel.sent)
             )
-            await bus.publish_inbound(InboundMessage("fake", "7", "42", "no"))
+            await bus.publish_inbound(InboundMessage("fake", "7", "42", "reject"))
             await _wait_for(lambda: len(channel.sent) >= 2)
         finally:
             manager.request_stop()

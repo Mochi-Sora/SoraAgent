@@ -453,3 +453,13 @@ def test_redactor_keeps_iso_dates_but_removes_phone_numbers(
 
     phone_only = store.redact_for_memory("555-123-4567")
     assert "555" not in phone_only
+
+
+def test_redactor_removes_natural_language_credentials(tmp_path: Path) -> None:
+    store = IdentityStore(IdentityConfig(root=tmp_path / "identity"))
+    redacted = store.redact_for_memory(
+        "my password is hunter2 and my api key is sk-abcdefghijklmnop"
+    )
+    assert "hunter2" not in redacted
+    assert "abcdefghijklmnop" not in redacted
+    assert "[secret]" in redacted

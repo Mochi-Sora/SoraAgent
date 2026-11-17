@@ -25,6 +25,8 @@ from ..eval import (
 from ..providers import Message
 from ..runner import RunEvent, RunMetrics, RunResult
 from ..runtime import AgentRuntime, RunRequest, wrap_identity
+from ..state import StateConfig, StateManager, state_session_id
+from ..state_provider import StatefulProvider
 from ..tool_search import FIND_TOOLS_NAME
 from ..tools import ToolRegistry
 from ..untrusted import UNTRUSTED_POLICY, wrap_untrusted
@@ -63,6 +65,7 @@ class ChatState:
     """The little bit of run state the memory hooks read."""
 
     session_id: str
+    user_id: str = ""
     state: str = ""
 
 
@@ -199,6 +202,8 @@ class ChatHandler:
         file_understander: Any = None,
         delegate: bool = True,
         specialist_runner: Any = None,
+        state_enabled: bool = False,
+        state_root: str | Any | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry or ToolRegistry()
@@ -207,6 +212,10 @@ class ChatHandler:
                 f"the tool name {FIND_TOOLS_NAME!r} is reserved for lazy tool discovery"
             )
         self.memory = memory
+        self.memory_user_id = str(
+            getattr(getattr(memory, "config", None), "user_id", "sora")
+            or "sora"
+        )
         self.identity = None if identity is False else identity
         self.approvals = approvals
         self.approval_gate = approval_gate
@@ -237,6 +246,11 @@ class ChatHandler:
         self.provider = wrap_clock(self.provider, clock)
         self.delegate = bool(delegate)
         self.specialist_runner = specialist_runner
+        self.state_enabled = bool(state_enabled)
+        self.state_root = state_root
+        self._state_managers: dict[str, StateManager] = {}
+        self._state_providers: dict[str, Any] = {}
+        self._state_lock = threading.Lock()
         self._delegate_context = threading.local()
         if self.delegate:
             self._wire_delegation()
@@ -262,6 +276,50 @@ class ChatHandler:
         self._last_report: dict[str, Any] = {}
         self._last_efficiency: dict[str, TrajectoryMetrics] = {}
         self._lock = threading.Lock()
+
+    def _state_manager(self, session_key: str) -> StateManager | None:
+        if not self.state_enabled:
+            return None
+        with self._state_lock:
+            manager = self._state_managers.get(session_key)
+            if manager is not None:
+                return manager
+        try:
+            from pathlib import Path
+
+            root = (
+                Path(self.state_root).expanduser()
+                if self.state_root is not None
+                else Path.home() / ".sora_agent" / "state"
+            )
+            manager = StateManager(
+                state_session_id(session_key), StateConfig(root=root)
+            )
+        except Exception as exc:  # noqa: BLE001 - state is optional
+            log.warning("session state unavailable for %s: %s", session_key, exc)
+            return None
+        with self._state_lock:
+            return self._state_managers.setdefault(session_key, manager)
+
+    def _provider_for(self, session_key: str) -> Any:
+        if not self.state_enabled:
+            return self.provider
+        with self._state_lock:
+            provider = self._state_providers.get(session_key)
+            if provider is not None:
+                return provider
+        manager = self._state_manager(session_key)
+        if manager is None:
+            return self.provider
+        provider = StatefulProvider(self.provider, manager)
+        with self._state_lock:
+            return self._state_providers.setdefault(session_key, provider)
+
+    def _principal_id(self, inbound: InboundMessage) -> str:
+        sender = str(inbound.sender_id or "").strip()
+        if not sender or inbound.channel == "cli" or sender in {"local", "cli"}:
+            return self.memory_user_id[:200] or "sora"
+        return f"{inbound.channel}:{sender}"[:200]
 
     def handle(self, inbound: InboundMessage) -> str | TurnReply:
         """Run one turn and return the text to send back."""
@@ -314,13 +372,16 @@ class ChatHandler:
             # actual request, never inside the system prompt.
             messages.append(attachment_message)
         messages.append(Message("user", inbound.content))
-        state = ChatState(session_id=key)
+        provider = self._provider_for(key)
+        state = ChatState(
+            session_id=key, user_id=self._principal_id(inbound)
+        )
         self._notify("before_run", inbound.content, state)
         self._delegate_context.inbound = inbound
         try:
             run = AgentRuntime.run(
                 RunRequest(
-                    provider=self.provider,
+                    provider=provider,
                     registry=self.registry,
                     messages=messages,
                     memory_tool=self.memory_tool,

@@ -33,13 +33,29 @@ class _Process:
     stdout: list = field(default_factory=list)
     stderr: list = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    max_output: int = 20_000
+    limit_killed: bool = False
     finished_at: float = 0.0
 
     def _reader(self, stream: Any, target: list) -> None:
+        captured = 0
+        truncated = False
         try:
             for line in iter(stream.readline, ""):
                 with self.lock:
-                    target.append(line)
+                    remaining = max(0, int(self.max_output) - captured)
+                    if remaining > 0:
+                        target.append(line[:remaining])
+                        captured += min(len(line), remaining)
+                    if len(line) > remaining:
+                        truncated = True
+            if truncated:
+                with self.lock:
+                    target.append("\n...[truncated]")
+                    should_kill = not self.limit_killed
+                    self.limit_killed = True
+                if should_kill:
+                    self.kill()
         finally:
             try:
                 stream.close()
@@ -135,6 +151,7 @@ class ProcessRegistry:
             command=command,
             cwd=cwd,
             started=time.monotonic(),
+            max_output=self.max_output,
         )
         record.start_readers()
         with self._lock:
@@ -177,12 +194,101 @@ def _spawn(command: str, cwd: str) -> subprocess.Popen:
     return subprocess.Popen(command, **kwargs)
 
 
+def _drain_bounded(
+    stream: Any,
+    limit: int,
+    chunks: list[str],
+    lock: threading.Lock,
+    state: dict[str, Any],
+    on_limit: Any = None,
+) -> None:
+    captured = 0
+    should_kill = False
+    try:
+        while True:
+            chunk = stream.read(65536)
+            if not chunk:
+                break
+            with lock:
+                remaining = max(0, int(limit) - captured)
+                if remaining > 0:
+                    chunks.append(chunk[:remaining])
+                    captured += min(len(chunk), remaining)
+                if len(chunk) > remaining:
+                    state["truncated"] = True
+                    if not state.get("killed"):
+                        state["killed"] = True
+                        should_kill = True
+            if should_kill and on_limit is not None:
+                on_limit()
+                should_kill = False
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            stream.close()
+        except Exception:  # closing a reader is best effort
+            log.debug("process stream close failed", exc_info=True)
+
+
+def _kill_process(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            process.kill()
+        else:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except OSError:
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+
 def _collect(
     process: subprocess.Popen, timeout: float, limit: int
 ) -> tuple[int | None, str, str, bool]:
     timed_out = False
+    out_chunks: list[str] = []
+    err_chunks: list[str] = []
+    state: dict[str, Any] = {"truncated": False}
+    lock = threading.Lock()
+    readers = [
+        threading.Thread(
+            target=_drain_bounded,
+            args=(
+                process.stdout,
+                limit,
+                out_chunks,
+                lock,
+                state,
+                lambda: _kill_process(process),
+            ),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_drain_bounded,
+            args=(
+                process.stderr,
+                limit,
+                err_chunks,
+                lock,
+                state,
+                lambda: _kill_process(process),
+            ),
+            daemon=True,
+        ),
+    ]
+    for reader in readers:
+        reader.start()
+    if process.stdin is not None:
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
     try:
-        out, err = process.communicate(timeout=timeout)
+        process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
         try:
@@ -193,11 +299,17 @@ def _collect(
         except OSError:
             process.kill()
         try:
-            out, err = process.communicate(timeout=3)
+            process.wait(timeout=3)
         except subprocess.TimeoutExpired:
-            out, err = "", ""
+            pass
+    for reader in readers:
+        reader.join(timeout=2.0)
+    out = "".join(out_chunks)
+    err = "".join(err_chunks)
+    if state["truncated"]:
+        out += "\n...[truncated]"
     code = process.poll()
-    return code, _clip(out or "", limit), _clip(err or "", limit), timed_out
+    return code, _clip(out, limit), _clip(err, limit), timed_out
 
 
 def register_shell_tools(registry: ToolRegistry, config: Any) -> list[Tool]:

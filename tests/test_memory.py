@@ -795,12 +795,16 @@ def test_dream_creates_merge_and_conflict_records(tmp_path: Path) -> None:
     operations = {action["op"] for action in report["actions"]}
     assert "merge" in operations
     assert "conflict" in operations
-    assert "cleanup" in operations
     assert report["wake_requested"] is True
     assert report["conflicts"]
-    assert report["artifacts_cleanup"]["removed"] >= 2
+    durable = {
+        record["metadata"].get("sora_kind")
+        for record in backend.memories.values()
+        if record["metadata"].get("durable")
+    }
+    assert {"merged", "conflict"} <= durable
     assert not any(
-        record["metadata"].get("sora_kind") in {"merged", "conflict", "inferred_link"}
+        record["metadata"].get("sora_kind") == "inferred_link"
         for record in backend.memories.values()
     )
 
@@ -1428,3 +1432,216 @@ def test_dream_uses_native_entity_graph_for_communities(tmp_path: Path) -> None:
         ("m1", "m2", 1.0),
         ("m2", "m3", 1.0),
     ]
+
+
+def test_daily_search_and_recall_respect_session_scope(tmp_path: Path) -> None:
+    daily = DailyStore(tmp_path)
+    daily.append(
+        "user",
+        "Alice secret code APOLLO is Friday.",
+        session_id="telegram:alice",
+    )
+    daily.append(
+        "user",
+        "Bob secret code APOLLO is Monday.",
+        session_id="telegram:bob",
+    )
+
+    hits = daily.search("APOLLO secret", k=10, days=2, session_ids=["telegram:alice"])
+    assert [hit.content for hit in hits] == [
+        "Alice secret code APOLLO is Friday."
+    ]
+
+    service = MemoryRecallService(daily)
+    text = service.recall(
+        "APOLLO secret", scope="daily", session_id="telegram:bob"
+    )
+    assert "Monday" in text
+    assert "Friday" not in text
+
+
+def test_memory_hook_binds_recall_to_the_active_session(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    hook = MemoryHook(config_for(tmp_path), client=FakeBackend())
+    hook.before_run("Alice likes tea.", SimpleNamespace(session_id="a"))
+    hook.after_run(SimpleNamespace(proposal="Noted tea."), SimpleNamespace(session_id="a"))
+    hook.before_run("Bob likes coffee.", SimpleNamespace(session_id="b"))
+    hook.after_run(SimpleNamespace(proposal="Noted coffee."), SimpleNamespace(session_id="b"))
+
+    hook.before_run("unrelated", SimpleNamespace(session_id="a"))
+    text = hook.recall("likes", scope="daily")
+    assert "tea" in text
+    assert "coffee" not in text
+
+
+def test_daily_store_preserves_user_id(tmp_path: Path) -> None:
+    daily = DailyStore(tmp_path)
+    daily.append("user", "Alice likes tea.", session_id="chat-a", user_id="telegram:alice")
+    row = daily.read_day(datetime.now(timezone.utc).date())[0]
+    assert row["user_id"] == "telegram:alice"
+
+
+def test_memory_hook_uses_the_inbound_principal(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    hook = MemoryHook(config_for(tmp_path), client=FakeBackend())
+    state = SimpleNamespace(session_id="a", user_id="telegram:alice")
+    hook.before_run("Alice likes tea.", state)
+    hook.after_run(SimpleNamespace(proposal="Noted."), state)
+    row = hook.daily.read_day(datetime.now(timezone.utc).date())[0]
+    assert row["user_id"] == "telegram:alice"
+
+
+def test_dream_transfer_uses_the_daily_user_id(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    daily = DailyStore(config.daily_dir)
+    daily.append(
+        "user",
+        "Alice likes tea.",
+        session_id="telegram:alice",
+        user_id="telegram:alice",
+    )
+    backend = FakeBackend()
+    runner = DreamRunner(config, daily, backend)
+    payload, error = runner._payload_for(
+        daily,
+        "main",
+        "",
+        datetime.now(timezone.utc).date(),
+        daily.read_day(datetime.now(timezone.utc).date())[0],
+        "2026-11-18T00:00:00+00:00",
+        False,
+    )
+    assert error == ""
+    assert payload["user_id"] == "telegram:alice"
+
+
+def test_longterm_recall_passes_the_principal_to_the_backend(tmp_path: Path) -> None:
+    class CaptureBackend(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.options: dict[str, Any] = {}
+
+        def recall(self, query: str, top_k: int = 8, **options: Any) -> dict[str, Any]:
+            self.options = options
+            return {"memories": []}
+
+    backend = CaptureBackend()
+    service = MemoryRecallService(DailyStore(tmp_path), lambda: backend, user_id="sora")
+    service.recall(
+        "hello", scope="longterm", user_id="telegram:alice"
+    )
+    assert backend.options["user_id"] == "telegram:alice"
+
+
+def test_decay_progresses_beyond_the_old_threshold(tmp_path: Path) -> None:
+    now = datetime(2026, 10, 27, 0, 0, 1, tzinfo=timezone.utc)
+    config, daily, backend = _dream_setup(tmp_path, now)
+    backend.save_memory(
+        {
+            "memory_id": "old",
+            "content": "A completed memory from an earlier dream.",
+            "importance": 0.5,
+            "metadata": {
+                "sora_kind": "verbatim",
+                "dream_round": 2,
+                "last_decay": "2026-10-26T00:00:00+00:00",
+            },
+        }
+    )
+    DreamRunner(config, daily, backend, clock=lambda: now).run()
+    assert backend.memories["old"]["importance"] == 0.49
+
+    # Same-day rerun is idempotent.
+    DreamRunner(config, daily, backend, clock=lambda: now).run()
+    assert backend.memories["old"]["importance"] == 0.49
+
+    later = datetime(2026, 10, 28, 0, 0, 1, tzinfo=timezone.utc)
+    DreamRunner(config, daily, backend, clock=lambda: later).run()
+    assert backend.memories["old"]["importance"] == 0.4802
+
+
+def test_ttl_expires_old_memories_without_an_explicit_timestamp(tmp_path: Path) -> None:
+    now = datetime(2026, 10, 27, 0, 0, 1, tzinfo=timezone.utc)
+    config, daily, backend = _dream_setup(tmp_path, now)
+    config = MemoryConfig(
+        root=config.root,
+        auto_download=False,
+        dream_auto=False,
+        ttl_days=1,
+    )
+    backend.save_memory(
+        {
+            "memory_id": "old",
+            "content": "An old memory that should expire.",
+            "importance": 0.5,
+            "metadata": {
+                "sora_kind": "verbatim",
+                "source_day": "2026-10-20",
+                "dream_round": 2,
+            },
+        }
+    )
+    report = DreamRunner(config, daily, backend, clock=lambda: now).run()
+    assert "old" not in backend.memories
+    assert any(action["op"] == "expire" for action in report["actions"])
+
+
+def test_recall_ranks_a_relevant_daily_hit_above_low_score_longterm(
+    tmp_path: Path,
+) -> None:
+    daily = DailyStore(tmp_path)
+    daily.append("user", "Apollo is deployed on Kubernetes.", ts=None)
+
+    class LowBackend(FakeBackend):
+        def recall(self, query: str, top_k: int = 8, **options: Any) -> dict[str, Any]:
+            return {
+                "memories": [
+                    {
+                        "memory": {
+                            "id": "stale",
+                            "content": "Old unrelated note about lunch.",
+                            "created_at": "2026-01-01T00:00:00+00:00",
+                            "importance": 0.1,
+                        },
+                        "score": 0.01,
+                    }
+                ]
+            }
+
+    service = MemoryRecallService(daily, lambda: LowBackend(), top_k=1)
+    items, _note = service.collect("Where is Apollo deployed?", k=1)
+    assert items[0].source == "daily"
+    assert "Apollo" in items[0].content
+
+
+def test_recall_format_keeps_the_first_ranked_item_under_budget() -> None:
+    from sora_agent.memory.recall import RecallItem
+
+    items = [
+        RecallItem("longterm", "important", "This is the important fact.", 1.0),
+        RecallItem("daily", "daily:1", "A lower-ranked recent message.", 0.1),
+    ]
+    text = MemoryRecallService.format(items, max_chars=160)
+    assert "This is the important fact." in text
+    assert text.startswith("Memory results")
+
+
+def test_memory_hook_respects_the_tool_result_budget(tmp_path: Path) -> None:
+    hook = MemoryHook(
+        config_for(tmp_path),
+        client=FakeBackend(),
+        tool_result_budget=900,
+    )
+    assert hook.recall_service.max_chars == 700
+
+
+def test_memory_availability_reports_missing_embedder(tmp_path: Path) -> None:
+    class NoEmbedder(FakeBackend):
+        def info(self) -> dict[str, Any]:
+            return {"has_embedder": False}
+
+    hook = MemoryHook(config_for(tmp_path), client=NoEmbedder())
+    status = hook.availability(probe=True)
+    assert status["embedder"] is False

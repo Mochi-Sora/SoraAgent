@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import threading
 from collections.abc import Mapping
@@ -10,7 +11,7 @@ from typing import Any
 
 from ...files import Attachment
 from .._util import Dedupe, split_text
-from .._webhook import WebhookServer, path_only, query_params
+from .._webhook import WebhookServer, path_only
 from ..base import BaseChannel
 from ..types import InboundMessage, OutboundMessage
 from .config import IMessageConfig
@@ -102,11 +103,11 @@ class IMessageChannel(BaseChannel):
             return 404, {"Content-Type": "text/plain"}, b"not found"
         if method != "POST":
             return 405, {"Content-Type": "text/plain"}, b"method not allowed"
+        if self.config.require_signature and not self.config.webhook_secret:
+            return 403, {"Content-Type": "text/plain"}, b"webhook auth not configured"
         if self.config.webhook_secret:
-            supplied = headers.get("x-webhook-secret") or query_params(
-                raw_path
-            ).get("secret")
-            if supplied != self.config.webhook_secret:
+            supplied = headers.get("x-webhook-secret", "")
+            if not hmac.compare_digest(supplied, self.config.webhook_secret):
                 return 403, {"Content-Type": "text/plain"}, b"invalid secret"
         try:
             payload = json.loads(body.decode("utf-8") or "{}")

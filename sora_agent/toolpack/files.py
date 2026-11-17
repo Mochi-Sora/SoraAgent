@@ -146,52 +146,23 @@ def register_file_tools(registry: ToolRegistry, config: Any) -> list[Tool]:
         if mode not in {"content", "files"}:
             return "error: target must be 'content' or 'files'"
         cap = max(1, min(int(max_results), config.max_search_results))
-        results: list[str] = []
-        if root.is_file():
-            files = [root]
-        else:
-            files = []
-            for directory, subdirs, filenames in os.walk(root):
-                subdirs[:] = sorted(name for name in subdirs if name not in _SKIP_DIRS)
-                for filename in sorted(filenames):
-                    files.append(Path(directory) / filename)
-        if mode == "files":
-            pattern_lower = pattern.lower()
-            for file_path in files:
-                relative = str(
-                    file_path.relative_to(root) if root.is_dir() else file_path
-                )
-                if fnmatch.fnmatch(relative.lower(), pattern_lower) or (
-                    fnmatch.fnmatch(file_path.name.lower(), pattern_lower)
-                ):
-                    results.append(relative)
-                    if len(results) >= cap:
-                        break
-            body = "\n".join(results) if results else "(no matching files)"
-            return f"Files matching {pattern!r} under {root}:\n{body}"
-        try:
-            expression = re.compile(pattern)
-        except re.error as exc:
-            return f"error: invalid regex: {exc}"
-        for file_path in files:
-            try:
-                if file_path.stat().st_size > config.max_search_file_bytes:
-                    continue
-                text, _truncated = _read_text(file_path, config.max_search_file_bytes)
-            except (OSError, ValueError):
-                continue
-            for line_number, line in enumerate(text.splitlines(), 1):
-                if expression.search(line):
-                    relative = str(
-                        file_path.relative_to(root) if root.is_dir() else file_path
-                    )
-                    results.append(f"{relative}:{line_number}: {line[:300]}")
-                    if len(results) >= cap:
-                        break
-            if len(results) >= cap:
-                break
-        body = "\n".join(results) if results else "(no matches)"
-        return f"Content matching {pattern!r} under {root}:\n{body}"
+        from ..isolation import run_isolated
+
+        return run_isolated(
+            _search_worker,
+            {
+                "root": str(root),
+                "pattern": str(pattern),
+                "mode": mode,
+                "cap": cap,
+                "max_file_bytes": config.max_search_file_bytes,
+                "allowed_roots": tuple(
+                    str(item) for item in config.allowed_roots()
+                ),
+                "restrict": bool(config.restrict_to_root),
+            },
+            config.search_timeout,
+        )
 
     definitions = [
         Tool(
@@ -228,3 +199,90 @@ def register_file_tools(registry: ToolRegistry, config: Any) -> list[Tool]:
             registry.add(definition)
             added.append(definition)
     return added
+
+def _search_worker(
+    root: str,
+    pattern: str,
+    mode: str,
+    cap: int,
+    max_file_bytes: int,
+    allowed_roots: tuple[str, ...],
+    restrict: bool,
+) -> str:
+    """Search a workspace in a child process so regex DoS can be killed."""
+    root_path = Path(root)
+    roots = tuple(Path(item) for item in allowed_roots)
+
+    def allowed(path: Path) -> Path | None:
+        try:
+            resolved = path.resolve(strict=False)
+        except OSError:
+            return None
+        if path.is_symlink() or resolved.is_symlink():
+            return None
+        if restrict and not any(
+            resolved == item or item in resolved.parents for item in roots
+        ):
+            return None
+        return resolved
+
+    results: list[str] = []
+    if root_path.is_file():
+        files = [root_path]
+    else:
+        files = []
+        for directory, subdirs, filenames in os.walk(root_path):
+            subdirs[:] = sorted(
+                name for name in subdirs if name not in _SKIP_DIRS
+            )
+            for filename in sorted(filenames):
+                files.append(Path(directory) / filename)
+
+    if mode == "files":
+        pattern_lower = pattern.lower()
+        for file_path in files:
+            safe = allowed(file_path)
+            if safe is None:
+                continue
+            relative = str(
+                safe.relative_to(root_path)
+                if root_path.is_dir()
+                else safe
+            )
+            if fnmatch.fnmatch(relative.lower(), pattern_lower) or (
+                fnmatch.fnmatch(safe.name.lower(), pattern_lower)
+            ):
+                results.append(relative)
+                if len(results) >= cap:
+                    break
+        body = "\n".join(results) if results else "(no matching files)"
+        return f"Files matching {pattern!r} under {root_path}:\n{body}"
+
+    try:
+        expression = re.compile(pattern)
+    except re.error as exc:
+        return f"error: invalid regex: {exc}"
+    for file_path in files:
+        safe = allowed(file_path)
+        if safe is None:
+            continue
+        try:
+            if safe.stat().st_size > max_file_bytes:
+                continue
+            text, _truncated = _read_text(safe, max_file_bytes)
+        except (OSError, ValueError):
+            continue
+        for line_number, line in enumerate(text.splitlines(), 1):
+            if expression.search(line):
+                relative = str(
+                    safe.relative_to(root_path)
+                    if root_path.is_dir()
+                    else safe
+                )
+                results.append(f"{relative}:{line_number}: {line[:300]}")
+                if len(results) >= cap:
+                    break
+        if len(results) >= cap:
+            break
+    body = "\n".join(results) if results else "(no matches)"
+    return f"Content matching {pattern!r} under {root_path}:\n{body}"

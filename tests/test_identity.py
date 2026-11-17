@@ -544,3 +544,11 @@ def test_default_identity_is_opt_out(tmp_path: Path, monkeypatch) -> None:
     assert store is not None
     assert store.config.root == tmp_path / "identity"
     assert store.config.retention == 2
+
+
+def test_identity_rejects_embedded_secret_values(tmp_path: Path) -> None:
+    from sora_agent.identity import IdentityConfig, IdentityStore
+
+    store = IdentityStore(IdentityConfig(root=tmp_path / "identity"))
+    result = store.apply("user", "- Note: my api key is sk-abcdefghijklmnop")
+    assert result.status == "rejected"

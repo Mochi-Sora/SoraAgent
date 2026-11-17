@@ -134,6 +134,8 @@ class DelegationStore:
         return self.save(agent)
 
     def delete(self, agent_id: str, *, remove_workspace: bool = False) -> bool:
+        if not SLUG_RE.fullmatch(str(agent_id or "")):
+            return False
         directory = self.root / agent_id
         manifest = directory / "agent.json"
         if not manifest.exists():

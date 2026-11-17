@@ -83,6 +83,7 @@ class ToolPackConfig:
     max_write_bytes: int = 2_000_000
     max_search_results: int = 100
     max_search_file_bytes: int = 1_000_000
+    search_timeout: float = 30.0
     max_terminal_output: int = 20_000
     terminal_timeout: float = 120.0
     code_timeout: float = 60.0
@@ -108,6 +109,7 @@ class ToolPackConfig:
         self.max_write_bytes = max(1, int(self.max_write_bytes))
         self.max_search_results = max(1, int(self.max_search_results))
         self.max_search_file_bytes = max(1, int(self.max_search_file_bytes))
+        self.search_timeout = max(0.1, float(self.search_timeout))
         self.max_terminal_output = max(200, int(self.max_terminal_output))
         self.terminal_timeout = max(0.1, float(self.terminal_timeout))
         self.code_timeout = max(0.1, float(self.code_timeout))
@@ -161,6 +163,7 @@ class ToolPackConfig:
             max_search_file_bytes=_env_int(
                 "SORA_TOOLPACK_MAX_SEARCH_FILE_BYTES", 1_000_000
             ),
+            search_timeout=_env_float("SORA_TOOLPACK_SEARCH_TIMEOUT", 30.0),
             max_terminal_output=_env_int(
                 "SORA_TOOLPACK_MAX_TERMINAL_OUTPUT", 20_000, minimum=200
             ),

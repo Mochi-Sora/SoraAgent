@@ -24,19 +24,18 @@ APPROVAL_KIND = "approval"
 APPROVAL_CALLBACK_KIND = "approval_callback"
 _PROMPT_PUBLISH_TIMEOUT = 10.0
 
-_YES = frozenset({"y", "yes", "yeah", "approve", "approved", "ok", "okay", "go"})
-_NO = frozenset({"n", "no", "nope", "reject", "rejected", "deny", "denied", "stop"})
+_YES = frozenset({"approve", "approved"})
+_NO = frozenset({"reject", "rejected", "deny", "denied"})
 
 
 def parse_decision(text: str) -> bool | None:
-    """Return ``True``/``False`` for a clear yes/no reply, ``None`` otherwise."""
+    """Return a decision for exact approval words, ``None`` for ambiguity."""
     cleaned = str(text or "").strip().lower().strip(".!?")
     if not cleaned:
         return None
-    word = cleaned.split()[0]
-    if word in _YES:
+    if cleaned in _YES:
         return True
-    if word in _NO:
+    if cleaned in _NO:
         return False
     return None
 
@@ -46,7 +45,7 @@ def render_request(action: str, detail: str) -> str:
         "Approval required.\n"
         f"Action: {action}\n"
         f"Detail: {detail}\n"
-        "Reply yes to approve or no to reject."
+        "Reply 'approve' or 'reject'."
     )
 
 
@@ -93,8 +92,8 @@ class ApprovalBroker:
     def consume(self, inbound: InboundMessage) -> bool:
         """Resolve a pending approval from a reply.  True means it was consumed.
 
-        A message that is not a clear yes/no is left for the agent, so a user can
-        ask a follow-up question while an approval is pending.
+        A message that is not an exact approval word is left for the agent, so
+        a conversational reply cannot accidentally approve a pending action.
         """
         with self._lock:
             pending = self._pending.get(inbound.session_key)

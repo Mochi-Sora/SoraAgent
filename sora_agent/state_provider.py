@@ -1,18 +1,19 @@
 """Optional adapter that makes any ModelProvider state-aware.
 
 This is the only file that connects the self-contained state subsystem to the
-rest of SoraAgent. It wraps a provider, appends the session state after the
-conversation history (preserving the cached prefix), extracts state edits from
-responses, and runs the bounded deterministic repair loop.  The clock remains
-the final message, behind the state, so the cached prefix stays stable.
+rest of SoraAgent. It wraps a provider, inserts the session state into the
+leading system-message block, extracts state edits from responses, and runs the
+bounded deterministic repair loop.  The clock remains the final message.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
 from .clock import append_clock, extract_clock, strip_clock
+from .edit_gate import state_edit_allowed
 from .identity import STATE_HEADING
 from .providers import (
     Message,
@@ -99,6 +100,14 @@ class StatefulProvider:
         if not parsed.issues and parsed.edit is None:
             return raw
 
+        if (parsed.edit is not None or parsed.issues) and not state_edit_allowed(
+            base_messages
+        ):
+            logging.getLogger(__name__).warning(
+                "state edit ignored: no trusted user request in this turn"
+            )
+            return parsed.text
+
         # The state subsystem must never rewrite the agent's visible answer.
         # Keep the original text (with the state block removed) as the only
         # value returned to the agent loop.
@@ -145,11 +154,12 @@ class StatefulProvider:
     def _with_state(
         messages: list[Message], section: str
     ) -> list[Message]:
-        """Append the state after the conversation, before the clock.
+        """Insert state into the system-prompt block, before the conversation.
 
-        Dynamic sections belong at the tail of the request.  Inserting state
-        before the user turn would make the entire conversation a different
-        token prefix on every state change, defeating provider prompt caching.
+        The state is part of the system prompt by design: it must be visible
+        to providers and adapters that forward only leading system messages.
+        It changes only when the model edits it, so the conversation suffix is
+        still cacheable between edits.
         """
         clock = extract_clock(messages)
         augmented = strip_clock(messages)
@@ -163,5 +173,11 @@ class StatefulProvider:
             ):
                 continue
             cleaned.append(message)
-        cleaned.append(Message("system", section))
+
+        insert_at = 0
+        for index, message in enumerate(cleaned):
+            if getattr(message, "role", "") != "system":
+                break
+            insert_at = index + 1
+        cleaned.insert(insert_at, Message("system", section))
         return append_clock(cleaned, clock)

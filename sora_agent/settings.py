@@ -241,6 +241,7 @@ class MemorySettings:
     retrieval_mode: str = "auto"
     dream_hour_utc: int = 0
     dream_rounds: int = 2
+    ttl_days: int = 90
     sidecar_version: str = "2.139.1"
     sidecar_binary: str | None = None
     sidecar_start_timeout: float = 20.0
@@ -254,6 +255,7 @@ class MemorySettings:
         self.retrieval_mode = mode
         self.dream_hour_utc = _as_int(self.dream_hour_utc, 0, minimum=0, maximum=23)
         self.dream_rounds = _as_int(self.dream_rounds, 2, minimum=1, maximum=20)
+        self.ttl_days = _as_int(self.ttl_days, 90, minimum=0, maximum=3650)
         self.sidecar_start_timeout = _as_float(
             self.sidecar_start_timeout, 20.0, minimum=1.0
         )
@@ -277,6 +279,7 @@ class MemorySettings:
             retrieval_mode=_as_str(raw.get("retrieval_mode"), base.retrieval_mode),
             dream_hour_utc=_as_int(raw.get("dream_hour_utc"), base.dream_hour_utc),
             dream_rounds=_as_int(raw.get("dream_rounds"), base.dream_rounds),
+            ttl_days=_as_int(raw.get("ttl_days"), base.ttl_days),
             sidecar_version=_as_str(raw.get("sidecar_version"), base.sidecar_version),
             sidecar_binary=_as_optional_str(raw.get("sidecar_binary")),
             sidecar_start_timeout=_as_float(
@@ -383,6 +386,7 @@ class FeatureSettings:
     files: FileSettings = field(default_factory=FileSettings)
     tools: bool = True
     identity: bool = True
+    state: bool = True
     clock: bool = True
     calendar: bool = True
     sessions: bool = True
@@ -407,6 +411,7 @@ class FeatureSettings:
             files=FileSettings.from_dict(raw.get("files")),
             tools=_as_tools_flag(raw.get("tools"), base.tools),
             identity=_as_bool(raw.get("identity"), base.identity),
+            state=_as_bool(raw.get("state"), base.state),
             clock=_as_bool(raw.get("clock"), base.clock),
             calendar=_as_bool(raw.get("calendar"), base.calendar),
             sessions=_as_bool(raw.get("sessions"), base.sessions),
@@ -522,6 +527,7 @@ class PathSettings:
     sessions_root: str | None = None
     calendar_db: str | None = None
     identity_root: str | None = None
+    state_root: str | None = None
     memory_root: str | None = None
 
     @classmethod
@@ -531,6 +537,7 @@ class PathSettings:
             sessions_root=_as_optional_str(raw.get("sessions_root")),
             calendar_db=_as_optional_str(raw.get("calendar_db")),
             identity_root=_as_optional_str(raw.get("identity_root")),
+            state_root=_as_optional_str(raw.get("state_root")),
             memory_root=_as_optional_str(raw.get("memory_root")),
         )
 

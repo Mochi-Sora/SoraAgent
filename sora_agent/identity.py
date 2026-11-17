@@ -162,6 +162,14 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     (
         re.compile(
+            r"(?i)\b(?:my\s+)?(?:password|passwd|pwd|passcode|pin|secret|"
+            r"api[ _-]?key|access[ _-]?key|client[ _-]?secret)\s+"
+            r"(?:is|was)\s+[^\s,;.!?]{3,}"
+        ),
+        SECRET_MARKER,
+    ),
+    (
+        re.compile(
             r"(?i)\b(password|passwd|pwd|secret|token|api[ _-]?key|"
             r"access[ _-]?key|client[ _-]?secret)\s*[:=]\s*\"?[^\s\"']{4,}"
         ),
@@ -321,7 +329,11 @@ def _secret_key(key: str) -> bool:
 
 
 def _secret_value(value: str) -> bool:
-    return any(pattern.search(value) for pattern in _SECRET_VALUE_PATTERNS)
+    if any(pattern.search(value) for pattern in _SECRET_VALUE_PATTERNS):
+        return True
+    # Embedded credentials ("my api key is sk-...", "password is hunter2")
+    # must not pass just because they are not the whole bullet value.
+    return any(pattern.search(value) for pattern, _ in _SECRET_PATTERNS)
 
 
 def _parse_bullets(

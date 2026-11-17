@@ -17,6 +17,7 @@ class IMessageConfig:
     webhook_port: int = 8080
     webhook_path: str = "/imessage"
     webhook_secret: str = ""
+    require_signature: bool = True
     request_timeout: float = 30.0
     max_message_chars: int = 4000
     download_attachments: bool = False
@@ -43,6 +44,12 @@ class IMessageConfig:
             raise ValueError("imessage max_message_chars must be > 0")
         if self.max_attachment_bytes <= 0:
             raise ValueError("imessage max_attachment_bytes must be > 0")
+        if self.require_signature and not self.webhook_secret.strip():
+            raise ValueError(
+                "SORA_IMESSAGE_WEBHOOK_SECRET is required to authenticate the "
+                "iMessage webhook; set it or explicitly allow unverified "
+                "requests with SORA_IMESSAGE_ALLOW_UNVERIFIED=1"
+            )
 
 
 def from_settings(settings, secrets, args):
@@ -71,6 +78,7 @@ def from_settings(settings, secrets, args):
             if allow_env
             else tuple(settings.channel.allow_from)
         )
+    allow_unverified = env_bool("SORA_IMESSAGE_ALLOW_UNVERIFIED", False)
     return IMessageConfig(
         server_url=server_url.rstrip("/"),
         password=password,
@@ -91,6 +99,7 @@ def from_settings(settings, secrets, args):
             "SORA_IMESSAGE_WEBHOOK_SECRET",
             str(options.get("webhook_secret") or ""),
         ),
+        require_signature=not allow_unverified,
         request_timeout=env_float("SORA_IMESSAGE_REQUEST_TIMEOUT", 30.0),
         max_message_chars=env_int(
             "SORA_IMESSAGE_MAX_CHARS",

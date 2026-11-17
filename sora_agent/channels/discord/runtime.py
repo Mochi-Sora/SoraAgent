@@ -252,6 +252,7 @@ class DiscordChannel(BaseChannel):
     def _prepare_attachments(self, message: InboundMessage) -> None:
         if not self.config.download_attachments:
             return
+        message.attachments = self.limit_attachments(message.attachments)
         for attachment in message.attachments:
             if attachment.data is not None or attachment.error:
                 continue
@@ -269,6 +270,7 @@ class DiscordChannel(BaseChannel):
                 attachment.size = len(attachment.data)
             except Exception as exc:  # noqa: BLE001 - report on the attachment
                 attachment.error = f"download failed: {exc}"
+        self.enforce_attachment_totals(message)
 
     def _close_ws(self) -> None:
         ws = self._ws

@@ -22,6 +22,7 @@ def _config(**overrides) -> IMessageConfig:
     values = {
         "server_url": "http://127.0.0.1:1234",
         "password": "secret",
+        "webhook_secret": "test-secret",
         "allow_from": ("*",),
     }
     values.update(overrides)
@@ -67,9 +68,23 @@ def test_config_requires_server_and_password():
         from_settings(settings, {}, SimpleNamespace(allow=None))
 
 
+def test_config_requires_webhook_secret_by_default(monkeypatch):
+    monkeypatch.setenv("SORA_IMESSAGE_SERVER_URL", "http://blue.example")
+    monkeypatch.setenv("SORA_IMESSAGE_PASSWORD", "env-secret")
+    with pytest.raises(ValueError, match="SORA_IMESSAGE_WEBHOOK_SECRET"):
+        from_settings(
+            SimpleNamespace(
+                channel=SimpleNamespace(options={}, allow_from=(), typing=True)
+            ),
+            {},
+            SimpleNamespace(allow=None),
+        )
+
+
 def test_config_reads_environment(monkeypatch):
     monkeypatch.setenv("SORA_IMESSAGE_SERVER_URL", "http://blue.example")
     monkeypatch.setenv("SORA_IMESSAGE_PASSWORD", "env-secret")
+    monkeypatch.setenv("SORA_IMESSAGE_WEBHOOK_SECRET", "env-hook")
     monkeypatch.setenv("SORA_IMESSAGE_ALLOW_FROM", "+1, +2")
     config = from_settings(
         SimpleNamespace(
@@ -150,7 +165,7 @@ def test_webhook_rejects_invalid_json():
         _config(), MessageBus(), transport=FakeTransport()
     )
     status, _headers, _body = channel.handle_webhook(
-        "POST", "/imessage", {}, b"not-json"
+        "POST", "/imessage", {"x-webhook-secret": "test-secret"}, b"not-json"
     )
     assert status == 400
 

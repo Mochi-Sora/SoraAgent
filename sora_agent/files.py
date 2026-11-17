@@ -161,6 +161,8 @@ class FileUnderstander:
         max_file_bytes: int = 20 * 1024 * 1024,
         max_chars: int = 20_000,
         total_max_chars: int = 40_000,
+        conversion_timeout: float = 30.0,
+        image_timeout: float = 60.0,
         vision: Any = None,
         ocr: Callable[[Attachment], str | None] | None = None,
     ) -> None:
@@ -168,6 +170,8 @@ class FileUnderstander:
         self.max_file_bytes = max(1, int(max_file_bytes))
         self.max_chars = max(500, int(max_chars))
         self.total_max_chars = max(self.max_chars, int(total_max_chars))
+        self.conversion_timeout = max(0.5, float(conversion_timeout))
+        self.image_timeout = max(0.5, float(image_timeout))
         self.vision = vision
         self.ocr = ocr or _ocr_image
         self.documents = default_registry()
@@ -247,18 +251,31 @@ class FileUnderstander:
             return self._media_body(attachment, "Audio")
         if kind == "video":
             return self._media_body(attachment, "Video")
-        limits = ConversionLimits(
-            max_bytes=self.max_file_bytes,
-            max_chars=self.max_chars,
-            max_table_rows=MAX_TABLE_ROWS,
-            max_table_columns=MAX_TABLE_COLUMNS,
-            max_pdf_pages=MAX_PDF_PAGES,
-            max_archive_entries=MAX_ARCHIVE_ENTRIES,
-            max_archive_depth=2,
-            max_archive_total_bytes=self.max_file_bytes,
-        )
-        document = self.documents.convert(attachment, data, limits)
-        rendered = render_markdown(document)
+        from .isolation import IsolationError, ToolTimeout, run_isolated
+
+        try:
+            rendered = run_isolated(
+                _convert_document_worker,
+                {
+                    "attachment": attachment,
+                    "data": data,
+                    "max_bytes": self.max_file_bytes,
+                    "max_chars": self.max_chars,
+                    "max_table_rows": MAX_TABLE_ROWS,
+                    "max_table_columns": MAX_TABLE_COLUMNS,
+                    "max_pdf_pages": MAX_PDF_PAGES,
+                    "max_archive_entries": MAX_ARCHIVE_ENTRIES,
+                    "max_archive_depth": 2,
+                    "max_archive_total_bytes": self.max_file_bytes,
+                },
+                self.conversion_timeout,
+            )
+        except ToolTimeout:
+            return (
+                f"> Conversion exceeded the {self.conversion_timeout:g}s deadline."
+            )
+        except IsolationError as exc:
+            return f"> Could not read this file safely: {exc}"
         if not rendered:
             return "> The file contained no convertible text."
         return rendered
@@ -274,7 +291,14 @@ class FileUnderstander:
         description = None
         if self.vision is not None and len(data) <= VISION_MAX_BYTES:
             try:
-                description = self.vision.describe(attachment)
+                if type(self.vision) is VisionDescriber:
+                    description = _describe_vision_isolated(
+                        self.vision.config,
+                        attachment,
+                        self.image_timeout,
+                    )
+                else:
+                    description = self.vision.describe(attachment)
             except Exception as exc:  # noqa: BLE001 - fall back to OCR
                 lines.append(f"> Vision description failed: {exc}")
         elif self.vision is not None:
@@ -284,7 +308,12 @@ class FileUnderstander:
             )
         if not description and self.ocr is not None:
             try:
-                description = self.ocr(attachment)
+                if self.ocr is _ocr_image:
+                    description = _ocr_isolated(
+                        attachment, self.image_timeout
+                    )
+                else:
+                    description = self.ocr(attachment)
             except Exception:  # noqa: BLE001 - OCR is optional
                 description = None
         if description:
@@ -431,3 +460,61 @@ def _truncate(text: str, budget: int) -> str:
         return text
     suffix = "\n\n[... truncated to fit the attachment budget ...]"
     return text[: max(0, budget - len(suffix))] + suffix
+
+def _vision_worker(config: VisionConfig, attachment: Attachment) -> str:
+    return VisionDescriber(config).describe(attachment)
+
+
+def _describe_vision_isolated(
+    config: VisionConfig,
+    attachment: Attachment,
+    timeout: float,
+) -> str:
+    from .isolation import run_isolated
+
+    return run_isolated(
+        _vision_worker,
+        {"config": config, "attachment": attachment},
+        timeout,
+    )
+
+
+def _ocr_worker(attachment: Attachment) -> str:
+    return _ocr_image(attachment) or ""
+
+
+def _ocr_isolated(attachment: Attachment, timeout: float) -> str:
+    from .isolation import run_isolated
+
+    return run_isolated(
+        _ocr_worker,
+        {"attachment": attachment},
+        timeout,
+    )
+
+
+def _convert_document_worker(
+    attachment: Attachment,
+    data: bytes,
+    max_bytes: int,
+    max_chars: int,
+    max_table_rows: int,
+    max_table_columns: int,
+    max_pdf_pages: int,
+    max_archive_entries: int,
+    max_archive_depth: int,
+    max_archive_total_bytes: int,
+) -> str:
+    """Run an untrusted document conversion in an isolated child process."""
+    limits = ConversionLimits(
+        max_bytes=max_bytes,
+        max_chars=max_chars,
+        max_table_rows=max_table_rows,
+        max_table_columns=max_table_columns,
+        max_pdf_pages=max_pdf_pages,
+        max_archive_entries=max_archive_entries,
+        max_archive_depth=max_archive_depth,
+        max_archive_total_bytes=max_archive_total_bytes,
+    )
+    document = default_registry().convert(attachment, data, limits)
+    return render_markdown(document)

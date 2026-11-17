@@ -38,6 +38,7 @@ from ..runtime_setup import (
     load_runtime,
     memory_enabled,
     quality_enabled,
+    state_root_path,
     streaming_enabled,
 )
 from ..settings import SettingsError
@@ -238,6 +239,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 system_prompt=prompt,
                 max_tool_result_chars=settings.limits.max_tool_result_chars,
                 max_stream_chars=settings.limits.max_stream_chars,
+                state_enabled=feature_enabled(settings, "state", "SORA_STATE"),
+                state_root=state_root_path(settings),
                 gateway_label=(
                     f"{settings.agent.icon} sora-gateway".strip()
                     if _configured
@@ -278,6 +281,8 @@ async def _serve(
     max_tool_result_chars: int = 4000,
     max_stream_chars: int = 3500,
     gateway_label: str = "sora-gateway",
+    state_enabled: bool = False,
+    state_root: Any = None,
 ) -> None:
     bus = MessageBus()
     broker = None
@@ -328,6 +333,8 @@ async def _serve(
         streaming=streaming,
         system_prompt=system_prompt,
         specialist_runner=specialist_runner,
+        state_enabled=state_enabled,
+        state_root=state_root,
     )
     channel = channel_cls(config, bus)
     manager = ChannelManager(
