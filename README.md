@@ -1,40 +1,93 @@
-# SoraAgent
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/assets/icon.png" alt="SoraAgent" width="112">
+</p>
 
-**A model-agnostic agent harness with human-approval and quality gates.**
+<h1 align="center">SoraAgent</h1>
 
-SoraAgent is a small, standard-library-only Python framework for building
-agentic applications on top of any chat model. The model/tool loop is
-deliberately tiny; the production concerns live in explicit gates around it:
+<p align="center"><strong>The self-hosted agent runtime that stays small, explicit, and yours.</strong></p>
 
-- **Approval gate** — tools marked `needs_approval` never execute without a
-  human saying yes (stdin for CLI/library use, chat replies or buttons for
-  channels).
-- **Quality gate** — the finished trajectory of every `Agent` or chat run is
-  graded by a deterministic structural evaluator that *cannot* affect execution.
-- **Lazy tool discovery** — only `find_tools` (plus `memory_recall`) is visible
-  at the start of a run; other tools stay hidden until the model previews and
-  loads what it needs, keeping the prompt small and the tool list bounded.
-- **Built-in core tool pack** — file read/write/patch/search, terminal and
-  background processes, web search/extract, a task list, clarification, Python
-  execution, and subagent delegation. Every tool is hidden behind
-  `find_tools`, and consequential tools keep the approval gate.
-- **Predictable failure modes** — safety paths (approval, tool validation) fail
-  closed; optional conveniences (memory, identity, clock, calendar, observers)
-  fail open and never break a run.
-- **Model-facing subsystems** — a per-turn clock, a native calendar, a
-  persistent file-backed identity (`USER.md` / `SOUL.md`), a validated session
-  state document, and an optional CortexDB-backed long-term memory with daily
-  verbatim recall and nightly consolidation ("dreams").
-- **Chat channels** — ten in-box transports (Telegram, Discord, Slack,
-  WhatsApp Cloud API, Microsoft Teams, Signal, Google Chat, Matrix,
-  Feishu/Lark, and iMessage via BlueBubbles) with per-session history,
-  human approvals rendered as chat prompts, and a "preparing a response"
-  indicator on every platform that exposes one. Local and desktop clients
-  stream token deltas; chat transports deliver one completed reply.
+<p align="center">
+  <a href="https://github.com/Mochi-Sora/SoraAgent/releases"><img src="https://img.shields.io/badge/version-0.3.1-1f6feb" alt="Version 0.3.1"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.9%2B-3776ab" alt="Python 3.9+"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--only-2ea44f" alt="AGPL-3.0-only"></a>
+  <a href="https://github.com/Mochi-Sora/SoraAgent-Benchmarks"><img src="https://img.shields.io/badge/live%20benchmark-85.1%2F100-6f42c1" alt="Live benchmark 85.1/100"></a>
+</p>
 
-The core imports only the Python standard library; optional integrations
-(`openai`, `zstandard`) are extras. Requires Python **3.9+**. Current version:
-**0.3.1** — see [CHANGELOG.md](CHANGELOG.md).
+<p align="center">
+  <a href="https://discord.gg/s8W6JfBSMH">Discord</a> ·
+  <a href="https://mochi-sora.github.io/SoraOfficialWebsite/">Website</a> ·
+  <a href="https://github.com/Mochi-Sora/SoraAgent-Benchmarks">Benchmarks</a> ·
+  <a href="https://github.com/Mochi-Sora/SoraDesk">SoraDesk</a> ·
+  <a href="./CHANGELOG.md">Changelog</a>
+</p>
+
+**SoraAgent is a model-agnostic Python agent runtime for people who want to understand, audit, and own the loop.** You bring a chat model; SoraAgent gives it tools, files, chat channels, persistent identity and memory, a calendar, a per-session state document, and a native desktop client — with approval and quality gates around consequential work. It runs on your machine or your server.
+
+## At a glance
+
+**It is**
+
+- a small Python framework plus a CLI (`sora`), gateway (`sora-gateway`), and memory CLI (`sora-memory`);
+- a model/tool loop with human approval, lazy tool discovery, and a non-executional quality gate;
+- a long-running personal agent with `USER.md` / `SOUL.md` identity, session state, daily memory, and CortexDB-backed long-term memory;
+- reachable from ten chat protocols or the [SoraDesk](https://github.com/Mochi-Sora/SoraDesk) desktop app;
+- standard-library-only at its core, with optional `openai`, `zstandard`, `cli`, and `files` extras.
+
+**It is not**
+
+- a model, a hosted AI service, or a no-code chatbot builder;
+- a desktop-only app — the desktop client is a separate front end;
+- a black-box agent platform. The loop, tools, gates, and state files are inspectable Python.
+
+**Best for**
+
+- developers who want an agent they can embed, fork, and reason about;
+- operators who want one agent across Telegram, Discord, Slack, Teams, and more;
+- people who care about approvals, auditability, and local data ownership more than a polished SaaS dashboard.
+
+## Start here
+
+| You want to… | Go to |
+| --- | --- |
+| Install and get a first reply | [Quick start](#quick-start) |
+| Connect a chat app | [Chat channels and the gateway](#chat-channels-and-the-gateway) |
+| Use the desktop app | [SoraDesk](https://github.com/Mochi-Sora/SoraDesk) |
+| Embed the agent in Python | [Quick start](#quick-start) and [`Agent`](#architecture) |
+| Understand the internals | [Architecture](#architecture) and [The model/tool loop](#the-modeltool-loop-runner) |
+| Configure providers, tools, memory, or channels | [Environment variables](#environment-variables) |
+| See how it is tested | [Benchmarks](https://github.com/Mochi-Sora/SoraAgent-Benchmarks) and [Development](#development) |
+| Ask a question or follow releases | [Discord](https://discord.gg/s8W6JfBSMH) |
+
+## What it can do
+
+- run a model/tool loop with native tool calls, streaming, retries, cancellation, and bounded results;
+- discover tools lazily instead of dumping every schema into every prompt;
+- read, write, patch, and search files; run shell commands and background processes; execute Python; search and extract the web; delegate to subagents and persistent specialists;
+- hold a persistent identity, session state, calendar, daily logs, and consolidated long-term memory across runs;
+- serve ten chat transports with per-session history and chat-native approvals;
+- expose the same runtime to a native Tauri desktop client over a local or remote protocol;
+- run deterministic edge-case and live-model benchmarks rather than relying on vibes.
+
+## Why SoraAgent
+
+- **Small core, explicit edges.** The loop is readable; safety and quality live in gates you can inspect.
+- **Model freedom.** Use OpenAI, Azure, DeepSeek, Qwen, or any OpenAI-compatible endpoint.
+- **Chat-native.** One agent, ten transports, one persistent memory.
+- **State that survives.** Identity, session state, daily memory, and a dreaming consolidation pass.
+- **Own the stack.** Local files, local process, AGPL-3.0-only.
+
+## Quick taste
+
+```bash
+git clone https://github.com/Mochi-Sora/SoraAgent.git
+cd SoraAgent
+python3 -m venv .venv
+.venv/bin/pip install -e '.[cli,openai]'
+.venv/bin/sora setup
+.venv/bin/sora chat
+```
+
+No model key yet? Choose the offline mock provider in setup and try the full loop without network access.
 
 ---
 
