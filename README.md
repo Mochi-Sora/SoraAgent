@@ -31,7 +31,7 @@
 - a model/tool loop with human approval, lazy tool discovery, and a non-executional quality gate;
 - a long-running personal agent with `USER.md` / `SOUL.md` identity, session state, daily memory, and CortexDB-backed long-term memory;
 - reachable from ten chat protocols or the [SoraDesk](https://github.com/Mochi-Sora/SoraDesk) desktop app;
-- standard-library-only at its core, with optional `openai`, `zstandard`, `cli`, and `files` extras.
+- standard-library-only at its core, with optional `openai`, `zstandard`, `cli`, `files`, `http`, and `scientific` extras.
 
 **It is not**
 
