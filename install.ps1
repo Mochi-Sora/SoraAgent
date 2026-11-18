@@ -210,7 +210,7 @@ Examples:
                 Write-Info "Removing $InstallDir"
                 Remove-Item -Recurse -Force $InstallDir
             } else {
-                Write-Warn "refusing to remove $InstallDir: it does not look like a SoraAgent install"
+                Write-Warn "refusing to remove ${InstallDir}: it does not look like a SoraAgent install"
             }
         }
 

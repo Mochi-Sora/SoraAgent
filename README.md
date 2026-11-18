@@ -102,22 +102,23 @@ No model key yet? Choose the offline mock provider in setup and try the full loo
 7. [Tools](#tools)
 8. [Built-in core tool pack](#built-in-core-tool-pack)
 9. [Lazy tool discovery](#lazy-tool-discovery)
-10. [Human approval](#human-approval)
-11. [Quality gate and evaluation](#quality-gate-and-evaluation)
-12. [Optional trajectory judge](#optional-trajectory-judge)
-13. [Clock](#clock)
-14. [Calendar](#calendar)
-15. [Session state](#session-state)
-16. [Identity (USER.md / SOUL.md)](#identity-usermd--soulmd)
-17. [Memory (CortexDB)](#memory-cortexdb)
-18. [Chat channels and the gateway](#chat-channels-and-the-gateway)
-19. [Command-line interfaces](#command-line-interfaces)
-20. [Environment variables](#environment-variables)
-21. [Project layout](#project-layout)
-22. [Development](#development)
-23. [SoraPlatform](#soraplatform)
-24. [Changelog](#changelog)
-25. [License](#license)
+10. [Specialists (delegation agents)](#specialists-delegation-agents)
+11. [Human approval](#human-approval)
+12. [Quality gate and evaluation](#quality-gate-and-evaluation)
+13. [Optional trajectory judge](#optional-trajectory-judge)
+14. [Clock](#clock)
+15. [Calendar](#calendar)
+16. [Session state](#session-state)
+17. [Identity (USER.md / SOUL.md)](#identity-usermd--soulmd)
+18. [Memory (CortexDB)](#memory-cortexdb)
+19. [Chat channels and the gateway](#chat-channels-and-the-gateway)
+20. [Command-line interfaces](#command-line-interfaces)
+21. [Environment variables](#environment-variables)
+22. [Project layout](#project-layout)
+23. [Development](#development)
+24. [SoraPlatform](#soraplatform)
+25. [Changelog](#changelog)
+26. [License](#license)
 
 ---
 
@@ -158,7 +159,7 @@ curl -fsSL https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.s
 irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.ps1 | iex
 ```
 
-The installer needs Python **3.9+** already available and downloads the latest
+Windows PowerShell 5.1 or newer; installs per-user, no Administrator shell required. The installer needs Python **3.9+** already available and downloads the latest
 release (falling back to `main` when no release exists). It installs SoraAgent
 into an isolated virtual environment, adds the command directory to your PATH,
 verifies all console scripts, and then launches the setup wizard directly. On a
@@ -1942,7 +1943,7 @@ SoraAgent/
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[openai,memory,cli,files,dev]"
 
-pytest                          # 538 tests
+pytest                          # 884 tests
 pyright                         # static checks, standard mode (Python 3.9; install separately)
 ```
 

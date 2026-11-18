@@ -2,6 +2,15 @@
 
 All notable changes to SoraAgent are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- The Windows one-line installer now parses under PowerShell: `$InstallDir:` in a
+  double-quoted message was interpreted as a scoped variable and made every run
+  fail before installation started. The `irm ... | iex` one-liner is tested with
+  PowerShell 7.7 and remains PowerShell 5.1-compatible.
+
 ## [0.3.1] - 2026-11-17
 
 ### Fixed
