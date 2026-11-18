@@ -10,7 +10,7 @@
   <a href="https://github.com/Mochi-Sora/SoraAgent/releases"><img src="https://img.shields.io/badge/version-0.3.2-1f6feb" alt="Version 0.3.2"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.9%2B-3776ab" alt="Python 3.9+"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--only-2ea44f" alt="AGPL-3.0-only"></a>
-  <a href="https://github.com/Mochi-Sora/SoraAgent-Benchmarks"><img src="https://img.shields.io/badge/live%20benchmark-85.1%2F100-6f42c1" alt="Live benchmark 85.1/100"></a>
+  <a href="https://github.com/Mochi-Sora/SoraAgent-Benchmarks"><img src="https://img.shields.io/badge/live%20benchmark-84.4%2F100-6f42c1" alt="Live benchmark 84.4/100"></a>
 </p>
 
 <p align="center">
