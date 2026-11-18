@@ -7,7 +7,7 @@
 <p align="center"><strong>The self-hosted agent runtime that stays small, explicit, and yours.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/Mochi-Sora/SoraAgent/releases"><img src="https://img.shields.io/badge/version-0.3.1-1f6feb" alt="Version 0.3.1"></a>
+  <a href="https://github.com/Mochi-Sora/SoraAgent/releases"><img src="https://img.shields.io/badge/version-0.3.2-1f6feb" alt="Version 0.3.2"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.9%2B-3776ab" alt="Python 3.9+"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--only-2ea44f" alt="AGPL-3.0-only"></a>
   <a href="https://github.com/Mochi-Sora/SoraAgent-Benchmarks"><img src="https://img.shields.io/badge/live%20benchmark-85.1%2F100-6f42c1" alt="Live benchmark 85.1/100"></a>
@@ -150,13 +150,13 @@ No model key yet? Choose the offline mock provider in setup and try the full loo
 **macOS / Linux**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/v0.3.2/install.sh | bash
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
-irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/v0.3.2/install.ps1 | iex
 ```
 
 Windows PowerShell 5.1 or newer; installs per-user, no Administrator shell required. The installer needs Python **3.9+** already available and downloads the latest
@@ -188,25 +188,25 @@ Common options:
 
 ```bash
 # Install and start Recommended Setup (everything on)
-curl -fsSL .../install.sh | bash -s -- --mode recommended
+curl -fsSL .../v0.3.2/install.sh | bash -s -- --mode recommended
 
 # Install and start Advanced Setup (optional subsystems off)
-curl -fsSL .../install.sh | bash -s -- --mode advanced
+curl -fsSL .../v0.3.2/install.sh | bash -s -- --mode advanced
 
 # Install only; run `sora setup` yourself later
-curl -fsSL .../install.sh | bash -s -- --no-setup
+curl -fsSL .../v0.3.2/install.sh | bash -s -- --no-setup
 
 # Core package only (no optional extras; no `sora` wizard)
-curl -fsSL .../install.sh | SORA_EXTRAS=none bash
+curl -fsSL .../v0.3.2/install.sh | SORA_EXTRAS=none bash
 
 # Select a branch or release tag (the v prefix is optional)
-curl -fsSL .../install.sh | bash -s -- --version main
+curl -fsSL .../v0.3.2/install.sh | bash -s -- --version main
 
 # Install from a local checkout
 ./install.sh --source .
 
 # Uninstall (add --purge to delete ~/.sora_agent data as well)
-curl -fsSL .../install.sh | bash -s -- --uninstall
+curl -fsSL .../v0.3.2/install.sh | bash -s -- --uninstall
 ```
 
 On Windows, set options through environment variables before `irm ... | iex`
@@ -214,8 +214,8 @@ On Windows, set options through environment variables before `irm ... | iex`
 parameters:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.ps1))) -Mode recommended
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/main/install.ps1))) -Version main -NoSetup
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/v0.3.2/install.ps1))) -Mode recommended
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/v0.3.2/install.ps1))) -Version main -NoSetup
 ```
 
 | Option | Environment variable | Default |

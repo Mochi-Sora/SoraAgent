@@ -2,7 +2,7 @@
 
 All notable changes to SoraAgent are documented here.
 
-## [Unreleased]
+## [0.3.2] - 2026-11-18
 
 ### Fixed
 
