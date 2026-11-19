@@ -37,8 +37,12 @@ class SignalConfig:
 
 def from_settings(settings, secrets, args):
     options: dict[str, Any] = dict(getattr(settings.channel, "options", {}) or {})
-    http_url = env_str("SORA_SIGNAL_HTTP_URL")
-    account = env_str("SORA_SIGNAL_ACCOUNT")
+    http_url = env_str("SORA_SIGNAL_HTTP_URL") or str(
+        secrets.get("SORA_SIGNAL_HTTP_URL", "")
+    ).strip()
+    account = env_str("SORA_SIGNAL_ACCOUNT") or str(
+        secrets.get("SORA_SIGNAL_ACCOUNT", "")
+    ).strip()
     if not http_url:
         raise ValueError(
             "SORA_SIGNAL_HTTP_URL is not set; start signal-cli with "

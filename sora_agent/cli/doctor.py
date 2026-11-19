@@ -72,20 +72,78 @@ def run_doctor(settings: Settings | None, secrets: dict[str, str]) -> int:
             ),
         ],
     )
-    ui.kv_table(
-        "Channel",
-        [
-            (
-                "Telegram token",
-                "environment" if token_env else ("saved" if token_saved else "MISSING"),
-            ),
-            (
-                "Allowed users",
-                ", ".join(settings.channel.allow_from) or "none (denies all)",
-            ),
-            ("Parse mode", settings.channel.parse_mode or "plain text"),
-        ],
-    )
+    channel_kind = str(settings.channel.kind or "telegram").strip().lower()
+    channel_names = {
+        "desktop": "SoraDesk desktop app",
+        "telegram": "Telegram",
+        "discord": "Discord",
+        "slack": "Slack",
+        "whatsapp": "WhatsApp Cloud API",
+        "teams": "Microsoft Teams",
+        "signal": "Signal",
+        "googlechat": "Google Chat",
+        "matrix": "Matrix",
+        "feishu": "Feishu / Lark",
+        "imessage": "iMessage",
+    }
+    channel_keys = {
+        "discord": ("SORA_DISCORD_TOKEN",),
+        "slack": ("SORA_SLACK_BOT_TOKEN", "SORA_SLACK_APP_TOKEN"),
+        "whatsapp": (
+            "SORA_WHATSAPP_PHONE_NUMBER_ID",
+            "SORA_WHATSAPP_ACCESS_TOKEN",
+            "SORA_WHATSAPP_VERIFY_TOKEN",
+            "SORA_WHATSAPP_APP_SECRET",
+        ),
+        "teams": ("SORA_TEAMS_APP_ID", "SORA_TEAMS_APP_PASSWORD"),
+        "signal": ("SORA_SIGNAL_HTTP_URL", "SORA_SIGNAL_ACCOUNT"),
+        "googlechat": (
+            "SORA_GOOGLE_CHAT_WEBHOOK_URL",
+            "SORA_GOOGLE_CHAT_AUDIENCE",
+        ),
+        "matrix": ("SORA_MATRIX_HOMESERVER", "SORA_MATRIX_ACCESS_TOKEN"),
+        "feishu": (
+            "SORA_FEISHU_APP_ID",
+            "SORA_FEISHU_APP_SECRET",
+            "SORA_FEISHU_VERIFICATION_TOKEN",
+        ),
+        "imessage": (
+            "SORA_IMESSAGE_SERVER_URL",
+            "SORA_IMESSAGE_PASSWORD",
+            "SORA_IMESSAGE_WEBHOOK_SECRET",
+        ),
+    }
+    channel_rows = [
+        ("Kind", channel_names.get(channel_kind, channel_kind)),
+        (
+            "Allowed users",
+            ", ".join(settings.channel.allow_from) or "none (denies all)",
+        ),
+    ]
+    if channel_kind == "desktop":
+        channel_rows.append(("Bridge", "ws://127.0.0.1:18791"))
+    elif channel_kind == "telegram":
+        channel_rows.extend(
+            [
+                (
+                    "Telegram token",
+                    "environment"
+                    if token_env
+                    else ("saved" if token_saved else "MISSING"),
+                ),
+                ("Parse mode", settings.channel.parse_mode or "plain text"),
+            ]
+        )
+    else:
+        missing = [
+            key
+            for key in channel_keys.get(channel_kind, ())
+            if not (os.getenv(key, "").strip() or secrets.get(key, "").strip())
+        ]
+        channel_rows.append(
+            ("Credentials", "MISSING: " + ", ".join(missing) if missing else "configured")
+        )
+    ui.kv_table("Channel", channel_rows)
     memory = settings.features.memory
     memory_status = _memory_status(settings, secrets)
     ui.kv_table(

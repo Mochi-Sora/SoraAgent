@@ -54,7 +54,9 @@ class IMessageConfig:
 
 def from_settings(settings, secrets, args):
     options: dict[str, Any] = dict(getattr(settings.channel, "options", {}) or {})
-    server_url = env_str("SORA_IMESSAGE_SERVER_URL")
+    server_url = env_str("SORA_IMESSAGE_SERVER_URL") or str(
+        secrets.get("SORA_IMESSAGE_SERVER_URL", "")
+    ).strip()
     password = env_str("SORA_IMESSAGE_PASSWORD") or str(
         secrets.get("SORA_IMESSAGE_PASSWORD", "")
     ).strip()
@@ -97,7 +99,11 @@ def from_settings(settings, secrets, args):
         ),
         webhook_secret=env_str(
             "SORA_IMESSAGE_WEBHOOK_SECRET",
-            str(options.get("webhook_secret") or ""),
+            str(
+                secrets.get("SORA_IMESSAGE_WEBHOOK_SECRET")
+                or options.get("webhook_secret")
+                or ""
+            ),
         ),
         require_signature=not allow_unverified,
         request_timeout=env_float("SORA_IMESSAGE_REQUEST_TIMEOUT", 30.0),

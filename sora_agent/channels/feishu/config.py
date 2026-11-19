@@ -60,7 +60,9 @@ class FeishuConfig:
 
 def from_settings(settings, secrets, args):
     options: dict[str, Any] = dict(getattr(settings.channel, "options", {}) or {})
-    app_id = env_str("SORA_FEISHU_APP_ID")
+    app_id = env_str("SORA_FEISHU_APP_ID") or str(
+        secrets.get("SORA_FEISHU_APP_ID", "")
+    ).strip()
     app_secret = env_str("SORA_FEISHU_APP_SECRET") or str(
         secrets.get("SORA_FEISHU_APP_SECRET", "")
     ).strip()

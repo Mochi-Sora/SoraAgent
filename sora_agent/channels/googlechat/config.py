@@ -73,8 +73,12 @@ class GoogleChatConfig:
 
 def from_settings(settings, secrets, args):
     options: dict[str, Any] = dict(getattr(settings.channel, "options", {}) or {})
-    webhook_url = env_str("SORA_GOOGLE_CHAT_WEBHOOK_URL")
-    audience = env_str("SORA_GOOGLE_CHAT_AUDIENCE")
+    webhook_url = env_str("SORA_GOOGLE_CHAT_WEBHOOK_URL") or str(
+        secrets.get("SORA_GOOGLE_CHAT_WEBHOOK_URL", "")
+    ).strip()
+    audience = env_str("SORA_GOOGLE_CHAT_AUDIENCE") or str(
+        secrets.get("SORA_GOOGLE_CHAT_AUDIENCE", "")
+    ).strip()
     allow_unverified = env_bool("SORA_GOOGLE_CHAT_ALLOW_UNVERIFIED", False)
     if not webhook_url:
         raise ValueError(

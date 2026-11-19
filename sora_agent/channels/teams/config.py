@@ -80,7 +80,9 @@ class TeamsConfig:
 
 def from_settings(settings, secrets, args):
     options: dict[str, Any] = dict(getattr(settings.channel, "options", {}) or {})
-    app_id = env_str("SORA_TEAMS_APP_ID")
+    app_id = env_str("SORA_TEAMS_APP_ID") or str(
+        secrets.get("SORA_TEAMS_APP_ID", "")
+    ).strip()
     app_password = env_str("SORA_TEAMS_APP_PASSWORD") or str(
         secrets.get("SORA_TEAMS_APP_PASSWORD", "")
     ).strip()

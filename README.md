@@ -162,8 +162,12 @@ irm https://raw.githubusercontent.com/Mochi-Sora/SoraAgent/v0.3.2/install.ps1 | 
 Windows PowerShell 5.1 or newer; installs per-user, no Administrator shell required. The installer needs Python **3.9+** already available and downloads the latest
 release (falling back to `main` when no release exists). It installs SoraAgent
 into an isolated virtual environment, adds the command directory to your PATH,
-verifies all console scripts, and then launches the setup wizard directly. On a
-terminal it offers the same two paths as `sora setup`:
+verifies all console scripts, and then launches the setup wizard directly. The
+channel step lists Telegram, Discord, Slack, WhatsApp Cloud API, Microsoft Teams,
+Signal, Google Chat, Matrix, Feishu/Lark, iMessage, and **Desktop app
+(SoraDesk)**. Choosing Desktop starts the local `sora-desktop` bridge when it is
+installed and prints the address SoraDesk should connect to. On a terminal it
+offers the same two paths as `sora setup`:
 
 - **Recommended Setup** — everything on, tuned for daily use.
 - **Advanced Setup** — every optional subsystem starts off, with explicit

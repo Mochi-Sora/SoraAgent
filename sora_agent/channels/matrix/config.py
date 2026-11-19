@@ -43,7 +43,9 @@ class MatrixConfig:
 
 def from_settings(settings, secrets, args):
     options: dict[str, Any] = dict(getattr(settings.channel, "options", {}) or {})
-    homeserver = env_str("SORA_MATRIX_HOMESERVER")
+    homeserver = env_str("SORA_MATRIX_HOMESERVER") or str(
+        secrets.get("SORA_MATRIX_HOMESERVER", "")
+    ).strip()
     access_token = env_str("SORA_MATRIX_ACCESS_TOKEN") or str(
         secrets.get("SORA_MATRIX_ACCESS_TOKEN", "")
     ).strip()

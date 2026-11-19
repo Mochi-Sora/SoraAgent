@@ -54,7 +54,9 @@ class WhatsAppConfig:
 
 def from_settings(settings, secrets, args):
     options: dict[str, Any] = dict(getattr(settings.channel, "options", {}) or {})
-    phone_number_id = env_str("SORA_WHATSAPP_PHONE_NUMBER_ID")
+    phone_number_id = env_str("SORA_WHATSAPP_PHONE_NUMBER_ID") or str(
+        secrets.get("SORA_WHATSAPP_PHONE_NUMBER_ID", "")
+    ).strip()
     access_token = env_str("SORA_WHATSAPP_ACCESS_TOKEN") or str(
         secrets.get("SORA_WHATSAPP_ACCESS_TOKEN", "")
     ).strip()

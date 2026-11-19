@@ -240,3 +240,86 @@ def test_setup_finish_runs_doctor(monkeypatch, tmp_path):
 
     assert len(called) == 1
     assert called[0][0] is settings
+
+
+def test_channel_choices_include_ten_channels_and_desktop():
+    from sora_agent.cli.setup import _CHANNEL_CHOICES
+
+    kinds = {kind for kind, _label in _CHANNEL_CHOICES}
+    assert kinds == {
+        "desktop",
+        "telegram",
+        "discord",
+        "slack",
+        "whatsapp",
+        "teams",
+        "signal",
+        "googlechat",
+        "matrix",
+        "feishu",
+        "imessage",
+    }
+
+
+def test_recommended_channel_can_select_desktop(monkeypatch):
+    from sora_agent.cli import setup as setup_module
+
+    settings = recommended_settings()
+    monkeypatch.setattr(
+        setup_module.prompts, "select", lambda *args, **kwargs: "desktop"
+    )
+
+    setup_module._configure_channel(settings, {}, advanced=False)
+
+    assert settings.channel.kind == "desktop"
+    assert settings.channel.allow_from == ()
+
+
+def test_non_telegram_channel_prompts_credentials(monkeypatch):
+    from sora_agent.cli import setup as setup_module
+
+    settings = recommended_settings()
+    secrets: dict[str, str] = {}
+    monkeypatch.setattr(
+        setup_module.prompts, "select", lambda *args, **kwargs: "discord"
+    )
+    monkeypatch.setattr(
+        setup_module.prompts, "password", lambda *args, **kwargs: "discord-token"
+    )
+    monkeypatch.setattr(
+        setup_module.prompts, "text", lambda *args, **kwargs: "*"
+    )
+
+    setup_module._configure_channel(settings, secrets, advanced=True)
+
+    assert settings.channel.kind == "discord"
+    assert secrets["SORA_DISCORD_TOKEN"] == "discord-token"
+    assert settings.channel.allow_from == ("*",)
+
+
+def test_desktop_bridge_start_uses_installed_command(monkeypatch):
+    from sora_agent.cli import setup as setup_module
+
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = "sora-desktop started"
+        stderr = ""
+
+    monkeypatch.setattr(
+        setup_module, "_desktop_bridge_command", lambda: ["sora-desktop"]
+    )
+    monkeypatch.setattr(
+        setup_module.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append(command) or Result(),
+    )
+    monkeypatch.setattr(setup_module.ui, "section", lambda *args, **kwargs: None)
+    monkeypatch.setattr(setup_module.ui, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(setup_module.ui, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(setup_module.ui, "warning", lambda *args, **kwargs: None)
+
+    setup_module._start_desktop_bridge()
+
+    assert calls == [["sora-desktop", "start"]]

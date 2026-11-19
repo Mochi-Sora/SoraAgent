@@ -2,6 +2,17 @@
 
 All notable changes to SoraAgent are documented here.
 
+## [Unreleased]
+
+### Added
+
+- The setup wizard now offers all ten chat channels plus **Desktop app
+  (SoraDesk)** in both Recommended and Advanced flows. Non-Telegram channels
+  prompt for their required credentials; Desktop starts `sora-desktop` when it
+  is installed and points the user at `ws://127.0.0.1:18791`.
+- `sora-gateway` explains that the desktop channel is served by the SoraDesk
+  bridge instead of trying to load a missing channel plugin.
+
 ## [0.3.2] - 2026-11-18
 
 ### Fixed

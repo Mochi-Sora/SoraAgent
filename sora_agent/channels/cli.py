@@ -69,6 +69,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     channel_kind = (
         args.channel or settings.channel.kind or "telegram"
     ).strip().lower()
+    if channel_kind == "desktop":
+        print(
+            "sora-gateway: the desktop channel is served by the SoraDesk "
+            "bridge, not sora-gateway. Run `sora-desktop start`, then connect "
+            "SoraDesk to ws://127.0.0.1:18791.",
+            file=sys.stderr,
+        )
+        return 2
     try:
         plugin = load_plugin(channel_kind)
     except Exception as exc:  # noqa: BLE001 - a broken plugin is a CLI error

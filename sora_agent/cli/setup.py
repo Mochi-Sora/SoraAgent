@@ -12,11 +12,13 @@ import copy
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 from .. import __version__
@@ -62,6 +64,61 @@ _APPROVAL_LABELS = {
     "off": "Off — consequential tools execute without asking",
     "ask": "Ask — prompt before consequential tools",
 }
+_CHANNEL_CHOICES = (
+    ("desktop", "Desktop app (SoraDesk)"),
+    ("telegram", "Telegram"),
+    ("discord", "Discord"),
+    ("slack", "Slack"),
+    ("whatsapp", "WhatsApp Cloud API"),
+    ("teams", "Microsoft Teams"),
+    ("signal", "Signal"),
+    ("googlechat", "Google Chat"),
+    ("matrix", "Matrix"),
+    ("feishu", "Feishu / Lark"),
+    ("imessage", "iMessage"),
+)
+_CHANNEL_LABELS = dict(_CHANNEL_CHOICES)
+# (environment/secrets key, prompt label, secret?)
+_CHANNEL_CREDENTIALS: dict[str, tuple[tuple[str, str, bool], ...]] = {
+    "discord": (("SORA_DISCORD_TOKEN", "Discord bot token", True),),
+    "slack": (
+        ("SORA_SLACK_BOT_TOKEN", "Slack bot token", True),
+        ("SORA_SLACK_APP_TOKEN", "Slack app-level token", True),
+    ),
+    "whatsapp": (
+        ("SORA_WHATSAPP_PHONE_NUMBER_ID", "WhatsApp phone number ID", False),
+        ("SORA_WHATSAPP_ACCESS_TOKEN", "WhatsApp access token", True),
+        ("SORA_WHATSAPP_VERIFY_TOKEN", "WhatsApp webhook verify token", True),
+        ("SORA_WHATSAPP_APP_SECRET", "WhatsApp app secret", True),
+    ),
+    "teams": (
+        ("SORA_TEAMS_APP_ID", "Microsoft Teams app ID", False),
+        ("SORA_TEAMS_APP_PASSWORD", "Microsoft Teams app password", True),
+    ),
+    "signal": (
+        ("SORA_SIGNAL_HTTP_URL", "Signal daemon HTTP URL", False),
+        ("SORA_SIGNAL_ACCOUNT", "Signal account (E.164)", False),
+    ),
+    "googlechat": (
+        ("SORA_GOOGLE_CHAT_WEBHOOK_URL", "Google Chat webhook URL", False),
+        ("SORA_GOOGLE_CHAT_AUDIENCE", "Google Chat audience / project number", False),
+    ),
+    "matrix": (
+        ("SORA_MATRIX_HOMESERVER", "Matrix homeserver URL", False),
+        ("SORA_MATRIX_ACCESS_TOKEN", "Matrix access token", True),
+    ),
+    "feishu": (
+        ("SORA_FEISHU_APP_ID", "Feishu / Lark app ID", False),
+        ("SORA_FEISHU_APP_SECRET", "Feishu / Lark app secret", True),
+        ("SORA_FEISHU_VERIFICATION_TOKEN", "Feishu / Lark verification token", True),
+    ),
+    "imessage": (
+        ("SORA_IMESSAGE_SERVER_URL", "BlueBubbles server URL", False),
+        ("SORA_IMESSAGE_PASSWORD", "BlueBubbles password", True),
+        ("SORA_IMESSAGE_WEBHOOK_SECRET", "iMessage webhook secret", True),
+    ),
+}
+
 _WEB_SEARCH_LABELS = {
     "auto": "Auto (DuckDuckGo fallback)",
     "duckduckgo": "DuckDuckGo (no key)",
@@ -178,7 +235,7 @@ def _recommended_flow(settings: Settings, secrets: dict[str, str]) -> None:
         "Everything is enabled and tuned for daily use. Only the channel, "
         "main model, and a few agent details are asked here.",
     )
-    _configure_telegram(settings, secrets, advanced=False)
+    _configure_channel(settings, secrets, advanced=False)
     _configure_provider(settings, secrets, advanced=False)
     _configure_agent(settings, minimal=True)
     _recommended_review(settings, secrets)
@@ -198,7 +255,7 @@ def _recommended_review(
             [
                 ("[C] Save and finish", "save"),
                 ("[N] Edit agent name, icon, temperature, or personality", "agent"),
-                ("[T] Edit Telegram channel", "channel"),
+                ("[T] Edit channel", "channel"),
                 ("[M] Edit main model", "model"),
                 ("[X] Cancel", "cancel"),
             ],
@@ -211,7 +268,7 @@ def _recommended_review(
         if choice == "agent":
             _configure_agent(settings, minimal=True)
         elif choice == "channel":
-            _configure_telegram(settings, secrets, advanced=False)
+            _configure_channel(settings, secrets, advanced=False)
         elif choice == "model":
             _configure_provider(settings, secrets, advanced=False)
 
@@ -249,9 +306,10 @@ def _show_recommended_settings(
     ui.kv_table(
         "Channel",
         [
+            ("Kind", _channel_label(settings.channel.kind)),
             (
-                "Telegram token",
-                _token_status(secrets),
+                "Credentials",
+                _channel_credentials_status(settings, secrets),
             ),
             (
                 "Allowed users",
@@ -291,7 +349,7 @@ def _advanced_flow(settings: Settings, secrets: dict[str, str]) -> None:
         "Every optional subsystem starts off. Each section explains what it "
         "changes before you decide.",
     )
-    _configure_telegram(settings, secrets, advanced=True)
+    _configure_channel(settings, secrets, advanced=True)
     _configure_provider(settings, secrets, advanced=True)
     _configure_agent(settings, minimal=False)
     _configure_memory(settings)
@@ -392,7 +450,7 @@ def _advanced_review(settings: Settings, secrets: dict[str, str]) -> None:
         if section == "back":
             continue
         dispatch: dict[str, Callable[[], None]] = {
-            "channel": lambda: _configure_telegram(
+            "channel": lambda: _configure_channel(
                 settings, secrets, advanced=True
             ),
             "provider": lambda: _configure_provider(
@@ -480,6 +538,166 @@ def _reset_advanced_features(settings: Settings) -> None:
 # ---------------------------------------------------------------------------
 # Shared configuration steps
 # ---------------------------------------------------------------------------
+
+
+def _channel_label(kind: str) -> str:
+    return _CHANNEL_LABELS.get(str(kind or "").strip().lower(), str(kind or "unknown"))
+
+
+def _channel_credentials_status(settings: Settings, secrets: dict[str, str]) -> str:
+    kind = str(settings.channel.kind or "").strip().lower()
+    if kind == "desktop":
+        return "SoraDesk bridge · ws://127.0.0.1:18791"
+    if kind == "telegram":
+        return _token_status(secrets)
+    fields = _CHANNEL_CREDENTIALS.get(kind, ())
+    if not fields:
+        return "configured outside setup"
+    missing = []
+    for key, label, _secret in fields:
+        if not (os.getenv(key, "").strip() or secrets.get(key, "").strip()):
+            missing.append(label)
+    if missing:
+        return "MISSING: " + ", ".join(missing)
+    return "configured"
+
+
+def _configure_channel(
+    settings: Settings, secrets: dict[str, str], *, advanced: bool
+) -> None:
+    """Choose one chat channel, or the SoraDesk desktop bridge."""
+    current = str(settings.channel.kind or "telegram").strip().lower()
+    if current not in _CHANNEL_LABELS:
+        current = "telegram"
+    ui.section(
+        "Channel",
+        "Choose where Sora should run first. You can add more channels later "
+        "with `sora setup`.",
+    )
+    kind = prompts.select(
+        "Where should Sora run?",
+        list(_CHANNEL_CHOICES),
+        default=current,
+        instruction="Telegram is the default, but any channel works.",
+    )
+    settings.channel.kind = str(kind)
+    if kind == "desktop":
+        settings.channel.allow_from = ()
+        ui.info(
+            "SoraDesk will use the local bridge at ws://127.0.0.1:18791. "
+            "The bridge is started automatically when setup finishes."
+        )
+        return
+    if kind == "telegram":
+        _configure_telegram(settings, secrets, advanced=advanced)
+        return
+
+    label = _channel_label(kind)
+    ui.section(
+        f"Channel · {label}",
+        "Paste the credentials for this channel. They are stored in "
+        "secrets.env, not config.json.",
+    )
+    for key, field_label, secret in _CHANNEL_CREDENTIALS.get(kind, ()):
+        env_value = os.getenv(key, "").strip()
+        saved = str(secrets.get(key, "")).strip()
+        current_value = env_value or saved
+        if current_value:
+            status = "environment" if env_value else "saved"
+            ui.info(f"{field_label}: {status}")
+            if not prompts.confirm(f"Replace the {field_label}?", default=False):
+                continue
+        if secret:
+            value = prompts.password(field_label)
+        else:
+            value = prompts.text(field_label, current_value)
+        value = str(value or "").strip()
+        if value:
+            secrets[key] = value
+        elif not current_value:
+            ui.warning(f"No {field_label} set; this channel will not start yet.")
+
+    default_allow = ", ".join(settings.channel.allow_from)
+    raw_allow = prompts.text(
+        "Allowed sender IDs (comma separated, * for everyone)",
+        default=default_allow,
+        instruction="Leave blank to deny everyone until you configure access.",
+    )
+    settings.channel.allow_from = tuple(
+        part.strip() for part in raw_allow.split(",") if part.strip()
+    )
+    if not settings.channel.allow_from:
+        ui.warning(
+            f"The allow list is empty. {label} messages will be ignored until "
+            "you add sender IDs."
+        )
+
+
+def _desktop_bridge_command() -> list[str] | None:
+    """Find an installed SoraDesk bridge command, if there is one."""
+    names = ("sora-desktop.exe", "sora-desktop") if os.name == "nt" else ("sora-desktop",)
+    candidates: list[str] = []
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            candidates.append(found)
+        local = Path(sys.executable).with_name(name)
+        if local.exists():
+            candidates.append(str(local))
+        home_bridge = (
+            Path.home()
+            / ".sora_agent"
+            / "venv"
+            / ("Scripts" if os.name == "nt" else "bin")
+            / name
+        )
+        if home_bridge.exists():
+            candidates.append(str(home_bridge))
+    for candidate in dict.fromkeys(candidates):
+        if Path(candidate).exists():
+            return [candidate]
+    try:
+        import sora_desktop  # noqa: F401
+    except ImportError:
+        return None
+    return [sys.executable, "-m", "sora_desktop"]
+
+
+def _start_desktop_bridge() -> None:
+    """Start the local SoraDesk bridge and explain how to connect."""
+    command = _desktop_bridge_command()
+    if command is None:
+        ui.warning("The SoraDesk bridge is not installed, so it could not be started.")
+        ui.info(
+            "Install the bridge with: "
+            "pip install -e /path/to/SoraDesk/bridge, then run: sora-desktop start"
+        )
+        return
+    ui.section("SoraDesk bridge", "Starting the local bridge for the desktop app...")
+    try:
+        result = subprocess.run(
+            [*command, "start"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        ui.warning(f"Could not start the SoraDesk bridge: {exc}")
+        return
+    output = (result.stdout or result.stderr or "").strip()
+    if output:
+        ui.info(output)
+    if result.returncode != 0:
+        ui.warning(
+            "The bridge did not start. Run `sora-desktop logs` for details."
+        )
+        return
+    ui.success("SoraDesk bridge is running at ws://127.0.0.1:18791")
+    ui.info(
+        "Open SoraDesk → Settings → Connections, add a Local or SSH profile, "
+        "and connect to ws://127.0.0.1:18791."
+    )
 
 
 def _configure_telegram(
@@ -1266,21 +1484,25 @@ def _show_advanced_settings(
             ("Provider retries", str(settings.limits.provider_retries)),
         ],
     )
-    ui.kv_table(
-        "Channel",
-        [
-            ("Telegram token", _token_status(secrets)),
-            (
-                "Allowed users",
-                ", ".join(settings.channel.allow_from) or "(none)",
-            ),
-            ("Parse mode", settings.channel.parse_mode or "plain text"),
-            ("API base", settings.channel.api_base),
-            ("Poll timeout", f"{settings.channel.poll_timeout}s"),
-            ("Request timeout", f"{settings.channel.request_timeout:g}s"),
-            ("Max message chars", str(settings.channel.max_message_chars)),
-        ],
-    )
+    channel_rows = [
+        ("Kind", _channel_label(settings.channel.kind)),
+        ("Credentials", _channel_credentials_status(settings, secrets)),
+        (
+            "Allowed users",
+            ", ".join(settings.channel.allow_from) or "(none)",
+        ),
+    ]
+    if str(settings.channel.kind).strip().lower() == "telegram":
+        channel_rows.extend(
+            [
+                ("Parse mode", settings.channel.parse_mode or "plain text"),
+                ("API base", settings.channel.api_base),
+                ("Poll timeout", f"{settings.channel.poll_timeout}s"),
+                ("Request timeout", f"{settings.channel.request_timeout:g}s"),
+                ("Max message chars", str(settings.channel.max_message_chars)),
+            ]
+        )
+    ui.kv_table("Channel", channel_rows)
     memory = settings.features.memory
     memory_rows = [("Enabled", "On" if memory.enabled else "Off")]
     if memory.enabled:
@@ -1529,6 +1751,8 @@ def _finish(settings: Settings, secrets: dict[str, str]) -> None:
     secrets_file = save_secrets(secrets)
     ui.success(f"Configuration saved to {config_file}")
     ui.success(f"Secrets saved to {secrets_file} (mode 0600)")
+    if str(settings.channel.kind).strip().lower() == "desktop":
+        _start_desktop_bridge()
     if (
         settings.features.memory.enabled
         and settings.features.memory.sidecar
@@ -1585,16 +1809,27 @@ def _prepare_sidecar(settings: Settings, secrets: dict[str, str]) -> None:
 def _next_steps(settings: Settings) -> None:
     ui.blank()
     ui.section("Ready")
-    ui.kv_table(
-        "Start using Sora",
-        [
+    if str(settings.channel.kind).strip().lower() == "desktop":
+        start_rows = [
             ("Terminal chat", "sora chat"),
             ("One-shot task", 'sora run "check the status of PO-1234"'),
-            ("Telegram gateway", "sora gateway"),
+            ("SoraDesk", "connect to ws://127.0.0.1:18791"),
+            ("Bridge status", "sora-desktop status"),
             ("Health check", "sora doctor"),
             ("Edit settings", "sora setup"),
-        ],
-    )
+        ]
+    else:
+        start_rows = [
+            ("Terminal chat", "sora chat"),
+            ("One-shot task", 'sora run "check the status of PO-1234"'),
+            (
+                "Chat gateway",
+                f"sora gateway --channel {settings.channel.kind}",
+            ),
+            ("Health check", "sora doctor"),
+            ("Edit settings", "sora setup"),
+        ]
+    ui.kv_table("Start using Sora", start_rows)
     ui.info(
         f"Configuration: {config_path()}   Secrets: {secrets_path()}"
     )
